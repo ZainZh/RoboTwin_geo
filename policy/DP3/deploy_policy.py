@@ -26,15 +26,59 @@ current_file_path = os.path.abspath(__file__)
 parent_directory = os.path.dirname(current_file_path)
 
 sys.path.append(os.path.join(parent_directory, '3D-Diffusion-Policy'))
+sys.path.append(os.path.join(parent_directory, 'scripts'))
 
 from dp3_policy import *
+from ndf_feature_utils import compute_ndf_feature, load_ndf_model
+from object_pointcloud_utils import merge_object_point_clouds, parse_placeholder_list
 
 
-def encode_obs(observation):  # Post-Process Observation
+def placeholder_feature_key(placeholder: str) -> str:
+    return f"ndf_feat_{placeholder.strip('{}')}"
+
+
+def encode_obs(observation, model):  # Post-Process Observation
     obs = dict()
     obs['agent_pos'] = observation['joint_action']['vector']
-    obs['point_cloud'] = observation['pointcloud']
+    point_cloud = observation['pointcloud']
+    object_pointcloud = observation.get('object_pointcloud', {})
+
+    if getattr(model, "use_object_pointcloud", False) and len(object_pointcloud) > 0:
+        placeholders = getattr(model, "object_placeholders", [])
+        ordered_point_clouds = [object_pointcloud[key] for key in placeholders if key in object_pointcloud]
+        if len(ordered_point_clouds) == 0:
+            ordered_point_clouds = list(object_pointcloud.values())
+        point_cloud = merge_object_point_clouds(
+            ordered_point_clouds,
+            target_num_points=int(getattr(model, "target_num_points", 1024)),
+        )
+
+    obs['point_cloud'] = point_cloud
+
+    for placeholder, ndf_model in getattr(model, "ndf_models", {}).items():
+        feature_key = placeholder_feature_key(placeholder)
+        feat_dim = int(getattr(model, "ndf_feat_dim", 256))
+        object_pc = object_pointcloud.get(placeholder)
+        if object_pc is None:
+            obs[feature_key] = np.zeros((feat_dim,), dtype=np.float32)
+            continue
+        obs[feature_key] = compute_ndf_feature(
+            model=ndf_model,
+            object_point_cloud=object_pc,
+            device=getattr(model, "ndf_device", torch.device("cpu")),
+        ).astype(np.float32)
     return obs
+
+
+def resolve_ndf_models(usr_args):
+    model_specs = {}
+    ckpt_a = usr_args.get("ndf_ckpt_A", "none")
+    ckpt_b = usr_args.get("ndf_ckpt_B", "none")
+    if ckpt_a not in {None, "", "none"}:
+        model_specs["{A}"] = ckpt_a
+    if ckpt_b not in {None, "", "none"}:
+        model_specs["{B}"] = ckpt_b
+    return model_specs
 
 
 def get_model(usr_args):
@@ -66,14 +110,46 @@ def get_model(usr_args):
     cfg.expert_data_num = usr_args["expert_data_num"]
     cfg.raw_task_name = usr_args["task_name"]
     cfg.policy.use_pc_color = usr_args['use_rgb']
+
+    use_object_pointcloud = "objpc" in usr_args["config_name"]
+    object_placeholders = parse_placeholder_list(usr_args.get("object_placeholders", "{A},{B}"))
+    target_num_points = int(cfg.task.shape_meta.obs.point_cloud.shape[0])
+    ndf_feat_dim = 256
+    ndf_device = torch.device(usr_args.get("ndf_device", "cuda:0") if torch.cuda.is_available() else "cpu")
+    ndf_model_specs = resolve_ndf_models(usr_args)
+    dgcnn_placeholders = set(parse_placeholder_list(usr_args.get("ndf_dgcnn_placeholders", "")))
+
+    if "ndf" in usr_args["config_name"]:
+        for placeholder in object_placeholders:
+            checkpoint = ndf_model_specs.get(placeholder)
+            if checkpoint in {None, "", "none"}:
+                continue
+            feature_key = placeholder_feature_key(placeholder)
+            cfg.task.shape_meta.obs[feature_key] = {
+                "shape": [ndf_feat_dim],
+                "type": "low_dim",
+            }
     OmegaConf.set_struct(cfg, True)
 
     DP3_Model = DP3(cfg, usr_args)
+    DP3_Model.use_object_pointcloud = use_object_pointcloud
+    DP3_Model.object_placeholders = object_placeholders
+    DP3_Model.target_num_points = target_num_points
+    DP3_Model.ndf_feat_dim = ndf_feat_dim
+    DP3_Model.ndf_device = ndf_device
+    DP3_Model.ndf_models = {}
+    for placeholder, checkpoint in ndf_model_specs.items():
+        DP3_Model.ndf_models[placeholder] = load_ndf_model(
+            checkpoint=checkpoint,
+            dgcnn=placeholder in dgcnn_placeholders,
+            device=ndf_device,
+            latent_dim=ndf_feat_dim,
+        )
     return DP3_Model
 
 
 def eval(TASK_ENV, model, observation):
-    obs = encode_obs(observation)  # Post-Process Observation
+    obs = encode_obs(observation, model)  # Post-Process Observation
     # instruction = TASK_ENV.get_instruction()
 
     if len(
@@ -86,7 +162,7 @@ def eval(TASK_ENV, model, observation):
     for action in actions:  # Execute each step of the action
         TASK_ENV.take_action(action)
         observation = TASK_ENV.get_obs()
-        obs = encode_obs(observation)
+        obs = encode_obs(observation, model)
         model.update_obs(obs)  # Update Observation, `update_obs` here can be modified
 
 

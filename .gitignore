@@ -28,3 +28,8 @@ envs/curobo/*
 
 /*.json*
 /*.txt
+.idea/inspectionProfiles/
+
+include/geometry_awareness_manipulation
+
+*.xml

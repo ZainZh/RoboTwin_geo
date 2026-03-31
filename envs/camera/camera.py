@@ -492,9 +492,73 @@ class Camera:
 
         return pcd_array
 
+    def _collect_pcd_cameras(self, if_combine=False):
+        cameras = []
+        if if_combine:
+            if self.collect_wrist_camera:
+                cameras.extend([self.left_camera, self.right_camera])
+            cameras.extend(self.static_camera_list)
+            return cameras
+
+        if self.head_camera_id is None:
+            return []
+        if self.collect_head_camera:
+            return [self.static_camera_list[self.head_camera_id]]
+        return []
+
+    def _get_camera_pcd_numpy(self, camera, actor_ids=None):
+        rgba = camera.get_picture("Color")
+        position = camera.get_picture("Position")
+        model_matrix = np.asarray(camera.get_model_matrix(), dtype=np.float32)
+
+        valid_mask = position[..., 3] < 1
+        if actor_ids is not None:
+            seg_labels = camera.get_picture("Segmentation")
+            actor_mask = np.isin(seg_labels[..., 1].astype(np.int64), np.asarray(actor_ids, dtype=np.int64))
+            valid_mask &= actor_mask
+
+        points_opengl = np.asarray(position[..., :3][valid_mask], dtype=np.float32)
+        points_color = np.asarray(rgba[..., :3][valid_mask], dtype=np.float32)
+
+        if len(points_opengl) == 0:
+            return np.zeros((0, 6), dtype=np.float32)
+
+        points_world = points_opengl @ model_matrix[:3, :3].T + model_matrix[:3, 3]
+        points_color = np.clip(points_color, 0.0, 1.0)
+
+        if self.pcd_crop:
+            min_bound = np.asarray(self.pcd_crop_bbox[0], dtype=np.float32)
+            max_bound = np.asarray(self.pcd_crop_bbox[1], dtype=np.float32)
+            inside_bounds_mask = np.all(points_world >= min_bound, axis=1) & np.all(points_world <= max_bound, axis=1)
+            points_world = points_world[inside_bounds_mask]
+            points_color = points_color[inside_bounds_mask]
+
+        return np.hstack((points_world, points_color)).astype(np.float32)
+
+    def _pad_and_sample_pcd(self, point_cloud, point_num):
+        point_cloud = np.asarray(point_cloud, dtype=np.float32)
+        if point_num is None:
+            point_num = self.pcd_down_sample_num
+        point_num = int(point_num)
+
+        if point_num <= 0:
+            return point_cloud
+
+        current_num = point_cloud.shape[0]
+        if current_num < point_num:
+            if current_num == 0:
+                point_cloud = np.zeros((point_num, 6), dtype=np.float32)
+            else:
+                pad_num = point_num - current_num
+                padding = np.zeros((pad_num, point_cloud.shape[1]), dtype=np.float32)
+                point_cloud = np.vstack([point_cloud, padding]).astype(np.float32)
+
+        sampled_xyz, index = fps(point_cloud[:, :3], point_num)
+        index = index.detach().cpu().numpy()[0]
+        return point_cloud[index]
+
     # Get Camera PointCloud
     def get_pcd(self, if_combine=False):
-
         def _get_camera_pcd(camera, point_num=0):
             rgba = camera.get_picture_cuda("Color").torch()  # [H, W, 4]
             position = camera.get_picture_cuda("Position").torch()
@@ -532,7 +596,6 @@ class Camera:
             points_color_np = points_color.cpu().numpy()
 
             if point_num > 0:
-                # points_world_np,index = fps(points_world_np,point_num)
                 index = index.detach().cpu().numpy()[0]
                 points_color_np = points_color_np[index, :]
 
@@ -542,25 +605,31 @@ class Camera:
             print("No head camera in static camera list, pointcloud save error!")
             return None
 
-        combined_pcd = np.array([])
+        combined_chunks = []
 
         # Merge pointcloud
         if if_combine:
-            # combined_pcd = np.vstack((head_pcd , left_pcd , right_pcd, front_pcd))
             if self.collect_wrist_camera:
-                combined_pcd = np.vstack((
+                combined_chunks.extend((
                     _get_camera_pcd(self.left_camera),
                     _get_camera_pcd(self.right_camera),
                 ))
             for camera, camera_name in zip(self.static_camera_list, self.static_camera_name):
                 if camera_name == "head_camera":
                     if self.collect_head_camera:
-                        combined_pcd = np.vstack((combined_pcd, _get_camera_pcd(camera)))
+                        combined_chunks.append(_get_camera_pcd(camera))
                 else:
-                    combined_pcd = np.vstack((combined_pcd, _get_camera_pcd(camera)))
+                    combined_chunks.append(_get_camera_pcd(camera))
         elif self.collect_head_camera:
-            combined_pcd = _get_camera_pcd(self.static_camera_list[self.head_camera_id])
-        
+            combined_chunks.append(_get_camera_pcd(self.static_camera_list[self.head_camera_id]))
+
+        if len(combined_chunks) == 0:
+            combined_pcd = np.zeros((0, 6), dtype=np.float32)
+        elif len(combined_chunks) == 1:
+            combined_pcd = combined_chunks[0]
+        else:
+            combined_pcd = np.vstack(combined_chunks)
+
         def pad_array(numpy_array, target_num):
             current_num = numpy_array.shape[0]
             if current_num < target_num:
@@ -581,3 +650,25 @@ class Camera:
             index = index.detach().cpu().numpy()[0]
 
         return combined_pcd[index]
+
+    def get_actor_point_clouds(self, actor_ids_map, if_combine=False, point_num=None):
+        if not actor_ids_map:
+            return {}
+
+        cameras = self._collect_pcd_cameras(if_combine=if_combine)
+        if len(cameras) == 0:
+            raise RuntimeError("No available cameras for object point cloud collection.")
+
+        point_num = self.pcd_down_sample_num if point_num is None else int(point_num)
+        if point_num <= 0:
+            raise ValueError("object_pointcloud collection requires a positive point_num or pcd_down_sample_num.")
+
+        result = {}
+        for placeholder, actor_ids in actor_ids_map.items():
+            pcd_chunks = [
+                self._get_camera_pcd_numpy(camera, actor_ids=actor_ids)
+                for camera in cameras
+            ]
+            combined_pcd = np.vstack(pcd_chunks) if len(pcd_chunks) > 0 else np.zeros((0, 6), dtype=np.float32)
+            result[str(placeholder)] = self._pad_and_sample_pcd(combined_pcd, point_num)
+        return result

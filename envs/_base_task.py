@@ -101,6 +101,9 @@ class Base_Task(gym.Env):
 
         self.save_freq = kwags.get("save_freq")
         self.world_pcd = None
+        self.object_pointcloud_config = deepcopy(kwags.get("object_pointcloud", {}))
+        self.object_pointcloud_targets = OrderedDict()
+        self.object_pointcloud_actor_ids = OrderedDict()
 
         self.size_dict = list()
         self.cluttered_objs = list()
@@ -129,6 +132,7 @@ class Base_Task(gym.Env):
 
         self.robot.set_origin_endpose()
         self.load_actors()
+        self._configure_object_pointcloud_targets()
 
         if self.cluttered_table:
             self.get_cluttered_table()
@@ -155,6 +159,7 @@ class Base_Task(gym.Env):
             "table_texture": self.table_texture,
         }
         self.info["info"] = {}
+        self._populate_object_pointcloud_info()
 
         self.stage_success_tag = False
 
@@ -414,6 +419,129 @@ class Base_Task(gym.Env):
         self.scene.step()  # run a physical step
         self.scene.update_render()  # sync pose from SAPIEN to renderer
 
+    def _resolve_target_attr_path(self, attr_path):
+        if not isinstance(attr_path, str) or not attr_path:
+            raise ValueError(f"Invalid object_pointcloud target path: {attr_path!r}")
+
+        current = self
+        for token in attr_path.split("."):
+            match = re.fullmatch(r"([A-Za-z_]\w*)(.*)", token)
+            if match is None:
+                raise ValueError(f"Invalid object_pointcloud target token: {token!r}")
+            attr_name, suffix = match.groups()
+            if not hasattr(current, attr_name):
+                raise AttributeError(f"Task {self.task_name} has no attribute {attr_name!r} for {attr_path!r}")
+            current = getattr(current, attr_name)
+
+            while suffix:
+                index_match = re.match(r"^\[(\d+)\](.*)$", suffix)
+                if index_match is None:
+                    raise ValueError(f"Unsupported object_pointcloud target suffix in {attr_path!r}: {suffix!r}")
+                index = int(index_match.group(1))
+                current = current[index]
+                suffix = index_match.group(2)
+
+        return current
+
+    def _flatten_target_refs(self, value):
+        if isinstance(value, (list, tuple)):
+            refs = []
+            for item in value:
+                refs.extend(self._flatten_target_refs(item))
+            return refs
+        return [value]
+
+    def _iter_segmentation_entities(self, target):
+        if isinstance(target, ArticulationActor):
+            return list(target.actor.get_links())
+        if isinstance(target, Actor):
+            return [target.actor]
+        if hasattr(target, "get_links") and callable(target.get_links):
+            try:
+                links = list(target.get_links())
+                if len(links) > 0:
+                    return links
+            except Exception:
+                pass
+        return [target]
+
+    def _extract_entity_scene_id(self, entity):
+        candidates = [entity]
+        if hasattr(entity, "entity"):
+            candidates.append(entity.entity)
+
+        attr_names = ["per_scene_id", "scene_id", "entity_id", "segmentation_id", "id"]
+        method_names = ["get_per_scene_id", "get_scene_id", "get_entity_id", "get_segmentation_id", "get_id"]
+
+        for candidate in candidates:
+            for attr_name in attr_names:
+                if not hasattr(candidate, attr_name):
+                    continue
+                value = getattr(candidate, attr_name)
+                if callable(value):
+                    continue
+                try:
+                    return int(value)
+                except Exception:
+                    continue
+            for method_name in method_names:
+                method = getattr(candidate, method_name, None)
+                if method is None or not callable(method):
+                    continue
+                try:
+                    return int(method())
+                except Exception:
+                    continue
+        return None
+
+    def _resolve_target_actor_ids(self, target_refs):
+        actor_ids = []
+        for target_ref in target_refs:
+            for entity in self._iter_segmentation_entities(target_ref):
+                scene_id = self._extract_entity_scene_id(entity)
+                if scene_id is not None:
+                    actor_ids.append(int(scene_id))
+        actor_ids = sorted(set(actor_ids))
+        if len(actor_ids) == 0:
+            raise RuntimeError(
+                "Failed to resolve any scene ids for object_pointcloud targets. "
+                "Check that the configured task attributes point to SAPIEN actors."
+            )
+        return actor_ids
+
+    def _configure_object_pointcloud_targets(self):
+        if not self.data_type or not self.data_type.get("object_pointcloud", False):
+            return
+
+        target_specs = self.object_pointcloud_config.get("targets", {})
+        if not isinstance(target_specs, dict) or len(target_specs) == 0:
+            raise ValueError(
+                "When data_type.object_pointcloud is enabled, object_pointcloud.targets must map placeholders "
+                "to task actor attribute paths."
+            )
+
+        for placeholder, attr_spec in target_specs.items():
+            attr_paths = attr_spec if isinstance(attr_spec, (list, tuple)) else [attr_spec]
+            resolved_targets = []
+            for attr_path in attr_paths:
+                resolved_targets.extend(self._flatten_target_refs(self._resolve_target_attr_path(attr_path)))
+            actor_ids = self._resolve_target_actor_ids(resolved_targets)
+            self.object_pointcloud_actor_ids[str(placeholder)] = actor_ids
+            self.object_pointcloud_targets[str(placeholder)] = {
+                "attr_paths": [str(path) for path in attr_paths],
+                "actor_ids": actor_ids,
+            }
+
+    def _populate_object_pointcloud_info(self):
+        if len(self.object_pointcloud_targets) == 0:
+            return
+        combine_scene_pointcloud = bool(self.data_type.get("combine", self.data_type.get("conbine", False)))
+        self.info["object_pointcloud"] = {
+            "combine": bool(self.object_pointcloud_config.get("combine", combine_scene_pointcloud)),
+            "point_num": int(self.object_pointcloud_config.get("point_num", self.cameras.pcd_down_sample_num)),
+            "targets": deepcopy(self.object_pointcloud_targets),
+        }
+
     # =========================================================== Sapien ===========================================================
 
     def _update_render(self):
@@ -437,6 +565,7 @@ class Base_Task(gym.Env):
     def get_obs(self):
         self._update_render()
         self.cameras.update_picture()
+        combine_scene_pointcloud = bool(self.data_type.get("combine", self.data_type.get("conbine", False)))
         pkl_dic = {
             "observation": {},
             "pointcloud": [],
@@ -494,7 +623,13 @@ class Base_Task(gym.Env):
             pkl_dic["joint_action"]["vector"] = np.array(left_jointstate + right_jointstate)
         # pointcloud
         if self.data_type.get("pointcloud", False):
-            pkl_dic["pointcloud"] = self.cameras.get_pcd(self.data_type.get("conbine", False))
+            pkl_dic["pointcloud"] = self.cameras.get_pcd(combine_scene_pointcloud)
+        if self.data_type.get("object_pointcloud", False):
+            pkl_dic["object_pointcloud"] = self.cameras.get_actor_point_clouds(
+                actor_ids_map=self.object_pointcloud_actor_ids,
+                if_combine=self.object_pointcloud_config.get("combine", combine_scene_pointcloud),
+                point_num=self.object_pointcloud_config.get("point_num", self.cameras.pcd_down_sample_num),
+            )
 
         self.now_obs = deepcopy(pkl_dic)
         return pkl_dic

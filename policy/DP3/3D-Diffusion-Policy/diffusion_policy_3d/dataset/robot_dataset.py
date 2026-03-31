@@ -36,13 +36,16 @@ class RobotDataset(BaseDataset):
         val_ratio=0.0,
         max_train_episodes=None,
         task_name=None,
+        extra_obs_keys=None,
     ):
         super().__init__()
         self.task_name = task_name
+        self.extra_obs_keys = list(extra_obs_keys or [])
         current_file_path = os.path.abspath(__file__)
         parent_directory = os.path.dirname(current_file_path)
         zarr_path = os.path.join(parent_directory, zarr_path)
-        self.replay_buffer = ReplayBuffer.copy_from_path(zarr_path, keys=["state", "action", "point_cloud"])  # 'img'
+        replay_keys = ["state", "action", "point_cloud"] + self.extra_obs_keys
+        self.replay_buffer = ReplayBuffer.copy_from_path(zarr_path, keys=replay_keys)  # 'img'
         val_mask = get_val_mask(n_episodes=self.replay_buffer.n_episodes, val_ratio=val_ratio, seed=seed)
         train_mask = ~val_mask
         train_mask = downsample_mask(mask=train_mask, max_n=max_train_episodes, seed=seed)
@@ -76,6 +79,8 @@ class RobotDataset(BaseDataset):
             "agent_pos": self.replay_buffer["state"][..., :],
             "point_cloud": self.replay_buffer["point_cloud"],
         }
+        for key in self.extra_obs_keys:
+            data[key] = self.replay_buffer[key]
         normalizer = LinearNormalizer()
         normalizer.fit(data=data, last_n_dims=1, mode=mode, **kwargs)
         return normalizer
@@ -98,6 +103,8 @@ class RobotDataset(BaseDataset):
             },
             "action": sample["action"].astype(np.float32),  # T, D_action
         }
+        for key in self.extra_obs_keys:
+            data["obs"][key] = sample[key].astype(np.float32)
         return data
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:

@@ -206,21 +206,32 @@ class DP3Encoder(nn.Module):
     ):
         super().__init__()
         self.imagination_key = "imagin_robot"
-        self.state_key = "agent_pos"
         self.point_cloud_key = "point_cloud"
         self.rgb_image_key = "image"
         self.n_output_channels = out_channel
 
         self.use_imagined_robot = self.imagination_key in observation_space.keys()
         self.point_cloud_shape = observation_space[self.point_cloud_key]
-        self.state_shape = observation_space[self.state_key]
+        self.low_dim_keys = [
+            key for key in observation_space.keys()
+            if key not in {self.imagination_key, self.point_cloud_key, self.rgb_image_key}
+        ]
+        self.low_dim_shapes = {key: observation_space[key] for key in self.low_dim_keys}
+        self.low_dim_total_dim = 0
+        for shape in self.low_dim_shapes.values():
+            shape = tuple(shape)
+            dim = 1
+            for val in shape:
+                dim *= val
+            self.low_dim_total_dim += dim
         if self.use_imagined_robot:
             self.imagination_shape = observation_space[self.imagination_key]
         else:
             self.imagination_shape = None
 
         cprint(f"[DP3Encoder] point cloud shape: {self.point_cloud_shape}", "yellow")
-        cprint(f"[DP3Encoder] state shape: {self.state_shape}", "yellow")
+        cprint(f"[DP3Encoder] low-dim keys: {self.low_dim_keys}", "yellow")
+        cprint(f"[DP3Encoder] low-dim total dim: {self.low_dim_total_dim}", "yellow")
         cprint(f"[DP3Encoder] imagination point shape: {self.imagination_shape}", "yellow")
 
         self.use_pc_color = use_pc_color
@@ -235,16 +246,20 @@ class DP3Encoder(nn.Module):
         else:
             raise NotImplementedError(f"pointnet_type: {pointnet_type}")
 
-        if len(state_mlp_size) == 0:
-            raise RuntimeError(f"State mlp size is empty")
-        elif len(state_mlp_size) == 1:
-            net_arch = []
-        else:
-            net_arch = state_mlp_size[:-1]
-        output_dim = state_mlp_size[-1]
+        self.state_mlp = None
+        if self.low_dim_total_dim > 0:
+            if len(state_mlp_size) == 0:
+                raise RuntimeError("State mlp size is empty")
+            elif len(state_mlp_size) == 1:
+                net_arch = []
+            else:
+                net_arch = state_mlp_size[:-1]
+            output_dim = state_mlp_size[-1]
 
-        self.n_output_channels += output_dim
-        self.state_mlp = nn.Sequential(*create_mlp(self.state_shape[0], output_dim, net_arch, state_mlp_activation_fn))
+            self.n_output_channels += output_dim
+            self.state_mlp = nn.Sequential(
+                *create_mlp(self.low_dim_total_dim, output_dim, net_arch, state_mlp_activation_fn)
+            )
 
         cprint(f"[DP3Encoder] output dim: {self.n_output_channels}", "red")
 
@@ -259,9 +274,16 @@ class DP3Encoder(nn.Module):
         # points: B * 3 * (N + sum(Ni))
         pn_feat = self.extractor(points)  # B * out_channel
 
-        state = observations[self.state_key]
-        state_feat = self.state_mlp(state)  # B * 64
-        final_feat = torch.cat([pn_feat, state_feat], dim=-1)
+        feat_list = [pn_feat]
+        if self.state_mlp is not None:
+            low_dim_inputs = []
+            for key in self.low_dim_keys:
+                value = observations[key]
+                low_dim_inputs.append(value.reshape(value.shape[0], -1))
+            state = torch.cat(low_dim_inputs, dim=-1)
+            state_feat = self.state_mlp(state)
+            feat_list.append(state_feat)
+        final_feat = torch.cat(feat_list, dim=-1)
         return final_feat
 
     def output_shape(self):
