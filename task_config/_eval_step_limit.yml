@@ -12,7 +12,7 @@ lift_pot: 400
 move_can_pot: 400
 move_playingcard_away: 400
 move_stapler_pad: 400
-hanging_mug: 900
+hanging_mug: 500
 open_laptop: 700
 open_microwave: 1500
 pick_diverse_bottles: 400
