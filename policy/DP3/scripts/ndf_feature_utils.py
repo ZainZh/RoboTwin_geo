@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import warnings
 from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -101,13 +102,27 @@ def load_ndf_model(
         state = torch.load(checkpoint, map_location=device, weights_only=True)
     except TypeError:
         state = torch.load(checkpoint, map_location=device)
-    model.load_state_dict(state, strict=False)
+    incompatible = model.load_state_dict(state, strict=False)
+    missing_keys = list(getattr(incompatible, "missing_keys", []))
+    unexpected_keys = list(getattr(incompatible, "unexpected_keys", []))
+    if missing_keys or unexpected_keys:
+        warnings.warn(
+            "Loaded NDF checkpoint with non-strict key mismatch. "
+            f"checkpoint={checkpoint!r}, missing_keys={missing_keys[:8]}, "
+            f"unexpected_keys={unexpected_keys[:8]}",
+            RuntimeWarning,
+        )
     model.to(device)
     model.eval()
     return model
 
 
 def normalize_object_point_cloud(points: np.ndarray) -> np.ndarray:
+    points, _, _ = normalize_object_point_cloud_with_transform(points)
+    return points
+
+
+def normalize_object_point_cloud_with_transform(points: np.ndarray) -> Tuple[np.ndarray, np.ndarray, float]:
     points = np.asarray(points, dtype=np.float32)
     if points.ndim != 2 or points.shape[1] < 3:
         raise ValueError(f"Expected point cloud with shape (N, 3), got {points.shape}")
@@ -116,14 +131,16 @@ def normalize_object_point_cloud(points: np.ndarray) -> np.ndarray:
     if np.any(nonzero_mask):
         points = points[nonzero_mask]
     if len(points) == 0:
-        return np.zeros((1, 3), dtype=np.float32)
+        return np.zeros((1, 3), dtype=np.float32), np.zeros((3,), dtype=np.float32), 1.0
     center = points.mean(axis=0, keepdims=True).astype(np.float32)
     points = points - center
     extents = points.max(axis=0) - points.min(axis=0)
     scale = float(np.max(extents))
     if scale > 1e-6:
         points = points / scale
-    return points.astype(np.float32)
+    else:
+        scale = 1.0
+    return points.astype(np.float32), center.squeeze(0).astype(np.float32), float(scale)
 
 
 def farthest_point_sample(points: np.ndarray, target_num: int) -> np.ndarray:
@@ -421,6 +438,40 @@ def compute_ndf_feature(
     pooled_max = local_features.max(dim=1).values
     feat = 0.5 * (pooled_mean + pooled_max)
     return feat.squeeze(0).detach().cpu().numpy().astype(np.float32)
+
+
+@torch.no_grad()
+def compute_ndf_pointwise_cloud(
+    model: torch.nn.Module,
+    object_point_cloud: np.ndarray,
+    device: torch.device,
+    target_num_points: int,
+) -> np.ndarray:
+    point_cloud = np.asarray(object_point_cloud, dtype=np.float32)
+    if point_cloud.ndim != 2 or point_cloud.shape[1] < 3:
+        raise ValueError(f"Expected point cloud with shape (N, C>=3), got {point_cloud.shape}")
+
+    xyz = point_cloud[:, :3]
+    nonzero_mask = ~np.isclose(xyz, 0.0).all(axis=1)
+    xyz = xyz[nonzero_mask]
+    feature_dim = int(getattr(model, "latent_dim", 256))
+    if len(xyz) == 0:
+        return np.zeros((int(target_num_points), 3 + feature_dim), dtype=np.float32)
+
+    sampled_world_xyz = farthest_point_sample(xyz, int(target_num_points))
+    normalized_full_xyz, center, scale = normalize_object_point_cloud_with_transform(xyz)
+    normalized_sampled_xyz = (sampled_world_xyz - center[None, :]) / max(float(scale), 1e-6)
+
+    support_t = torch.from_numpy(normalized_full_xyz[None, ...]).float().to(device)
+    query_t = torch.from_numpy(normalized_sampled_xyz[None, ...]).float().to(device)
+    z = model.extract_latent({"point_cloud": support_t})
+    local_features = model.forward_latent(z, query_t)
+    if local_features.ndim != 3:
+        raise RuntimeError(
+            f"Expected local NDF features with shape [B, N, F], got {tuple(local_features.shape)}"
+        )
+    local_features = local_features.squeeze(0).detach().cpu().numpy().astype(np.float32)
+    return np.concatenate([sampled_world_xyz.astype(np.float32), local_features], axis=1)
 
 
 def summarize_modes(mode_counter: Counter) -> Dict[str, int]:

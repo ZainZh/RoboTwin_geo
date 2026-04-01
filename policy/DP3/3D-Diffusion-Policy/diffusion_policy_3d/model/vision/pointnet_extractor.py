@@ -206,16 +206,33 @@ class DP3Encoder(nn.Module):
     ):
         super().__init__()
         self.imagination_key = "imagin_robot"
-        self.point_cloud_key = "point_cloud"
         self.rgb_image_key = "image"
-        self.n_output_channels = out_channel
+        self.primary_point_cloud_key = "point_cloud"
+        self.n_output_channels = 0
 
         self.use_imagined_robot = self.imagination_key in observation_space.keys()
-        self.point_cloud_shape = observation_space[self.point_cloud_key]
-        self.low_dim_keys = [
-            key for key in observation_space.keys()
-            if key not in {self.imagination_key, self.point_cloud_key, self.rgb_image_key}
-        ]
+        point_cloud_keys = []
+        low_dim_keys = []
+        for key, shape in observation_space.items():
+            if key in {self.imagination_key, self.rgb_image_key}:
+                continue
+            shape = tuple(shape)
+            if len(shape) == 2:
+                point_cloud_keys.append(key)
+            elif len(shape) == 1:
+                low_dim_keys.append(key)
+
+        if self.primary_point_cloud_key in point_cloud_keys:
+            point_cloud_keys = [self.primary_point_cloud_key] + [
+                key for key in point_cloud_keys if key != self.primary_point_cloud_key
+            ]
+
+        if len(point_cloud_keys) == 0:
+            raise RuntimeError("DP3Encoder requires at least one point cloud observation key.")
+
+        self.point_cloud_keys = point_cloud_keys
+        self.point_cloud_shapes = {key: observation_space[key] for key in self.point_cloud_keys}
+        self.low_dim_keys = low_dim_keys
         self.low_dim_shapes = {key: observation_space[key] for key in self.low_dim_keys}
         self.low_dim_total_dim = 0
         for shape in self.low_dim_shapes.values():
@@ -229,22 +246,34 @@ class DP3Encoder(nn.Module):
         else:
             self.imagination_shape = None
 
-        cprint(f"[DP3Encoder] point cloud shape: {self.point_cloud_shape}", "yellow")
+        cprint(f"[DP3Encoder] point cloud keys: {self.point_cloud_keys}", "yellow")
+        cprint(f"[DP3Encoder] point cloud shapes: {self.point_cloud_shapes}", "yellow")
         cprint(f"[DP3Encoder] low-dim keys: {self.low_dim_keys}", "yellow")
         cprint(f"[DP3Encoder] low-dim total dim: {self.low_dim_total_dim}", "yellow")
         cprint(f"[DP3Encoder] imagination point shape: {self.imagination_shape}", "yellow")
 
         self.use_pc_color = use_pc_color
         self.pointnet_type = pointnet_type
-        if pointnet_type == "pointnet":
-            if use_pc_color:
-                pointcloud_encoder_cfg.in_channels = 6
-                self.extractor = PointNetEncoderXYZRGB(**pointcloud_encoder_cfg)
-            else:
-                pointcloud_encoder_cfg.in_channels = 3
-                self.extractor = PointNetEncoderXYZ(**pointcloud_encoder_cfg)
-        else:
+        self.point_cloud_channel_map = {}
+        self.extractors = nn.ModuleDict()
+        if pointnet_type != "pointnet":
             raise NotImplementedError(f"pointnet_type: {pointnet_type}")
+
+        for key in self.point_cloud_keys:
+            cfg = copy.deepcopy(pointcloud_encoder_cfg)
+            input_channels = int(tuple(self.point_cloud_shapes[key])[-1])
+            if key == self.primary_point_cloud_key and not use_pc_color and input_channels > 3:
+                effective_channels = 3
+            else:
+                effective_channels = input_channels
+            self.point_cloud_channel_map[key] = effective_channels
+            cfg.in_channels = effective_channels
+            if effective_channels == 3 and key == self.primary_point_cloud_key:
+                extractor = PointNetEncoderXYZ(**cfg)
+            else:
+                extractor = PointNetEncoderXYZRGB(**cfg)
+            self.extractors[key] = extractor
+            self.n_output_channels += out_channel
 
         self.state_mlp = None
         if self.low_dim_total_dim > 0:
@@ -264,17 +293,17 @@ class DP3Encoder(nn.Module):
         cprint(f"[DP3Encoder] output dim: {self.n_output_channels}", "red")
 
     def forward(self, observations: Dict) -> torch.Tensor:
-        points = observations[self.point_cloud_key]
-        assert len(points.shape) == 3, cprint(f"point cloud shape: {points.shape}, length should be 3", "red")
-        if self.use_imagined_robot:
-            img_points = observations[self.imagination_key][..., :points.shape[-1]]  # align the last dim
-            points = torch.concat([points, img_points], dim=1)
-
-        # points = torch.transpose(points, 1, 2)   # B * 3 * N
-        # points: B * 3 * (N + sum(Ni))
-        pn_feat = self.extractor(points)  # B * out_channel
-
-        feat_list = [pn_feat]
+        feat_list = []
+        for key in self.point_cloud_keys:
+            points = observations[key]
+            assert len(points.shape) == 3, cprint(f"point cloud shape: {points.shape}, length should be 3", "red")
+            if key == self.primary_point_cloud_key and self.use_imagined_robot:
+                img_points = observations[self.imagination_key][..., :points.shape[-1]]  # align the last dim
+                points = torch.concat([points, img_points], dim=1)
+            expected_channels = int(self.point_cloud_channel_map[key])
+            if points.shape[-1] != expected_channels:
+                points = points[..., :expected_channels]
+            feat_list.append(self.extractors[key](points))
         if self.state_mlp is not None:
             low_dim_inputs = []
             for key in self.low_dim_keys:
