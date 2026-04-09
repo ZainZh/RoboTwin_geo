@@ -16,6 +16,7 @@ from .utils import *
 import math
 from .robot import Robot
 from .camera import Camera
+from .object_pointcloud_targets import get_task_object_pointcloud_targets
 
 from copy import deepcopy
 import subprocess
@@ -104,6 +105,7 @@ class Base_Task(gym.Env):
         self.object_pointcloud_config = deepcopy(kwags.get("object_pointcloud", {}))
         self.object_pointcloud_targets = OrderedDict()
         self.object_pointcloud_actor_ids = OrderedDict()
+        self.object_pointcloud_target_source = None
 
         self.size_dict = list()
         self.cluttered_objs = list()
@@ -509,16 +511,35 @@ class Base_Task(gym.Env):
             )
         return actor_ids
 
+    def get_object_pointcloud_targets(self):
+        return None
+
+    def _get_object_pointcloud_target_specs(self):
+        target_specs = self.object_pointcloud_config.get("targets", {})
+        if isinstance(target_specs, dict) and len(target_specs) > 0:
+            return OrderedDict((str(key), value) for key, value in target_specs.items()), "task_config"
+
+        task_method_targets = self.get_object_pointcloud_targets()
+        if isinstance(task_method_targets, dict) and len(task_method_targets) > 0:
+            return OrderedDict((str(key), value) for key, value in task_method_targets.items()), "task_method"
+
+        registry_targets = get_task_object_pointcloud_targets(self.task_name)
+        if isinstance(registry_targets, dict) and len(registry_targets) > 0:
+            return OrderedDict((str(key), value) for key, value in registry_targets.items()), "task_registry"
+
+        raise ValueError(
+            "data_type.object_pointcloud is enabled, but no object_pointcloud target mapping was found. "
+            "Provide object_pointcloud.targets in the task config, override get_object_pointcloud_targets() "
+            f"in envs/{self.task_name}.py, or register defaults in envs/object_pointcloud_targets.py."
+        )
+
     def _configure_object_pointcloud_targets(self):
         if not self.data_type or not self.data_type.get("object_pointcloud", False):
             return
 
-        target_specs = self.object_pointcloud_config.get("targets", {})
-        if not isinstance(target_specs, dict) or len(target_specs) == 0:
-            raise ValueError(
-                "When data_type.object_pointcloud is enabled, object_pointcloud.targets must map placeholders "
-                "to task actor attribute paths."
-            )
+        target_specs, target_source = self._get_object_pointcloud_target_specs()
+        self.object_pointcloud_target_source = str(target_source)
+        self.object_pointcloud_config["targets"] = deepcopy(target_specs)
 
         for placeholder, attr_spec in target_specs.items():
             attr_paths = attr_spec if isinstance(attr_spec, (list, tuple)) else [attr_spec]
@@ -539,6 +560,7 @@ class Base_Task(gym.Env):
         self.info["object_pointcloud"] = {
             "combine": bool(self.object_pointcloud_config.get("combine", combine_scene_pointcloud)),
             "point_num": int(self.object_pointcloud_config.get("point_num", self.cameras.pcd_down_sample_num)),
+            "target_source": self.object_pointcloud_target_source,
             "targets": deepcopy(self.object_pointcloud_targets),
         }
 

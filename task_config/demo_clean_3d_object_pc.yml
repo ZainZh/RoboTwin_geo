@@ -34,11 +34,14 @@ data_type:
 object_pointcloud:
   combine: true
   point_num: 1024
-  targets:
-    "{A}": mug
-    # Examples:
-    "{B}": rack
-    # "{C}": bread[1]
+  # Optional. If omitted, RoboTwin will fall back to:
+  # 1. task override method `get_object_pointcloud_targets()`
+  # 2. task registry in `envs/object_pointcloud_targets.py`
+  #
+  # targets:
+  #   "{A}": mug
+  #   "{B}": rack
+  #   "{C}": bread[1]
 pcd_down_sample_num: 1024
 pcd_crop: true
 save_path: ./data

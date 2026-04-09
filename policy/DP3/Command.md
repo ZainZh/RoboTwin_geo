@@ -36,6 +36,13 @@ bash eval.sh hanging_mug demo_clean_3d_object_pc demo_clean_3d_object_pc 50 0 0
 ```
 pc+ndf
 ```
+bash eval_ndf_pointwise.sh  hanging_mug demo_clean_3d_object_pc 50 0 0     /home/zheng/train_results/Mug/checkpoints/model_current.pth "" cuda:0 "" "{A},{B}"
+
+
+```
+
+pc+ndf
+```
 bash eval_ndf.sh  hanging_mug demo_clean_3d_object_pc 50 0 0     /home/zheng/train_results/Mug/checkpoints/model_current.pth "" cuda:0 "" "{A},{B}"
 
 
