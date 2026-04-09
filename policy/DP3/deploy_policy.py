@@ -18,6 +18,7 @@ import yaml
 from datetime import datetime
 import importlib
 import dill
+import importlib.util
 
 from hydra import initialize, compose
 from omegaconf import OmegaConf
@@ -53,15 +54,75 @@ def get_semantic_utils():
     return compute_semantic_pointwise_cloud, load_semantic_model
 
 
+def get_sam3_utils():
+    from sam3_pointcloud_utils import (
+        SAM3ProjectiveTracker,
+        build_placeholder_prompt_map_from_targets,
+        extract_placeholder_point_cloud_sam3_online,
+        parse_camera_list,
+        parse_prompt_map,
+    )
+
+    return (
+        SAM3ProjectiveTracker,
+        build_placeholder_prompt_map_from_targets,
+        extract_placeholder_point_cloud_sam3_online,
+        parse_camera_list,
+        parse_prompt_map,
+    )
+
+
+def resolve_task_object_pointcloud_targets(task_name):
+    repo_root = pathlib.Path(parent_directory).parents[1]
+    registry_path = repo_root / "envs" / "object_pointcloud_targets.py"
+    if not registry_path.is_file():
+        return {}
+    spec = importlib.util.spec_from_file_location("robotwin_object_pointcloud_targets", registry_path)
+    if spec is None or spec.loader is None:
+        return {}
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    getter = getattr(module, "get_task_object_pointcloud_targets", None)
+    if getter is None or not callable(getter):
+        return {}
+    targets = getter(task_name)
+    return targets if isinstance(targets, dict) else {}
+
+
 def encode_obs(observation, model):  # Post-Process Observation
     obs = dict()
     obs['agent_pos'] = observation['joint_action']['vector']
     point_cloud = observation['pointcloud']
     object_pointcloud = observation.get('object_pointcloud', {})
+    use_sam3_objpc = bool(getattr(model, "use_sam3_objpc", False))
     use_ndf_pointwise = bool(getattr(model, "use_ndf_pointwise", False))
     use_semantic_pointwise = bool(getattr(model, "use_semantic_pointwise", False))
 
-    if getattr(model, "use_object_pointcloud", False) and len(object_pointcloud) > 0:
+    if use_sam3_objpc:
+        per_placeholder_clouds = []
+        frame_idx = int(getattr(model, "sam3_frame_idx", 0))
+        for placeholder in getattr(model, "object_placeholders", []):
+            object_pc, _ = model.sam3_extract_fn(
+                observation,
+                placeholder=placeholder,
+                prompt=getattr(model, "sam3_prompt_map", {}).get(placeholder, placeholder.strip("{}")),
+                camera_names=getattr(model, "sam3_camera_names", ["head_camera", "front_camera"]),
+                tracker=getattr(model, "sam3_tracker"),
+                tracking_state_by_camera=getattr(model, "sam3_tracking_state", {}).setdefault(placeholder, {}),
+                target_num_points=int(getattr(model, "target_num_points", 1024)),
+                target_extents=None,
+                min_mask_points=int(getattr(model, "sam3_min_mask_points", 16)),
+                text_refresh_every=int(getattr(model, "sam3_text_refresh_every", 15)),
+                frame_idx=frame_idx,
+            )
+            per_placeholder_clouds.append(object_pc)
+        point_cloud = merge_object_point_clouds(
+            per_placeholder_clouds,
+            target_num_points=int(getattr(model, "target_num_points", 1024)),
+        )
+        model.sam3_frame_idx = frame_idx + 1
+
+    elif getattr(model, "use_object_pointcloud", False) and len(object_pointcloud) > 0:
         placeholders = getattr(model, "object_placeholders", [])
         if use_ndf_pointwise or use_semantic_pointwise:
             feature_placeholders = set(getattr(model, "ndf_models", {}).keys()) | set(
@@ -235,9 +296,10 @@ def get_model(usr_args):
     cfg.raw_task_name = usr_args["task_name"]
     cfg.policy.use_pc_color = usr_args['use_rgb']
 
+    use_sam3_objpc = "objpc_sam3" in usr_args["config_name"]
     use_ndf_pointwise = "ndf_pointwise" in usr_args["config_name"]
     use_semantic_pointwise = "semantic_pointwise" in usr_args["config_name"]
-    use_object_pointcloud = ("objpc" in usr_args["config_name"]) or use_ndf_pointwise or use_semantic_pointwise
+    use_object_pointcloud = (("objpc" in usr_args["config_name"]) and not use_sam3_objpc) or use_ndf_pointwise or use_semantic_pointwise
     object_placeholders = parse_placeholder_list(usr_args.get("object_placeholders", "{A},{B}"))
     target_num_points = int(cfg.task.shape_meta.obs.point_cloud.shape[0])
     ndf_feat_dim = 256
@@ -253,6 +315,35 @@ def get_model(usr_args):
     checkpoint_use_ema = infer_checkpoint_use_ema(ckpt_file)
     if checkpoint_use_ema is not None:
         cfg.training.use_ema = bool(checkpoint_use_ema)
+    sam3_tracker = None
+    sam3_extract_fn = None
+    sam3_camera_names = []
+    sam3_prompt_map = {}
+    sam3_text_refresh_every = int(usr_args.get("sam3_text_refresh_every", 15))
+    sam3_min_mask_points = int(usr_args.get("sam3_min_mask_points", 16))
+
+    if use_sam3_objpc:
+        (
+            SAM3ProjectiveTracker,
+            build_placeholder_prompt_map_from_targets,
+            extract_placeholder_point_cloud_sam3_online,
+            parse_sam3_camera_list,
+            parse_sam3_prompt_map,
+        ) = get_sam3_utils()
+        sam3_tracker = SAM3ProjectiveTracker(
+            model_path=str(usr_args.get("sam3_model", "/home/zheng/Datasets/sam3/sam3.pt")),
+            conf=float(usr_args.get("sam3_conf", 0.50)),
+            verbose=False,
+        )
+        sam3_extract_fn = extract_placeholder_point_cloud_sam3_online
+        sam3_camera_names = parse_sam3_camera_list(usr_args.get("sam3_camera_names", "head_camera,front_camera"))
+        prompt_overrides = parse_sam3_prompt_map(usr_args.get("sam3_prompt_map", ""))
+        target_specs = resolve_task_object_pointcloud_targets(usr_args["task_name"])
+        sam3_prompt_map = build_placeholder_prompt_map_from_targets(
+            object_placeholders,
+            target_specs,
+            prompt_overrides=prompt_overrides,
+        )
 
     if use_semantic_pointwise:
         _, load_semantic_model = get_semantic_utils()
@@ -299,11 +390,23 @@ def get_model(usr_args):
     OmegaConf.set_struct(cfg, True)
 
     DP3_Model = DP3(cfg, usr_args)
+    DP3_Model.use_sam3_objpc = use_sam3_objpc
     DP3_Model.use_object_pointcloud = use_object_pointcloud
     DP3_Model.use_ndf_pointwise = use_ndf_pointwise
     DP3_Model.use_semantic_pointwise = use_semantic_pointwise
     DP3_Model.object_placeholders = object_placeholders
     DP3_Model.target_num_points = target_num_points
+    DP3_Model.sam3_tracker = sam3_tracker
+    DP3_Model.sam3_extract_fn = sam3_extract_fn
+    DP3_Model.sam3_camera_names = sam3_camera_names
+    DP3_Model.sam3_prompt_map = sam3_prompt_map
+    DP3_Model.sam3_text_refresh_every = sam3_text_refresh_every
+    DP3_Model.sam3_min_mask_points = sam3_min_mask_points
+    DP3_Model.sam3_tracking_state = {
+        placeholder: {}
+        for placeholder in object_placeholders
+    }
+    DP3_Model.sam3_frame_idx = 0
     DP3_Model.ndf_feat_dim = ndf_feat_dim
     DP3_Model.ndf_point_num_by_placeholder = {
         placeholder: ndf_point_num
@@ -352,3 +455,10 @@ def eval(TASK_ENV, model, observation):
 def reset_model(
         model):  # Clean the model cache at the beginning of every evaluation episode, such as the observation window
     model.env_runner.reset_obs()
+    if hasattr(model, "sam3_tracking_state"):
+        model.sam3_tracking_state = {
+            placeholder: {}
+            for placeholder in getattr(model, "object_placeholders", [])
+        }
+    if hasattr(model, "sam3_frame_idx"):
+        model.sam3_frame_idx = 0

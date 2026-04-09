@@ -12,6 +12,7 @@ import pdb
 import hydra
 import torch
 import dill
+from collections import OrderedDict
 from omegaconf import OmegaConf
 import pathlib
 
@@ -417,10 +418,31 @@ class TrainDP3Workspace:
 
         for key, value in payload["state_dicts"].items():
             if key not in exclude_keys:
+                if key in {"model", "ema_model"}:
+                    value = self._upgrade_legacy_model_state_dict(value)
                 self.__dict__[key].load_state_dict(value, **kwargs)
         for key in include_keys:
             if key in payload["pickles"]:
                 self.__dict__[key] = dill.loads(payload["pickles"][key])
+
+    @staticmethod
+    def _upgrade_legacy_model_state_dict(state_dict):
+        if not isinstance(state_dict, dict):
+            return state_dict
+
+        legacy_prefix = "obs_encoder.extractor."
+        new_prefix = "obs_encoder.extractors.point_cloud."
+        has_legacy = any(key.startswith(legacy_prefix) for key in state_dict.keys())
+        has_new = any(key.startswith(new_prefix) for key in state_dict.keys())
+        if not has_legacy or has_new:
+            return state_dict
+
+        upgraded = OrderedDict()
+        for key, value in state_dict.items():
+            if key.startswith(legacy_prefix):
+                key = key.replace(legacy_prefix, new_prefix, 1)
+            upgraded[key] = value
+        return upgraded
 
     def load_checkpoint(self, path=None, tag="latest", exclude_keys=None, include_keys=None, **kwargs):
         if path is None:

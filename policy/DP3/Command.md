@@ -26,7 +26,11 @@ bash train_semantic_pointwise.sh hanging_mug demo_clean_3d_object_pc 50 0 0 /hom
 ## Eval
 pc
 ```
-bash eval_objpc.sh hanging_mug demo_clean_3d_object_pc 50 0 0 "{A},{B}"
+bash eval_objpc.sh hanging_mug demo_clean_3d_object_pc demo_clean_3d_object_pc 50 0 0 "{A},{B}"
+
+bash eval_objpc.sh hanging_mug demo_randomized_3d_object_pc demo_clean_3d_object_pc 50 0 0 "{A},{B}"
+
+
 
 ```
 baseline
