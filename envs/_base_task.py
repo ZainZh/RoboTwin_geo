@@ -534,10 +534,22 @@ class Base_Task(gym.Env):
         )
 
     def _configure_object_pointcloud_targets(self):
-        if not self.data_type or not self.data_type.get("object_pointcloud", False):
+        if not self.data_type:
+            return
+        need_target_metadata = bool(
+            self.data_type.get("object_pointcloud", False)
+            or self.data_type.get("actor_segmentation", False)
+            or self.data_type.get("mesh_segmentation", False)
+        )
+        if not need_target_metadata:
             return
 
-        target_specs, target_source = self._get_object_pointcloud_target_specs()
+        try:
+            target_specs, target_source = self._get_object_pointcloud_target_specs()
+        except ValueError:
+            if not self.data_type.get("object_pointcloud", False):
+                return
+            raise
         self.object_pointcloud_target_source = str(target_source)
         self.object_pointcloud_config["targets"] = deepcopy(target_specs)
 

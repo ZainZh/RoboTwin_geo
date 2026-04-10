@@ -123,3 +123,70 @@
 
 ---
 *Update after completing each phase or encountering errors.*
+
+## Session: 2026-04-10
+
+### Phase 1: Requirements & Discovery
+- **Status:** in_progress
+- Actions taken:
+  - Restored planning context from the previous SAM-focused workstream.
+  - Captured the new task: replace SAM segmentation with simulator segmentation for fused object-PCD VLA training/eval and create matching bash scripts.
+  - Replaced `task_plan.md` with a new task-specific plan for the simulator-segmentation workstream.
+  - Confirmed the simulator already exposes `mesh_segmentation`, `actor_segmentation`, and direct `object_pointcloud` observations.
+  - Confirmed the current non-SAM `objpc` path already exists, but it is not the same as the requested “sim segmentation replaces SAM” fused multi-camera path.
+  - Verified that `mesh_segmentation` comes from `Segmentation[..., 0]` while `actor_segmentation` comes from `Segmentation[..., 1]`.
+  - Verified that oracle `object_pointcloud` extraction filters by actor ids from `Segmentation[..., 1]`, which makes `actor_segmentation` the closer match for placeholder-level object masks.
+  - Confirmed from `scene_info.json` that collected `*_object_pc` datasets already persist placeholder-to-actor-id mappings, which the new offline actor-segmentation preprocessing can reuse.
+  - Confirmed there is no currently collected local dataset with saved `actor_segmentation`, so verification will need synthetic tests plus a recollected smoke dataset.
+- Files created/modified:
+  - `task_plan.md` (replaced)
+  - `findings.md` (updated)
+  - `progress.md` (updated)
+
+### Phase 2: Design & Structure
+- **Status:** complete
+- Actions taken:
+  - Chose `actor_segmentation` as the canonical simulator segmentation source for the new fused object-PCD pipeline.
+  - Defined a separate `objpc_actorseg` train/eval path so it does not collide with the existing oracle `objpc` flow or the SAM3 flow.
+  - Decided to keep the segment-project-fuse structure and not shortcut to oracle `object_pointcloud`.
+  - Decided to reuse incremental replay-buffer writes for the new offline preprocessing path.
+- Files created/modified:
+  - `task_plan.md` (updated)
+  - `findings.md` (updated)
+  - `progress.md` (updated)
+
+### Phase 3: Implementation
+- **Status:** complete
+- Actions taken:
+  - Added `policy/DP3/scripts/actorseg_pointcloud_utils.py` for multi-camera actor-segmentation projection and fusion in both offline and online modes.
+  - Added `policy/DP3/scripts/process_data_objpc_actorseg.py` with resumable incremental zarr writing.
+  - Added `policy/DP3/process_data_objpc_actorseg.sh`, `policy/DP3/train_objpc_actorseg.sh`, and `policy/DP3/eval_objpc_actorseg.sh`.
+  - Added `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/robot_dp3_objpc_actorseg.yaml` and `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/task/demo_task_objpc_actorseg.yaml`.
+  - Added `task_config/demo_clean_3d_actorseg.yml` and `task_config/demo_randomized_3d_actorseg.yml` as actor-segmentation collection/eval templates.
+  - Extended `policy/DP3/deploy_policy.py` with an online `objpc_actorseg` branch and per-episode actor-id resolution.
+  - Updated `envs/_base_task.py` so actor-segmentation collection preserves placeholder target metadata in `scene_info.json` even without oracle object-pointcloud collection.
+  - Added `policy/DP3/scripts/test_actorseg_pointcloud_utils.py` as a synthetic unit-style test for the new projection logic.
+- Files created/modified:
+  - `envs/_base_task.py` (modified)
+  - `policy/DP3/deploy_policy.py` (modified)
+  - `policy/DP3/scripts/actorseg_pointcloud_utils.py` (created)
+  - `policy/DP3/scripts/process_data_objpc_actorseg.py` (created)
+  - `policy/DP3/scripts/test_actorseg_pointcloud_utils.py` (created)
+  - `policy/DP3/process_data_objpc_actorseg.sh` (created)
+  - `policy/DP3/train_objpc_actorseg.sh` (created)
+  - `policy/DP3/eval_objpc_actorseg.sh` (created)
+  - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/robot_dp3_objpc_actorseg.yaml` (created)
+  - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/task/demo_task_objpc_actorseg.yaml` (created)
+  - `task_config/demo_clean_3d_actorseg.yml` (created)
+  - `task_config/demo_randomized_3d_actorseg.yml` (created)
+
+### Phase 4: Testing & Verification
+- **Status:** in_progress
+- Actions taken:
+  - Verified shell syntax for all new actor-segmentation bash scripts.
+  - Verified Python compilation for the new actor-segmentation modules and the modified deploy/env files.
+  - Ran the synthetic `actorseg` projection unit test successfully.
+  - Ran a negative smoke test against the existing non-actorseg dataset and confirmed the new preprocessing path fails fast with a clear `missing_actor_segmentation` error.
+- Files created/modified:
+  - `findings.md` (updated)
+  - `progress.md` (updated)

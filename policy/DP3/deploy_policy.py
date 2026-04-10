@@ -72,6 +72,15 @@ def get_sam3_utils():
     )
 
 
+def get_actorseg_utils():
+    from actorseg_pointcloud_utils import (
+        extract_placeholder_point_cloud_actorseg_online,
+        parse_camera_list,
+    )
+
+    return extract_placeholder_point_cloud_actorseg_online, parse_camera_list
+
+
 def resolve_task_object_pointcloud_targets(task_name):
     repo_root = pathlib.Path(parent_directory).parents[1]
     registry_path = repo_root / "envs" / "object_pointcloud_targets.py"
@@ -89,16 +98,99 @@ def resolve_task_object_pointcloud_targets(task_name):
     return targets if isinstance(targets, dict) else {}
 
 
+def resolve_task_env_actor_ids(task_env, placeholders):
+    result = {}
+
+    info_targets = getattr(task_env, "info", {}).get("object_pointcloud", {}).get("targets", {})
+    if isinstance(info_targets, dict):
+        for placeholder in placeholders:
+            actor_ids = info_targets.get(placeholder, {}).get("actor_ids", [])
+            if len(actor_ids) > 0:
+                result[str(placeholder)] = [int(actor_id) for actor_id in actor_ids]
+
+    if len(result) == len(placeholders):
+        return result
+
+    object_pointcloud_targets = getattr(task_env, "object_pointcloud_targets", {})
+    if isinstance(object_pointcloud_targets, dict):
+        for placeholder in placeholders:
+            actor_ids = object_pointcloud_targets.get(placeholder, {}).get("actor_ids", [])
+            if len(actor_ids) > 0:
+                result[str(placeholder)] = [int(actor_id) for actor_id in actor_ids]
+
+    if len(result) == len(placeholders):
+        return result
+
+    cfg_targets = getattr(task_env, "object_pointcloud_config", {})
+    if isinstance(cfg_targets, dict):
+        cfg_targets = cfg_targets.get("targets", {})
+    else:
+        cfg_targets = {}
+    task_method_targets = {}
+    getter = getattr(task_env, "get_object_pointcloud_targets", None)
+    if getter is not None and callable(getter):
+        try:
+            task_method_targets = getter() or {}
+        except Exception:
+            task_method_targets = {}
+    registry_targets = resolve_task_object_pointcloud_targets(getattr(task_env, "task_name", None))
+    target_specs = cfg_targets or task_method_targets or registry_targets
+
+    resolve_attr = getattr(task_env, "_resolve_target_attr_path", None)
+    flatten_refs = getattr(task_env, "_flatten_target_refs", None)
+    resolve_actor_ids = getattr(task_env, "_resolve_target_actor_ids", None)
+    if not callable(resolve_attr) or not callable(flatten_refs) or not callable(resolve_actor_ids):
+        return result
+
+    for placeholder in placeholders:
+        if placeholder in result:
+            continue
+        attr_spec = target_specs.get(placeholder)
+        if attr_spec is None:
+            continue
+        attr_paths = attr_spec if isinstance(attr_spec, (list, tuple)) else [attr_spec]
+        resolved_targets = []
+        try:
+            for attr_path in attr_paths:
+                resolved_targets.extend(flatten_refs(resolve_attr(attr_path)))
+            actor_ids = resolve_actor_ids(resolved_targets)
+        except Exception:
+            continue
+        if len(actor_ids) > 0:
+            result[str(placeholder)] = [int(actor_id) for actor_id in actor_ids]
+
+    return result
+
+
 def encode_obs(observation, model):  # Post-Process Observation
     obs = dict()
     obs['agent_pos'] = observation['joint_action']['vector']
     point_cloud = observation['pointcloud']
     object_pointcloud = observation.get('object_pointcloud', {})
+    use_actorseg_objpc = bool(getattr(model, "use_actorseg_objpc", False))
     use_sam3_objpc = bool(getattr(model, "use_sam3_objpc", False))
     use_ndf_pointwise = bool(getattr(model, "use_ndf_pointwise", False))
     use_semantic_pointwise = bool(getattr(model, "use_semantic_pointwise", False))
 
-    if use_sam3_objpc:
+    if use_actorseg_objpc:
+        per_placeholder_clouds = []
+        for placeholder in getattr(model, "object_placeholders", []):
+            actor_ids = getattr(model, "actorseg_actor_ids_by_placeholder", {}).get(placeholder, [])
+            object_pc, _ = model.actorseg_extract_fn(
+                observation,
+                placeholder=placeholder,
+                actor_ids=actor_ids,
+                camera_names=getattr(model, "actorseg_camera_names", ["head_camera", "front_camera"]),
+                target_num_points=int(getattr(model, "target_num_points", 1024)),
+                segmentation_key=str(getattr(model, "actorseg_segmentation_key", "actor_segmentation")),
+            )
+            per_placeholder_clouds.append(object_pc)
+        point_cloud = merge_object_point_clouds(
+            per_placeholder_clouds,
+            target_num_points=int(getattr(model, "target_num_points", 1024)),
+        )
+
+    elif use_sam3_objpc:
         per_placeholder_clouds = []
         frame_idx = int(getattr(model, "sam3_frame_idx", 0))
         for placeholder in getattr(model, "object_placeholders", []):
@@ -296,10 +388,15 @@ def get_model(usr_args):
     cfg.raw_task_name = usr_args["task_name"]
     cfg.policy.use_pc_color = usr_args['use_rgb']
 
+    use_actorseg_objpc = "objpc_actorseg" in usr_args["config_name"]
     use_sam3_objpc = "objpc_sam3" in usr_args["config_name"]
     use_ndf_pointwise = "ndf_pointwise" in usr_args["config_name"]
     use_semantic_pointwise = "semantic_pointwise" in usr_args["config_name"]
-    use_object_pointcloud = (("objpc" in usr_args["config_name"]) and not use_sam3_objpc) or use_ndf_pointwise or use_semantic_pointwise
+    use_object_pointcloud = (
+        (("objpc" in usr_args["config_name"]) and not use_sam3_objpc and not use_actorseg_objpc)
+        or use_ndf_pointwise
+        or use_semantic_pointwise
+    )
     object_placeholders = parse_placeholder_list(usr_args.get("object_placeholders", "{A},{B}"))
     target_num_points = int(cfg.task.shape_meta.obs.point_cloud.shape[0])
     ndf_feat_dim = 256
@@ -315,12 +412,22 @@ def get_model(usr_args):
     checkpoint_use_ema = infer_checkpoint_use_ema(ckpt_file)
     if checkpoint_use_ema is not None:
         cfg.training.use_ema = bool(checkpoint_use_ema)
+    actorseg_extract_fn = None
+    actorseg_camera_names = []
+    actorseg_segmentation_key = "actor_segmentation"
     sam3_tracker = None
     sam3_extract_fn = None
     sam3_camera_names = []
     sam3_prompt_map = {}
     sam3_text_refresh_every = int(usr_args.get("sam3_text_refresh_every", 15))
     sam3_min_mask_points = int(usr_args.get("sam3_min_mask_points", 16))
+
+    if use_actorseg_objpc:
+        extract_placeholder_point_cloud_actorseg_online, parse_actorseg_camera_list = get_actorseg_utils()
+        actorseg_extract_fn = extract_placeholder_point_cloud_actorseg_online
+        actorseg_camera_names = parse_actorseg_camera_list(
+            usr_args.get("actorseg_camera_names", "head_camera,front_camera")
+        )
 
     if use_sam3_objpc:
         (
@@ -390,12 +497,20 @@ def get_model(usr_args):
     OmegaConf.set_struct(cfg, True)
 
     DP3_Model = DP3(cfg, usr_args)
+    DP3_Model.use_actorseg_objpc = use_actorseg_objpc
     DP3_Model.use_sam3_objpc = use_sam3_objpc
     DP3_Model.use_object_pointcloud = use_object_pointcloud
     DP3_Model.use_ndf_pointwise = use_ndf_pointwise
     DP3_Model.use_semantic_pointwise = use_semantic_pointwise
     DP3_Model.object_placeholders = object_placeholders
     DP3_Model.target_num_points = target_num_points
+    DP3_Model.actorseg_extract_fn = actorseg_extract_fn
+    DP3_Model.actorseg_camera_names = actorseg_camera_names
+    DP3_Model.actorseg_segmentation_key = actorseg_segmentation_key
+    DP3_Model.actorseg_actor_ids_by_placeholder = {
+        placeholder: []
+        for placeholder in object_placeholders
+    }
     DP3_Model.sam3_tracker = sam3_tracker
     DP3_Model.sam3_extract_fn = sam3_extract_fn
     DP3_Model.sam3_camera_names = sam3_camera_names
@@ -435,6 +550,26 @@ def get_model(usr_args):
 
 
 def eval(TASK_ENV, model, observation):
+    if getattr(model, "use_actorseg_objpc", False):
+        camera_obs = observation.get("observation", {})
+        missing = []
+        for camera_name in getattr(model, "actorseg_camera_names", []):
+            camera_info = camera_obs.get(camera_name)
+            if camera_info is None:
+                missing.append(f"{camera_name}:missing_camera")
+                continue
+            if getattr(model, "actorseg_segmentation_key", "actor_segmentation") not in camera_info:
+                missing.append(f"{camera_name}:missing_{getattr(model, 'actorseg_segmentation_key', 'actor_segmentation')}")
+        if missing:
+            raise RuntimeError(
+                "Actor-segmentation eval requires the selected cameras to expose simulator segmentation in the "
+                f"observation, but missing entries were found: {', '.join(missing)}"
+            )
+        resolved_actor_ids = resolve_task_env_actor_ids(TASK_ENV, getattr(model, "object_placeholders", []))
+        if len(resolved_actor_ids) > 0:
+            for placeholder in getattr(model, "object_placeholders", []):
+                model.actorseg_actor_ids_by_placeholder[placeholder] = list(resolved_actor_ids.get(placeholder, []))
+
     obs = encode_obs(observation, model)  # Post-Process Observation
     # instruction = TASK_ENV.get_instruction()
 
@@ -455,6 +590,11 @@ def eval(TASK_ENV, model, observation):
 def reset_model(
         model):  # Clean the model cache at the beginning of every evaluation episode, such as the observation window
     model.env_runner.reset_obs()
+    if hasattr(model, "actorseg_actor_ids_by_placeholder"):
+        model.actorseg_actor_ids_by_placeholder = {
+            placeholder: []
+            for placeholder in getattr(model, "object_placeholders", [])
+        }
     if hasattr(model, "sam3_tracking_state"):
         model.sam3_tracking_state = {
             placeholder: {}

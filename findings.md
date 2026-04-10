@@ -7,6 +7,7 @@
 - Current repository goal: evaluate whether the 3D representation method improves VLA task success rate, with edits mainly under `policy/DP3`.
 - Current near-term task: check whether `policy/DP3/train_objpc_sam3.sh` can work and estimate how much time is needed to fuse object PCDs for one frame using the segment-and-project path.
 - Longer-term direction: improve NDF and semantic training separately, then integrate them together and compare against baseline.
+- New task on 2026-04-10: replace SAM-based segmentation with simulator-provided segmentation to build fused object point clouds for DP3 VLA training and evaluation, and add matching train/eval bash scripts.
 
 ## Research Findings
 - No existing `task_plan.md`, `findings.md`, or `progress.md` were present in the repository root at initialization.
@@ -73,6 +74,35 @@
 - `sam3_pointcloud_utils.py` projects the full 3D scene point cloud into mask pixels using the stored `intrinsic_cv`/`extrinsic_cv` matrices and the mask image size; lower RGB resolution therefore directly reduces mask detail and the number/stability of points selected for the object cloud, especially for small or thin structures.
 - Raising RGB resolution should help SAM-based segmentation and 3D selection quality, but the benefit is on the segment-and-project stage, not on the DP3 policy directly. If eval also uses online SAM, the eval environment resolution needs to be raised too; improving only the offline training demos will not fix low-resolution online eval masks.
 - Because `Large_D435` is `640x480`, moving from `320x240` to `640x480` increases input pixels by 4x, so SAM runtime and storage/render cost will rise substantially. A small A/B pilot before recollecting the full dataset is the pragmatic next step.
+- The simulator already exposes two segmentation sources through `envs/_base_task.py`: `mesh_segmentation` and `actor_segmentation`.
+- The simulator also already exposes direct per-placeholder oracle object point clouds through `observation["object_pointcloud"]` when `data_type.object_pointcloud=true`.
+- Existing non-SAM training and eval entrypoints already exist:
+- `policy/DP3/train_objpc.sh`
+- `policy/DP3/eval_objpc.sh`
+- Existing online eval logic in `policy/DP3/deploy_policy.py` already prefers `observation["object_pointcloud"]` when `use_object_pointcloud` is enabled and `use_sam3_objpc` is false.
+- Existing offline fallback logic in `policy/DP3/scripts/object_pointcloud_utils.py` can derive object point clouds from simulator segmentation, but it currently only loads `head_camera` segmentation from the dataset and does not implement the newer SAM-style multi-camera fused path.
+- `envs/camera/camera.py` returns segmentation as a colorized image derived from the simulator's `Segmentation` buffer:
+- channel 0 for mesh-level labels
+- channel 1 for actor-level labels
+- `mesh_segmentation` and `actor_segmentation` are not equivalent in this repo:
+- `mesh_segmentation` uses `Segmentation[..., 0]` and corresponds to visual-shape / mesh-level labels.
+- `actor_segmentation` uses `Segmentation[..., 1]` and corresponds to actor/entity-level labels, which is the closer match to per-object instance masks.
+- Current simulator segmentation export colorizes the label map for storage/visualization instead of preserving raw integer ids; for a robust placeholder-specific projection path, using raw actor ids internally would be preferable to reusing the colorized output as the canonical representation.
+- The oracle `object_pointcloud` path filters camera point clouds directly by actor ids using `Segmentation[..., 1]`, so it is naturally aligned with `actor_segmentation`, not `mesh_segmentation`.
+- Collected `scene_info.json` files for `*_object_pc` datasets already contain placeholder-to-actor-id mappings under `episode_k.object_pointcloud.targets.{placeholder}.actor_ids`; this is sufficient to drive offline actor-segmentation projection without using stored oracle point clouds.
+- There is currently no local dataset under `data/` that already contains saved `actor_segmentation` or `mesh_segmentation` frames, so end-to-end validation of the new pipeline will require recollecting a small dataset or enabling segmentation in an eval task config.
+- Implemented a new `objpc_actorseg` pipeline:
+- offline utility: `policy/DP3/scripts/actorseg_pointcloud_utils.py`
+- offline preprocessing: `policy/DP3/scripts/process_data_objpc_actorseg.py`
+- shell entrypoints: `policy/DP3/process_data_objpc_actorseg.sh`, `policy/DP3/train_objpc_actorseg.sh`, `policy/DP3/eval_objpc_actorseg.sh`
+- Hydra configs: `robot_dp3_objpc_actorseg.yaml`, `demo_task_objpc_actorseg.yaml`
+- collection/eval task config templates: `task_config/demo_clean_3d_actorseg.yml`, `task_config/demo_randomized_3d_actorseg.yml`
+- Online eval support for the new pipeline is now wired into `policy/DP3/deploy_policy.py` via a dedicated `use_actorseg_objpc` branch.
+- `envs/_base_task.py` now preserves object-target metadata when `actor_segmentation` or `mesh_segmentation` is enabled, even if `data_type.object_pointcloud` is false; this is intended so actor-segmentation datasets can still save placeholder->actor_ids in `scene_info.json` without storing per-frame oracle object point clouds.
+- The new offline actor-segmentation preprocessing path is fail-fast: if the requested cameras do not contain saved `actor_segmentation`, it raises an explicit error instead of silently generating zero point clouds.
+- Negative verification against the existing `demo_clean_3d_object_pc` dataset confirmed this guard works as intended: preprocessing aborts with `missing_actor_segmentation` for `head_camera` and `front_camera`.
+- The new actor-segmentation extraction path uses the stored colorized segmentation images and placeholder actor ids to select projected scene points. This mirrors the SAM segment-project-fuse structure, but depends on the current color-palette encoding of simulator labels.
+- For the new requested work, the likely cleanest replacement for SAM is not direct `object_pointcloud`, but a new fused multi-camera simulator-segmentation projection path that mirrors the structure of the SAM3 pipeline while removing the learned 2D segmenter.
 
 ## Technical Decisions
 | Decision | Rationale |
@@ -85,6 +115,7 @@
 | Prefer fixing the warning at the predictor configuration layer | This removes the spam without hiding potentially useful warnings from other parts of the pipeline |
 | Replace all-at-end writes with per-episode replay-buffer appends | The user explicitly wants already-computed episodes persisted and visible during long SAM3 preprocessing runs |
 | Treat SAM3 video tracking as a per-sequence tool, not a drop-in endless-stream API | The installed Ultralytics implementation requires `dataset.mode == "video"` and initializes state against a fixed `num_frames` |
+| Treat the new request as “replace the 2D segmenter, keep the segment-project-fuse idea” unless the user explicitly asks to switch to oracle `object_pointcloud` | The user explicitly asked to use simulator segmentation instead of SAM, not to bypass segmentation entirely |
 
 ## Issues Encountered
 | Issue | Resolution |

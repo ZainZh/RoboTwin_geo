@@ -1,71 +1,68 @@
-# Task Plan: Validate DP3 SAM3 Object-PCD Training Path
+# Task Plan: Replace SAM With Sim Segmentation For Fused Object-PCD VLA Train/Eval
 
 ## Goal
-Determine whether `policy/DP3/train_objpc_sam3.sh` can run correctly in the current repository, identify any blockers in its preprocessing or training path, and estimate the per-frame time needed to fuse object point clouds when using the SAM3 segment-and-project pipeline.
+Use simulator-provided segmentation instead of SAM-based segmentation to build fused object point clouds for DP3 VLA training and evaluation, and provide matching train/eval bash entrypoints for the new pipeline.
 
 ## Current Phase
-Phase 5
+Phase 4
 
 ## Phases
 
 ### Phase 1: Requirements & Discovery
-- [x] Confirm planning workflow is requested
-- [x] Check whether planning files already exist
-- [x] Record initialization findings in `findings.md`
-- [x] Capture the concrete user task to execute next
-- [x] Trace `train_objpc_sam3.sh` dependencies and runtime assumptions
-- [x] Identify the object-PCD fusion implementation and available benchmark path
+- [x] Restore planning context from the previous session
+- [x] Confirm the new task to execute
+- [x] Identify existing train/eval/object-PCD code paths relevant to simulator segmentation
+- [x] Confirm which simulator segmentation source should define the new pipeline contract
 - **Status:** complete
 
-### Phase 2: Planning & Structure
-- [x] Define how to validate the shell script without launching a full training run
-- [x] Define how to measure or approximate per-frame object-PCD fusion cost
-- [x] Record decisions and rationale
+### Phase 2: Design & Structure
+- [x] Compare implementation approaches for replacing SAM with simulator segmentation
+- [x] Define the fused object-PCD generation path for offline preprocessing
+- [x] Define the online eval observation path
+- [x] Define bash/config entrypoints and naming
 - **Status:** complete
 
 ### Phase 3: Implementation
-- [x] Run syntax and dependency checks on the training/preprocessing path
-- [x] Execute targeted dry-run or benchmark commands where feasible
-- [x] Patch issues if a clear root cause is found
+- [x] Implement simulator-segmentation fused object-PCD extraction utilities
+- [x] Add or adapt preprocessing scripts for train-time zarr generation
+- [x] Add or adapt eval-time online observation processing
+- [x] Create train/eval bash scripts for the new pipeline
 - **Status:** complete
 
 ### Phase 4: Testing & Verification
-- [x] Verify script/config references resolve correctly
-- [x] Record benchmark or timing evidence for fusion cost
-- [x] Confirm remaining risks and untested assumptions
-- **Status:** complete
-
-### Phase 5: Delivery
-- [ ] Review outputs and remaining risks
-- [ ] Summarize changes and verification
-- [ ] Deliver results to the user
+- [x] Run syntax and compile checks
+- [x] Run a targeted preprocessing dry-run
+- [ ] Run a targeted eval dry-run or smoke test
+- [ ] Confirm remaining risks and unsupported cases
 - **Status:** in_progress
 
+### Phase 5: Delivery
+- [ ] Summarize the design, implementation, and verification
+- [ ] Call out follow-up work for NDF/semantic integration
+- **Status:** pending
+
 ## Key Questions
-1. Does `policy/DP3/train_objpc_sam3.sh` invoke valid preprocessing and training targets with the current repo layout?
-2. What runtime dependencies or missing assets can still prevent the script from completing?
-3. Where is per-frame SAM3 object-PCD fusion performed, and what evidence can be gathered for its runtime cost?
+1. Should the new pipeline use simulator `actor_segmentation` or `mesh_segmentation` as the canonical segmentation source?
+2. Should the train and eval paths both use fused multi-camera segmentation-project logic, or should one side continue to use existing oracle `object_pointcloud` data?
+3. What script/config naming keeps the new path distinct from existing `objpc` and `objpc_sam3` flows?
 
 ## Decisions Made
 | Decision | Rationale |
 |----------|-----------|
-| Initialize planning files in the project root | Matches the `planning-with-files` workflow and keeps state local to the repo |
-| Keep external or untrusted content out of `task_plan.md` | The skill warns that `task_plan.md` is high-sensitivity because it is repeatedly re-read |
-| Investigate the SAM3 training path before changing code | The user first asked whether the current script can work, which requires root-cause-oriented validation instead of speculative edits |
-| Use the dedicated SAM3 benchmark as the runtime probe | It exercises the same segment-and-project extraction core without paying the cost of a full DP3 training run |
-| Make the SAM3 shell entrypoints self-locating | The original scripts were fragile because they silently depended on being launched from `policy/DP3` |
+| Continue using `planning-with-files` for this new workstream | The user explicitly requested it for a multi-step code change |
+| Treat this as a new task rather than extending the old SAM-only investigation plan | The objective has changed from validating SAM to replacing it with simulator segmentation |
+| Preserve the prior session details in `findings.md` and `progress.md` | The old investigation still informs the new design and should remain available for reference |
+| Use `actor_segmentation` as the simulator segmentation source for the new fused object-PCD pipeline | It matches actor/entity instances and aligns with the existing oracle `object_pointcloud` actor-id filtering path |
+| Add a distinct `objpc_actorseg` pipeline instead of overloading the existing `objpc` flow | The existing `objpc` name is already associated with oracle object point clouds and older single-camera segmentation fallback behavior |
+| Reuse incremental replay-buffer writing for the new offline preprocessing path | This preserves partial progress during preprocessing and matches the improved SAM3 pipeline robustness |
 
 ## Errors Encountered
 | Error | Attempt | Resolution |
 |-------|---------|------------|
-| None so far | 0 | N/A |
-| `NameError: name 'Path' is not defined` in `sam3_pointcloud_utils.py` | 1 | Added the missing `from pathlib import Path` import |
-| `ModuleNotFoundError: No module named 'ftfy'` during SAM3 model load | 1 | Installed `ftfy` into the active `RoboTwin` environment |
-| `TypeError: 'SimpleTokenizer' object is not callable` in Ultralytics SAM3 text encoder | 1 | Added a compatibility shim for the local CLIP tokenizer |
-| `AssertionError` on bbox prompt shape `[1, 6]` | 1 | Normalized cached SAM3 boxes to XYXY (4 values) |
+| `task_plan.md` from the previous task no longer matched the new workstream | 1 | Replaced it with a task-specific plan for simulator segmentation |
 
 ## Notes
 - Re-read this file before major decisions.
 - Write discoveries to `findings.md`.
 - Log work and verification in `progress.md`.
-- Add new phases if the task grows beyond the current scaffold.
+- Keep untrusted external content out of this file.
