@@ -12,17 +12,17 @@ ndf_dgcnn_placeholders=${9:-}
 object_placeholders=${10:-\{A\},\{B\}}
 ndf_point_num=${11:-128}
 
-if [ ! -d "./data/${task_name}-${task_config}-${expert_data_num}-objpc-ndf-pointwise.zarr" ]; then
-    bash process_data_ndf_pointwise.sh "${task_name}" "${task_config}" "${expert_data_num}" "${ndf_ckpt_A}" "${ndf_ckpt_B}" "${ndf_device}" "${ndf_dgcnn_placeholders}" "${object_placeholders}" "${ndf_point_num}"
+if [ ! -d "./data/${task_name}-${task_config}-${expert_data_num}-objpc-ndf-pointwise-hybrid.zarr" ]; then
+    bash process_data_ndf_pointwise_hybrid.sh "${task_name}" "${task_config}" "${expert_data_num}" "${ndf_ckpt_A}" "${ndf_ckpt_B}" "${ndf_device}" "${ndf_dgcnn_placeholders}" "${object_placeholders}" "${ndf_point_num}"
 fi
 
 DEBUG=False
 save_ckpt=True
 wandb_mode=online
-train_setting="${task_config}-objpc-ndf-pointwise"
-exp_name="${task_name}-robot_dp3_ndf_pointwise-train_ndf"
+train_setting="${task_config}-objpc-ndf-pointwise-hybrid"
+exp_name="${task_name}-robot_dp3_ndf_pointwise_hybrid-train_ndf"
 run_dir="data/outputs/${exp_name}_seed${seed}"
-zarr_path="../../../data/${task_name}-${task_config}-${expert_data_num}-objpc-ndf-pointwise.zarr"
+zarr_path="../../../data/${task_name}-${task_config}-${expert_data_num}-objpc-ndf-pointwise-hybrid.zarr"
 
 dataset_extra_keys=()
 shape_overrides=()
@@ -47,7 +47,7 @@ cd 3D-Diffusion-Policy
 
 export HYDRA_FULL_ERROR=1
 export CUDA_VISIBLE_DEVICES=${gpu_id}
-python train_dp3.py --config-name=robot_dp3_ndf_pointwise.yaml \
+python train_dp3.py --config-name=robot_dp3_ndf_pointwise_hybrid.yaml \
     task_name=${task_name} \
     hydra.run.dir=${run_dir} \
     training.debug=${DEBUG} \

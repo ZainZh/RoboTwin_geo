@@ -190,3 +190,131 @@
 - Files created/modified:
   - `findings.md` (updated)
   - `progress.md` (updated)
+
+## Session: 2026-04-10 (NDF Investigation)
+
+### Phase 1: Experiment Surface Audit
+- **Status:** complete
+- Actions taken:
+  - Restored planning context and switched the task plan from actor-segmentation implementation to NDF underperformance diagnosis.
+  - Inspected `train_objpc.sh`, `train_ndf_pointwise.sh`, `train_semantic_pointwise.sh` and the matching eval scripts.
+  - Compared `robot_dp3_objpc.yaml`, `robot_dp3_ndf_pointwise.yaml`, `robot_dp3_semantic_pointwise.yaml` and the matching task configs.
+  - Traced the runtime observation path in `policy/DP3/deploy_policy.py`.
+  - Confirmed that `semantic_pointwise` uses a different default training recipe (`use_ema=false`, `batch_size=110`) from `objpc` and `ndf_pointwise`.
+- Files created/modified:
+  - `task_plan.md` (replaced)
+  - `findings.md` (updated)
+  - `progress.md` (updated)
+
+### Phase 2: Representation Path Comparison
+- **Status:** complete
+- Actions taken:
+  - Inspected `process_data_ndf_pointwise.py`, `process_data_semantic_pointwise.py`, `ndf_feature_utils.py`, `semantic_feature_utils.py`, `object_pointcloud_utils.py`, `robot_dataset.py`, and `pointnet_extractor.py`.
+  - Confirmed that both pointwise variants remove feature placeholders from the primary `point_cloud` and instead inject a second point-cloud branch for the feature placeholder.
+  - Confirmed that baseline `objpc` and pointwise variants therefore do not share the same observation factorization or encoder structure.
+  - Confirmed that NDF / semantic extra point-cloud branches are both encoded by the generic `PointNetEncoderXYZRGB` branch inside `DP3Encoder`.
+- Files created/modified:
+  - `findings.md` (updated)
+  - `progress.md` (updated)
+
+### Phase 3: Evidence Gathering
+- **Status:** complete
+- Actions taken:
+  - Read the saved Hydra overrides for the existing local `objpc`, `ndf_pointwise`, and `semantic_pointwise` training runs.
+  - Verified from the saved pointwise metadata that only `{A}` was augmented in both NDF and semantic experiments.
+  - Verified from the saved zarr stores that all three variants have 50 episodes and aligned episode boundaries.
+  - Verified from the saved metadata that the training artifacts span 9 mug instances from the same `039_mug` family.
+  - Confirmed from `envs/hanging_mug.py` that eval samples from the same 10-instance mug family, so the current setup is not a strong novel-object benchmark.
+  - Confirmed from `deploy_policy.yml` and `eval_policy.py` that `instruction_type: unseen` refers to unseen language instructions, not unseen objects.
+  - Found a forwarding bug in `train_ndf_pointwise.sh`: `${ndf_dgcnn_/placeholders}` instead of `${ndf_dgcnn_placeholders}`.
+  - Checked NDF checkpoint compatibility and confirmed:
+    - `model_current.pth` matches the pointcloud backbone (`dgcnn=False`)
+    - `model_best.pth` matches the DGCNN backbone (`dgcnn=True`)
+  - Confirmed the current command examples use `model_current.pth` and do not request DGCNN.
+  - Computed rough on-disk feature probes showing semantic features are much more temporally stable than the current NDF features.
+  - Confirmed the current raw `data/hanging_mug/demo_clean_3d_object_pc` folder no longer matches the full source dataset used to build the 50-episode DP3 artifacts.
+- Files created/modified:
+  - `findings.md` (updated)
+  - `progress.md` (updated)
+
+### Phase 4: Root-Cause Synthesis
+- **Status:** in_progress
+- Actions taken:
+  - Explained that the `ndf_dgcnn_placeholders` forwarding bug is real but irrelevant to the user's current pointnet-backed NDF runs when the argument is intentionally empty.
+  - Fixed `policy/DP3/train_ndf_pointwise.sh` so DGCNN placeholder forwarding now works for future runs.
+  - Restored `policy/DP3/train_semantic_pointwise.sh` defaults to a fairer base-DP3 recipe: `batch_size=256`, `val_batch_size=batch_size`, `use_ema=true`.
+  - Verified both modified scripts with `bash -n`.
+  - Synthesized the ranked diagnosis: current NDF underperformance is most likely caused by the integration path and only secondarily by the benchmark design; there is not enough evidence to conclude the NDF representation itself is useless.
+  - Incorporated the user's additional evidence that the already-tested global-NDF path (`train_ndf.sh`) severely hurt mug approach behavior, which strengthens the diagnosis that pose-invariant global NDF descriptors are a poor direct drop-in conditioning signal for this DP3 setup.
+- Files created/modified:
+  - `policy/DP3/train_ndf_pointwise.sh` (modified)
+  - `policy/DP3/train_semantic_pointwise.sh` (modified)
+  - `findings.md` (updated)
+  - `progress.md` (updated)
+
+## Session: 2026-04-11 (NDF Hybrid Implementation)
+
+### Phase 1: Design Confirmation
+- **Status:** complete
+- Actions taken:
+  - Confirmed with the user that the correct next experiment is a separate `ndf_pointwise_hybrid` path.
+  - Wrote and committed the design spec `docs/superpowers/specs/2026-04-11-ndf-pointwise-hybrid-design.md`.
+  - Waited for and received user approval before implementation.
+- Files created/modified:
+  - `docs/superpowers/specs/2026-04-11-ndf-pointwise-hybrid-design.md` (created and committed)
+
+### Phase 2: TDD Red Step
+- **Status:** complete
+- Actions taken:
+  - Added `policy/DP3/scripts/test_ndf_pointwise_hybrid.py`.
+  - Verified the new test failed in the intended way: `ndf_pointwise_hybrid` still produced a main `point_cloud` containing only `{B}` instead of `{A}+{B}`.
+- Files created/modified:
+  - `policy/DP3/scripts/test_ndf_pointwise_hybrid.py` (created)
+
+### Phase 3: Implementation
+- **Status:** complete
+- Actions taken:
+  - Added `policy/DP3/scripts/pointwise_context_utils.py` to centralize context-cloud construction.
+  - Extended `policy/DP3/scripts/process_data_ndf_pointwise.py` with `--keep_feature_placeholders_in_context`.
+  - Added `policy/DP3/scripts/process_data_ndf_pointwise_hybrid.py` as a thin wrapper for the new suffix and context behavior.
+  - Added `policy/DP3/process_data_ndf_pointwise_hybrid.sh`, `policy/DP3/train_ndf_pointwise_hybrid.sh`, and `policy/DP3/eval_ndf_pointwise_hybrid.sh`.
+  - Added `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/robot_dp3_ndf_pointwise_hybrid.yaml`.
+  - Added `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/task/demo_task_ndf_pointwise_hybrid.yaml`.
+  - Updated `policy/DP3/deploy_policy.py` so runtime hybrid eval keeps raw `{A}` in the main `point_cloud` while still adding `ndf_point_cloud_A/B`.
+  - Updated `policy/DP3/Command.md` with train/eval examples for the hybrid path.
+- Files created/modified:
+  - `policy/DP3/scripts/pointwise_context_utils.py` (created)
+  - `policy/DP3/scripts/process_data_ndf_pointwise.py` (modified)
+  - `policy/DP3/scripts/process_data_ndf_pointwise_hybrid.py` (created)
+  - `policy/DP3/process_data_ndf_pointwise_hybrid.sh` (created)
+  - `policy/DP3/train_ndf_pointwise_hybrid.sh` (created)
+  - `policy/DP3/eval_ndf_pointwise_hybrid.sh` (created)
+  - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/robot_dp3_ndf_pointwise_hybrid.yaml` (created)
+  - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/task/demo_task_ndf_pointwise_hybrid.yaml` (created)
+  - `policy/DP3/deploy_policy.py` (modified)
+  - `policy/DP3/Command.md` (modified)
+
+### Phase 4: Verification
+- **Status:** complete
+- Actions taken:
+  - Re-ran `policy/DP3/scripts/test_ndf_pointwise_hybrid.py` and confirmed the red test turned green.
+  - Verified Python syntax with `python -m py_compile` on the changed Python files.
+  - Verified shell syntax with `bash -n` on all three new hybrid shell scripts.
+  - Updated `task_plan.md`, `findings.md`, and `progress.md` to reflect the completed implementation.
+- Files created/modified:
+  - `task_plan.md` (updated)
+  - `findings.md` (updated)
+  - `progress.md` (updated)
+
+### Phase 5: Post-Implementation Bugfix
+- **Status:** complete
+- Actions taken:
+  - Reproduced the user's first real-run failure in `process_data_ndf_pointwise_hybrid.py`: `argparse` rejected `--output_suffix` because the forwarded suffix value started with `-`.
+  - Added a failing regression test for wrapper argv construction in `policy/DP3/scripts/test_ndf_pointwise_hybrid.py`.
+  - Fixed the wrapper by introducing `build_hybrid_argv(...)` and forwarding `--output_suffix=-objpc-ndf-pointwise-hybrid` as a single attached option.
+  - Re-ran the regression test and `py_compile`, and checked `--help` on the wrapper entrypoint.
+- Files created/modified:
+  - `policy/DP3/scripts/process_data_ndf_pointwise_hybrid.py` (modified)
+  - `policy/DP3/scripts/test_ndf_pointwise_hybrid.py` (modified)
+  - `findings.md` (updated)
+  - `progress.md` (updated)

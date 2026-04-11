@@ -33,6 +33,7 @@ sys.path.append(os.path.join(parent_directory, 'scripts'))
 from dp3_policy import *
 from ndf_feature_utils import compute_ndf_feature, compute_ndf_pointwise_cloud, load_ndf_model
 from object_pointcloud_utils import merge_object_point_clouds, parse_placeholder_list
+from pointwise_context_utils import build_context_point_cloud
 
 
 def placeholder_feature_key(placeholder: str) -> str:
@@ -170,6 +171,7 @@ def encode_obs(observation, model):  # Post-Process Observation
     use_actorseg_objpc = bool(getattr(model, "use_actorseg_objpc", False))
     use_sam3_objpc = bool(getattr(model, "use_sam3_objpc", False))
     use_ndf_pointwise = bool(getattr(model, "use_ndf_pointwise", False))
+    use_ndf_pointwise_hybrid = bool(getattr(model, "use_ndf_pointwise_hybrid", False))
     use_semantic_pointwise = bool(getattr(model, "use_semantic_pointwise", False))
 
     if use_actorseg_objpc:
@@ -220,18 +222,13 @@ def encode_obs(observation, model):  # Post-Process Observation
             feature_placeholders = set(getattr(model, "ndf_models", {}).keys()) | set(
                 getattr(model, "semantic_models", {}).keys()
             )
-            context_clouds = [
-                object_pointcloud[key]
-                for key in placeholders
-                if key in object_pointcloud and key not in feature_placeholders
-            ]
-            if len(context_clouds) > 0:
-                point_cloud = merge_object_point_clouds(
-                    context_clouds,
-                    target_num_points=int(getattr(model, "target_num_points", 1024)),
-                )
-            else:
-                point_cloud = np.zeros((int(getattr(model, "target_num_points", 1024)), 6), dtype=np.float32)
+            point_cloud, _ = build_context_point_cloud(
+                object_pointcloud,
+                placeholders=placeholders,
+                feature_placeholders=sorted(feature_placeholders),
+                target_num_points=int(getattr(model, "target_num_points", 1024)),
+                keep_feature_placeholders_in_context=use_ndf_pointwise_hybrid,
+            )
         else:
             ordered_point_clouds = [object_pointcloud[key] for key in placeholders if key in object_pointcloud]
             if len(ordered_point_clouds) == 0:
@@ -391,6 +388,7 @@ def get_model(usr_args):
     use_actorseg_objpc = "objpc_actorseg" in usr_args["config_name"]
     use_sam3_objpc = "objpc_sam3" in usr_args["config_name"]
     use_ndf_pointwise = "ndf_pointwise" in usr_args["config_name"]
+    use_ndf_pointwise_hybrid = "ndf_pointwise_hybrid" in usr_args["config_name"]
     use_semantic_pointwise = "semantic_pointwise" in usr_args["config_name"]
     use_object_pointcloud = (
         (("objpc" in usr_args["config_name"]) and not use_sam3_objpc and not use_actorseg_objpc)
@@ -501,6 +499,7 @@ def get_model(usr_args):
     DP3_Model.use_sam3_objpc = use_sam3_objpc
     DP3_Model.use_object_pointcloud = use_object_pointcloud
     DP3_Model.use_ndf_pointwise = use_ndf_pointwise
+    DP3_Model.use_ndf_pointwise_hybrid = use_ndf_pointwise_hybrid
     DP3_Model.use_semantic_pointwise = use_semantic_pointwise
     DP3_Model.object_placeholders = object_placeholders
     DP3_Model.target_num_points = target_num_points

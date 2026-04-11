@@ -1,68 +1,70 @@
-# Task Plan: Replace SAM With Sim Segmentation For Fused Object-PCD VLA Train/Eval
+# Task Plan: Diagnose NDF Underperformance and Add a Hybrid NDF Pointwise Path
 
 ## Goal
-Use simulator-provided segmentation instead of SAM-based segmentation to build fused object point clouds for DP3 VLA training and evaluation, and provide matching train/eval bash entrypoints for the new pipeline.
+Investigate why `train_ndf_pointwise` is flat or slightly worse than `train_objpc`, determine whether the main cause is evaluation setup, training recipe mismatch, incorrect usage, or the representation itself, and implement a new `ndf_pointwise_hybrid` path that preserves baseline merged object-PCD inputs while adding NDF pointwise features.
 
 ## Current Phase
-Phase 4
+Phase 6
 
 ## Phases
 
-### Phase 1: Requirements & Discovery
-- [x] Restore planning context from the previous session
-- [x] Confirm the new task to execute
-- [x] Identify existing train/eval/object-PCD code paths relevant to simulator segmentation
-- [x] Confirm which simulator segmentation source should define the new pipeline contract
+### Phase 1: Experiment Surface Audit
+- [x] Restore planning context from prior work
+- [x] Identify the relevant train/eval scripts, configs, preprocessing paths, and runtime observation injection logic
+- [x] Confirm whether the current comparison is a pure representation comparison
 - **Status:** complete
 
-### Phase 2: Design & Structure
-- [x] Compare implementation approaches for replacing SAM with simulator segmentation
-- [x] Define the fused object-PCD generation path for offline preprocessing
-- [x] Define the online eval observation path
-- [x] Define bash/config entrypoints and naming
+### Phase 2: Representation Path Comparison
+- [x] Compare `objpc`, `ndf_pointwise`, and `semantic_pointwise` dataset construction
+- [x] Compare online eval feature injection for NDF vs semantic
+- [x] Compare encoder/model structure seen by DP3
 - **Status:** complete
 
-### Phase 3: Implementation
-- [x] Implement simulator-segmentation fused object-PCD extraction utilities
-- [x] Add or adapt preprocessing scripts for train-time zarr generation
-- [x] Add or adapt eval-time online observation processing
-- [x] Create train/eval bash scripts for the new pipeline
+### Phase 3: Evidence Gathering
+- [x] Inspect actual saved run overrides and dataset metadata for the existing `hanging_mug` experiments
+- [x] Check whether the configured NDF checkpoint / backbone pairing is plausible
+- [x] Check whether the current benchmark emphasizes novel-object generalization
 - **Status:** complete
 
-### Phase 4: Testing & Verification
-- [x] Run syntax and compile checks
-- [x] Run a targeted preprocessing dry-run
-- [ ] Run a targeted eval dry-run or smoke test
-- [ ] Confirm remaining risks and unsupported cases
-- **Status:** in_progress
+### Phase 4: Root-Cause Synthesis
+- [x] Rank the most likely causes using code and artifact evidence
+- [x] Distinguish “benchmark does not show NDF advantage” from “current NDF usage is flawed”
+- [x] Propose a minimal next experiment matrix to disambiguate the causes
+- **Status:** complete
 
 ### Phase 5: Delivery
-- [ ] Summarize the design, implementation, and verification
-- [ ] Call out follow-up work for NDF/semantic integration
-- **Status:** pending
+- [x] Summarize findings with concrete file references
+- [x] Call out actionable fixes vs. hypotheses
+- **Status:** complete
+
+### Phase 6: Hybrid NDF Implementation
+- [x] Write and review a concrete design for `ndf_pointwise_hybrid`
+- [x] Add a failing test that captures the intended hybrid observation semantics
+- [x] Implement the new preprocess/train/eval/config path without changing existing `ndf_pointwise`
+- [x] Verify the new test passes and the new shell/python entrypoints are syntactically valid
+- **Status:** complete
 
 ## Key Questions
-1. Should the new pipeline use simulator `actor_segmentation` or `mesh_segmentation` as the canonical segmentation source?
-2. Should the train and eval paths both use fused multi-camera segmentation-project logic, or should one side continue to use existing oracle `object_pointcloud` data?
-3. What script/config naming keeps the new path distinct from existing `objpc` and `objpc_sam3` flows?
+1. Is the current `objpc` vs `semantic_pointwise` vs `ndf_pointwise` comparison controlled, or are training recipes different?
+2. Is the current NDF experiment using the intended checkpoint and encoder architecture?
+3. Does the current eval setup actually test novel-object generalization, or mainly same-family / same-distribution performance?
+4. Does the current NDF pointwise feature field look stable enough for DP3 to exploit with only 50 demos?
 
 ## Decisions Made
 | Decision | Rationale |
 |----------|-----------|
-| Continue using `planning-with-files` for this new workstream | The user explicitly requested it for a multi-step code change |
-| Treat this as a new task rather than extending the old SAM-only investigation plan | The objective has changed from validating SAM to replacing it with simulator segmentation |
-| Preserve the prior session details in `findings.md` and `progress.md` | The old investigation still informs the new design and should remain available for reference |
-| Use `actor_segmentation` as the simulator segmentation source for the new fused object-PCD pipeline | It matches actor/entity instances and aligns with the existing oracle `object_pointcloud` actor-id filtering path |
-| Add a distinct `objpc_actorseg` pipeline instead of overloading the existing `objpc` flow | The existing `objpc` name is already associated with oracle object point clouds and older single-camera segmentation fallback behavior |
-| Reuse incremental replay-buffer writing for the new offline preprocessing path | This preserves partial progress during preprocessing and matches the improved SAM3 pipeline robustness |
+| Treat this as a root-cause investigation rather than jumping to code fixes | The user asked to understand why NDF is underperforming, not just patch scripts blindly |
+| Use the saved zarr/checkpoint artifacts as primary evidence | The current raw demo folder is no longer the same complete source dataset used to build the existing 50-episode DP3 artifacts |
+| Distinguish benchmark-design explanations from implementation/usage explanations | Both are plausible, and the user explicitly asked about novel-object evaluation vs. misuse vs. weak representation |
+| Add a separate `ndf_pointwise_hybrid` path instead of redefining `ndf_pointwise` | This isolates the new experiment and keeps old checkpoints / notes interpretable |
 
 ## Errors Encountered
 | Error | Attempt | Resolution |
 |-------|---------|------------|
-| `task_plan.md` from the previous task no longer matched the new workstream | 1 | Replaced it with a task-specific plan for simulator segmentation |
+| Previous `task_plan.md` still described the actor-segmentation implementation workstream | 1 | Replaced it with a task-specific investigation plan for the NDF underperformance diagnosis |
 
 ## Notes
 - Re-read this file before major decisions.
-- Write discoveries to `findings.md`.
-- Log work and verification in `progress.md`.
-- Keep untrusted external content out of this file.
+- Write concrete evidence to `findings.md`.
+- Log commands and verification in `progress.md`.
+- Keep speculative conclusions out of this file unless they are explicitly marked as hypotheses.
