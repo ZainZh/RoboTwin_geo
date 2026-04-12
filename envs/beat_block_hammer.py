@@ -4,18 +4,37 @@ import sapien
 from ._GLOBAL_CONFIGS import *
 
 
+def resolve_hammer_asset_config(custom_hammer_eval=None):
+    default_modelname = "020_hammer"
+    default_model_id = 0
+    hammer_eval = custom_hammer_eval or {}
+    if hammer_eval.get("enabled"):
+        modelname = hammer_eval.get("modelname", default_modelname)
+        model_id = hammer_eval.get("model_id", default_model_id)
+    else:
+        modelname = default_modelname
+        model_id = default_model_id
+    return {
+        "modelname": modelname,
+        "model_id": model_id,
+        "info_asset_path": f"{modelname}/base{model_id}",
+    }
+
+
 class beat_block_hammer(Base_Task):
 
     def setup_demo(self, **kwags):
+        self.custom_hammer_eval = kwags.get("custom_hammer_eval")
+        self.hammer_asset_config = resolve_hammer_asset_config(self.custom_hammer_eval)
         super()._init_task_env_(**kwags)
 
     def load_actors(self):
         self.hammer = create_actor(
             scene=self,
             pose=sapien.Pose([0, -0.06, 0.783], [0, 0, 0.995, 0.105]),
-            modelname="020_hammer",
+            modelname=self.hammer_asset_config["modelname"],
             convex=True,
-            model_id=0,
+            model_id=self.hammer_asset_config["model_id"],
         )
         block_pose = rand_pose(
             xlim=[-0.25, 0.25],
@@ -76,7 +95,7 @@ class beat_block_hammer(Base_Task):
                 is_open=False,
             ))
 
-        self.info["info"] = {"{A}": "020_hammer/base0", "{a}": str(arm_tag)}
+        self.info["info"] = {"{A}": self.hammer_asset_config["info_asset_path"], "{a}": str(arm_tag)}
         return self.info
 
     def check_success(self):
