@@ -5,13 +5,17 @@ from pathlib import Path
 from ._GLOBAL_CONFIGS import *
 
 
-def resolve_hammer_asset_config(custom_hammer_eval=None):
+def resolve_hammer_asset_config(custom_hammer_eval=None, episode_index=0):
     default_modelname = "020_hammer"
     default_model_id = 0
     hammer_eval = custom_hammer_eval or {}
     if hammer_eval.get("enabled"):
         modelname = hammer_eval.get("modelname", default_modelname)
         model_id = hammer_eval.get("model_id", default_model_id)
+        if isinstance(model_id, (list, tuple)):
+            if len(model_id) == 0:
+                raise ValueError("custom_hammer_eval.model_id cannot be an empty list")
+            model_id = int(model_id[int(episode_index) % len(model_id)])
     else:
         modelname = default_modelname
         model_id = default_model_id
@@ -62,7 +66,10 @@ class beat_block_hammer(Base_Task):
 
     def setup_demo(self, **kwags):
         self.custom_hammer_eval = kwags.get("custom_hammer_eval")
-        self.hammer_asset_config = resolve_hammer_asset_config(self.custom_hammer_eval)
+        self.hammer_asset_config = resolve_hammer_asset_config(
+            self.custom_hammer_eval,
+            episode_index=kwags.get("now_ep_num", 0),
+        )
         if (self.custom_hammer_eval or {}).get("enabled"):
             validate_hammer_asset_config(self.hammer_asset_config)
         super()._init_task_env_(**kwags)

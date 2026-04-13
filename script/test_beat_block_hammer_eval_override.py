@@ -55,6 +55,36 @@ class TestBeatBlockHammerEvalOverride(unittest.TestCase):
             },
         )
 
+    def test_resolve_hammer_asset_config_round_robins_model_id_list(self):
+        resolve_hammer_asset_config, = load_helpers("resolve_hammer_asset_config")
+
+        self.assertEqual(
+            resolve_hammer_asset_config(
+                {
+                    "enabled": True,
+                    "modelname": "partnext_hammer_eval",
+                    "model_id": [1, 3, 7],
+                },
+                episode_index=0,
+            ),
+            {
+                "modelname": "partnext_hammer_eval",
+                "model_id": 1,
+                "info_asset_path": "partnext_hammer_eval/base1",
+            },
+        )
+        self.assertEqual(
+            resolve_hammer_asset_config(
+                {
+                    "enabled": True,
+                    "modelname": "partnext_hammer_eval",
+                    "model_id": [1, 3, 7],
+                },
+                episode_index=4,
+            )["model_id"],
+            3,
+        )
+
     def test_validate_hammer_asset_config_accepts_prepared_asset_layout(self):
         validate_hammer_asset_config, = load_helpers("validate_hammer_asset_config")
 
@@ -95,9 +125,10 @@ class TestBeatBlockHammerEvalOverride(unittest.TestCase):
 
         self.assertIn('self.custom_hammer_eval = kwags.get("custom_hammer_eval")', source)
         self.assertIn(
-            'self.hammer_asset_config = resolve_hammer_asset_config(self.custom_hammer_eval)',
+            'self.hammer_asset_config = resolve_hammer_asset_config(',
             source,
         )
+        self.assertIn('episode_index=kwags.get("now_ep_num", 0)', source)
         self.assertIn('validate_hammer_asset_config(self.hammer_asset_config)', source)
         self.assertIn('modelname=self.hammer_asset_config["modelname"]', source)
         self.assertIn('model_id=self.hammer_asset_config["model_id"]', source)

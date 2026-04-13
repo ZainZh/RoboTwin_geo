@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -27,15 +27,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--reference_model_data", type=Path, default=None)
     parser.add_argument("--glb_name", type=str, default=None)
-    parser.add_argument("--all", action="store_true", default=True,dest="prepare_all")
+    parser.add_argument("--all", action="store_true", dest="prepare_all")
     return parser.parse_args()
-
-
-def make_batch_output_modelname(output_modelname: str, glb_name: str) -> str:
-    stem = Path(glb_name).stem.lower()
-    stem = re.sub(r"[^a-z0-9]+", "_", stem).strip("_")
-    suffix = stem or "hammer"
-    return f"{output_modelname}_{suffix}"
 
 
 def prepare_asset_package(
@@ -74,9 +67,76 @@ def prepare_asset_package(
     return {
         "asset_dir": str(asset_dir),
         "selected_glb": prepared_asset.source_meta["glb_dst"],
-        "model_id": prepared_asset.source_meta["model_id"],
+        "model_id": 0,
         "scale": prepared_asset.model_data["scale"],
     }
+
+
+def _write_asset_variant(
+    *,
+    asset_dir: Path,
+    prepared_asset,
+    model_id: int,
+) -> None:
+    (asset_dir / "visual").mkdir(parents=True, exist_ok=True)
+    (asset_dir / "collision").mkdir(parents=True, exist_ok=True)
+
+    shutil.copy2(prepared_asset.visual_glb_path, asset_dir / "visual" / f"base{model_id}.glb")
+    shutil.copy2(prepared_asset.collision_glb_path, asset_dir / "collision" / f"base{model_id}.glb")
+    (asset_dir / f"model_data{model_id}.json").write_text(
+        json.dumps(prepared_asset.model_data, indent=2),
+        encoding="utf-8",
+    )
+
+
+def prepare_asset_package_all(
+    *,
+    partnext_dir: Path,
+    annotation_path: Path,
+    output_modelname: str,
+    output_root: Path,
+    reference_model_data: Path | None = None,
+) -> list[dict]:
+    glb_names = sorted(path.name for path in partnext_dir.glob("*.glb"))
+    if not glb_names:
+        raise FileNotFoundError(f"no .glb files found under {partnext_dir}")
+
+    asset_dir = output_root / output_modelname
+    if asset_dir.exists():
+        raise FileExistsError(f"target asset directory already exists: {asset_dir}")
+
+    summaries: list[dict] = []
+    points_info = None
+    for model_id, current_glb_name in enumerate(glb_names):
+        prepared_asset = build_partnext_hammer_asset(
+            partnext_dir=partnext_dir,
+            annotation_path=annotation_path,
+            output_modelname=output_modelname,
+            reference_model_data_path=reference_model_data,
+            requested_glb_name=current_glb_name,
+        )
+        _write_asset_variant(
+            asset_dir=asset_dir,
+            prepared_asset=prepared_asset,
+            model_id=model_id,
+        )
+        if points_info is None:
+            points_info = prepared_asset.points_info
+        summaries.append(
+            {
+                "asset_dir": str(asset_dir),
+                "selected_glb": prepared_asset.source_meta["glb_dst"],
+                "model_id": model_id,
+                "scale": prepared_asset.model_data["scale"],
+            }
+        )
+
+    if points_info is not None:
+        (asset_dir / "points_info.json").write_text(
+            json.dumps(points_info, indent=2),
+            encoding="utf-8",
+        )
+    return summaries
 
 
 def prepare_asset_packages(
@@ -88,26 +148,18 @@ def prepare_asset_packages(
     reference_model_data: Path | None = None,
     glb_name: str | None = None,
     prepare_all: bool = False,
-    single_prepare_fn=prepare_asset_package,
 ) -> list[dict]:
     if prepare_all:
-        glb_names = sorted(path.name for path in partnext_dir.glob("*.glb"))
-        if not glb_names:
-            raise FileNotFoundError(f"no .glb files found under {partnext_dir}")
-        return [
-            single_prepare_fn(
-                partnext_dir=partnext_dir,
-                annotation_path=annotation_path,
-                output_modelname=make_batch_output_modelname(output_modelname, current_glb_name),
-                output_root=output_root,
-                reference_model_data=reference_model_data,
-                glb_name=current_glb_name,
-            )
-            for current_glb_name in glb_names
-        ]
+        return prepare_asset_package_all(
+            partnext_dir=partnext_dir,
+            annotation_path=annotation_path,
+            output_modelname=output_modelname,
+            output_root=output_root,
+            reference_model_data=reference_model_data,
+        )
 
     return [
-        single_prepare_fn(
+        prepare_asset_package(
             partnext_dir=partnext_dir,
             annotation_path=annotation_path,
             output_modelname=output_modelname,
