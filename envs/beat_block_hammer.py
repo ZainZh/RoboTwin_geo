@@ -1,6 +1,7 @@
 from ._base_task import Base_Task
 from .utils import *
 import sapien
+from pathlib import Path
 from ._GLOBAL_CONFIGS import *
 
 
@@ -21,11 +22,49 @@ def resolve_hammer_asset_config(custom_hammer_eval=None):
     }
 
 
+def validate_hammer_asset_config(hammer_asset_config, repo_root=None):
+    repo_root = Path(repo_root) if repo_root is not None else Path('.')
+    modelname = hammer_asset_config["modelname"]
+    model_id = hammer_asset_config["model_id"]
+    model_dir = repo_root / "assets" / "objects" / modelname
+
+    def find_mesh_file(subdir_name):
+        roots = [model_dir / subdir_name, model_dir]
+        candidate_names = [f"base{model_id}.glb", f"textured{model_id}.obj"]
+        if model_id is None:
+            candidate_names = ["base.glb", "textured.obj"]
+        for root in roots:
+            for candidate_name in candidate_names:
+                candidate_path = root / candidate_name
+                if candidate_path.exists():
+                    return candidate_path
+        return None
+
+    model_data_path = model_dir / ("model_data.json" if model_id is None else f"model_data{model_id}.json")
+    visual_file = find_mesh_file("visual")
+    collision_file = find_mesh_file("collision")
+    missing_parts = []
+    if not model_data_path.exists():
+        missing_parts.append(str(model_data_path))
+    if visual_file is None:
+        missing_parts.append(str(model_dir / "visual"))
+    if collision_file is None:
+        missing_parts.append(str(model_dir / "collision"))
+    if missing_parts:
+        missing_text = ", ".join(missing_parts)
+        raise FileNotFoundError(
+            f"Missing hammer asset files for {modelname}: {missing_text}. "
+            "Prepare the asset first with script/prepare_partnext_hammer_eval_asset.py."
+        )
+
+
 class beat_block_hammer(Base_Task):
 
     def setup_demo(self, **kwags):
         self.custom_hammer_eval = kwags.get("custom_hammer_eval")
         self.hammer_asset_config = resolve_hammer_asset_config(self.custom_hammer_eval)
+        if (self.custom_hammer_eval or {}).get("enabled"):
+            validate_hammer_asset_config(self.hammer_asset_config)
         super()._init_task_env_(**kwags)
 
     def load_actors(self):
