@@ -12,10 +12,11 @@ from object_pointcloud_utils import resample_point_cloud, strip_zero_points
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SEM_ROOT = REPO_ROOT / "include" / "3d_semantic_train"
+home_directory = os.path.expanduser('~')
 if SEM_ROOT.exists() and str(SEM_ROOT) not in sys.path:
     sys.path.insert(0, str(SEM_ROOT))
 
-from datasets.partnext_canonical_field import UTONIA  # noqa: E402
+from my_datasets.partnext_canonical_field import UTONIA  # noqa: E402
 from models.universal_field.utonia_universal_field import UtoniaUniversalFieldNet  # noqa: E402
 
 
@@ -132,7 +133,8 @@ def load_semantic_model(
 
     model = UtoniaUniversalFieldNet(
         num_classes=len(canonical_label_names),
-        utonia_checkpoint=checkpoint_args.get("utonia_checkpoint", "/home/zheng/.cache/utonia/ckpt/utonia.pth"),
+        utonia_checkpoint= f"{home_directory}/.cache/utonia/ckpt/utonia.pth",
+        # utonia_checkpoint=checkpoint_args.get("utonia_checkpoint", "/home/zheng/.cache/utonia/ckpt/utonia.pth"),
         utonia_repo_id=checkpoint_args.get("utonia_repo_id", "Pointcept/Utonia"),
         utonia_upcast_levels=int(checkpoint_args.get("utonia_upcast_levels", 0)),
         freeze_utonia=True,
