@@ -318,3 +318,14 @@
   - `policy/DP3/scripts/test_ndf_pointwise_hybrid.py` (modified)
   - `findings.md` (updated)
   - `progress.md` (updated)
+
+### Phase 6: NDF Load Warning Triage
+- **Status:** complete
+- Actions taken:
+  - Inspected `policy/DP3/scripts/ndf_feature_utils.py` to confirm the NDF loader uses `strict=False`.
+  - Traced the reported `unexpected_keys` to the optional decoder vector-feature head in `vnn_occupancy_net_pointnet_dgcnn.py`.
+  - Confirmed the current DP3 NDF path only consumes regular local `features` through `forward_latent(...)`, not `vector_features`.
+  - Concluded that this exact warning shape is benign when `missing_keys=[]`, but would become suspicious if missing keys or core encoder/decoder mismatches appeared.
+- Files created/modified:
+  - `findings.md` (updated)
+  - `progress.md` (updated)

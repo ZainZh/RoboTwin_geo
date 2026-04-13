@@ -196,6 +196,17 @@
 - Follow-up bug found during first real user run: `process_data_ndf_pointwise_hybrid.py` originally forwarded `--output_suffix` as two argv items, and the value `-objpc-ndf-pointwise-hybrid` was parsed as a new option because it starts with `-`.
 - Root-cause fix: `policy/DP3/scripts/process_data_ndf_pointwise_hybrid.py` now builds argv through `build_hybrid_argv(...)` and passes `--output_suffix=-objpc-ndf-pointwise-hybrid` as an attached option.
 - The regression test `policy/DP3/scripts/test_ndf_pointwise_hybrid.py` now includes a dedicated wrapper-argv check for this case and passes with `3` tests.
+- Additional NDF-loading finding: the warning
+  `unexpected_keys=['decoder.vector_basis.map_to_feat.weight', 'decoder.fc_vec_alpha.weight', 'decoder.fc_vec_alpha.bias']`
+  is generally benign for the current DP3 pointwise NDF path when `missing_keys=[]`.
+- Reason:
+- `policy/DP3/scripts/ndf_feature_utils.py` builds `VNNOccNet(..., return_features=True, return_vector_features=False)` and loads checkpoints with `strict=False`.
+- The reported unexpected keys belong to the optional decoder vector-feature head, which is only instantiated when `return_vector_features=True`, see `vnn_occupancy_net_pointnet_dgcnn.py`.
+- Current DP3 feature extraction only calls `model.forward_latent(z, pts)` / `model.forward_latent(z, query)` and uses the regular `features` output, not `vector_features`.
+- Therefore this exact warning means “the checkpoint contains extra decoder weights that the current loader ignores,” not “the main encoder/decoder weights are missing.”
+- Risk rule:
+- acceptable: `missing_keys=[]` and only optional vector-feature decoder keys are unexpected
+- suspicious: any `missing_keys`, or unexpected keys under encoder / core decoder blocks / backbone family mismatch
 
 ## Technical Decisions
 | Decision | Rationale |

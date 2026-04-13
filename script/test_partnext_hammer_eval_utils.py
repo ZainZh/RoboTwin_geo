@@ -14,6 +14,7 @@ import partnext_hammer_eval_utils as utils
 
 from partnext_hammer_eval_utils import (
     build_model_data,
+    build_partnext_hammer_asset,
     collect_region_face_ids,
     compute_handle_contact_point,
     compute_head_functional_point,
@@ -81,6 +82,39 @@ class TestPartNextHammerEvalUtils(unittest.TestCase):
 
         self.assertEqual(handle_faces, {20, 21, 30, 31, 32})
 
+    def test_collect_region_face_specs_preserves_submesh_indices(self):
+        row = {
+            "glb_dst": "candidate.glb",
+            "hierarchyList": json.dumps(
+                [
+                    {
+                        "name": "Hammer",
+                        "children": [
+                            {
+                                "name": "Head",
+                                "children": [{"name": "Hammer Head", "maskId": 0}],
+                            },
+                            {
+                                "name": "Handle",
+                                "children": [{"name": "Grip", "maskId": 3}],
+                            },
+                        ],
+                    }
+                ]
+            ),
+            "masks": json.dumps(
+                {
+                    "0": {"0": [5, 6]},
+                    "3": {"1": [7, 8], "2": [9]},
+                }
+            ),
+        }
+
+        face_specs = utils.collect_region_face_specs(row, region="handle")
+
+        self.assertEqual(face_specs, {1: {7, 8}, 2: {9}})
+
+
     def test_collect_region_face_ids_rejects_invalid_region_before_parsing(self):
         row = {
             "hierarchyList": "not-json",
@@ -131,6 +165,60 @@ class TestPartNextHammerEvalUtils(unittest.TestCase):
 
         self.assertEqual(row["glb_dst"], "missing.glb")
 
+    def test_build_partnext_hammer_asset_honors_requested_glb(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            partnext_dir = root / "partnext"
+            partnext_dir.mkdir()
+            first_glb = partnext_dir / "first.glb"
+            second_glb = partnext_dir / "second.glb"
+            utils.trimesh.creation.box(extents=(0.1, 0.4, 0.12)).export(first_glb)
+            utils.trimesh.creation.box(extents=(0.2, 0.5, 0.18)).export(second_glb)
+
+            annotation_path = root / "annotation.jsonl"
+            rows = [
+                {
+                    "glb_dst": "first.glb",
+                    "model_id": "first",
+                    "hierarchyList": json.dumps(
+                        [{"name": "Hammer", "children": [{"name": "Head", "children": [{"name": "Hammer Head", "maskId": 0}]}, {"name": "Handle", "children": [{"name": "Grip", "maskId": 3}]}]}]
+                    ),
+                    "masks": json.dumps({"0": {"0": [0, 1]}, "3": {"0": [2, 3]}}),
+                },
+                {
+                    "glb_dst": "second.glb",
+                    "model_id": "second",
+                    "hierarchyList": json.dumps(
+                        [{"name": "Hammer", "children": [{"name": "Head", "children": [{"name": "Hammer Head", "maskId": 0}]}, {"name": "Handle", "children": [{"name": "Grip", "maskId": 3}]}]}]
+                    ),
+                    "masks": json.dumps({"0": {"0": [0, 1]}, "3": {"0": [2, 3]}}),
+                },
+            ]
+            annotation_path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
+            reference_model_data_path = root / "model_data0.json"
+            reference_model_data_path.write_text(
+                json.dumps(
+                    {
+                        "extents": [0.1, 0.4, 0.12],
+                        "scale": [1.0, 1.0, 1.0],
+                        "stable": False,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            prepared_asset = build_partnext_hammer_asset(
+                partnext_dir=partnext_dir,
+                annotation_path=annotation_path,
+                output_modelname="partnext_hammer_eval",
+                reference_model_data_path=reference_model_data_path,
+                requested_glb_name="second.glb",
+            )
+
+        self.assertEqual(prepared_asset.visual_glb_path, second_glb)
+        self.assertEqual(prepared_asset.source_meta["glb_dst"], "second.glb")
+
 
     def test_select_candidate_glb_reports_candidate_rejection_details(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -155,6 +243,44 @@ class TestPartNextHammerEvalUtils(unittest.TestCase):
                 )
 
 
+    def test_compute_handle_contact_point_aggregates_selected_submesh_centers(self):
+        head_mesh = utils.trimesh.creation.box(extents=(0.3, 0.2, 0.3))
+        handle_mesh_a = utils.trimesh.creation.box(extents=(0.1, 0.6, 0.1))
+        handle_mesh_b = utils.trimesh.creation.box(extents=(0.1, 0.4, 0.1))
+        handle_mesh_a.apply_translation([0.0, -0.3, 0.0])
+        handle_mesh_b.apply_translation([0.0, -0.25, 0.0])
+        geometry_meshes = [head_mesh, handle_mesh_a, handle_mesh_b]
+        handle_face_specs = {1: {0, 1}, 2: {0, 1}}
+
+        contact_point, handle_axis = compute_handle_contact_point(geometry_meshes, handle_face_specs)
+
+        expected_centers = np.vstack([
+            handle_mesh_a.triangles_center[[0, 1]],
+            handle_mesh_b.triangles_center[[0, 1]],
+        ])
+        self.assertTrue(np.allclose(contact_point, expected_centers.mean(axis=0)))
+        self.assertGreater(abs(handle_axis[1]), 0.9)
+
+    def test_compute_head_functional_point_uses_perpendicular_workface_center(self):
+        head_mesh = utils.trimesh.creation.box(extents=(0.3, 0.4, 0.3))
+        handle_mesh = utils.trimesh.creation.box(extents=(0.1, 0.6, 0.1))
+        handle_mesh.apply_translation([0.0, -0.5, 0.0])
+        geometry_meshes = [head_mesh, handle_mesh]
+        head_face_specs = {0: set(range(len(head_mesh.faces)))}
+        handle_axis = np.asarray([0.0, 1.0, 0.0], dtype=np.float64)
+        handle_contact_point = np.asarray([0.0, -0.5, 0.0], dtype=np.float64)
+
+        functional_point = compute_head_functional_point(
+            geometry_meshes,
+            head_face_specs,
+            handle_axis,
+            handle_contact_point,
+        )
+
+        self.assertLess(abs(functional_point[1]), 0.05)
+        self.assertGreater(abs(functional_point[2]), 0.12)
+
+
     def test_compute_handle_contact_point_uses_handle_region_center(self):
         handle_mesh = utils.trimesh.creation.box(extents=(0.1, 1.0, 0.1))
         head_mesh = utils.trimesh.creation.box(extents=(0.3, 0.2, 0.3))
@@ -168,7 +294,7 @@ class TestPartNextHammerEvalUtils(unittest.TestCase):
         self.assertTrue(np.allclose(contact_point, expected_handle_center))
         self.assertTrue(np.allclose(np.abs(handle_axis), np.asarray([0.0, 1.0, 0.0]), atol=1e-6))
 
-    def test_compute_head_functional_point_uses_head_region_center(self):
+    def test_compute_head_functional_point_prefers_perpendicular_workface_for_merged_mesh(self):
         handle_mesh = utils.trimesh.creation.box(extents=(0.1, 1.0, 0.1))
         head_mesh = utils.trimesh.creation.box(extents=(0.3, 0.2, 0.3))
         head_mesh.apply_translation([0.0, 0.7, 0.0])
@@ -182,8 +308,8 @@ class TestPartNextHammerEvalUtils(unittest.TestCase):
             np.asarray([0.0, 0.0, 0.0], dtype=np.float64),
         )
 
-        expected_head_center = np.asarray(mesh.triangles_center[sorted(head_face_ids)], dtype=np.float64).mean(axis=0)
-        self.assertTrue(np.allclose(functional_point, expected_head_center))
+        self.assertLess(abs(functional_point[1] - 0.7), 0.05)
+        self.assertGreater(abs(functional_point[2]), 0.12)
 
     def test_build_model_data_uses_target_point_and_requested_descriptions(self):
         mesh = utils.trimesh.creation.box(extents=(0.1, 1.0, 0.1))
