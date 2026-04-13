@@ -300,48 +300,36 @@ def build_model_data(
     }
 
 
-def render_preview_png(
+def render_preview_ply(
     mesh: trimesh.Trimesh,
     contact_point: np.ndarray,
+    target_point: np.ndarray,
     functional_point: np.ndarray,
-    handle_axis: np.ndarray,
 ) -> bytes:
-    vertices = np.asarray(mesh.vertices, dtype=np.float64)
-    if len(vertices) > 4000:
-        sample_indices = np.linspace(0, len(vertices) - 1, 4000, dtype=np.int64)
-        vertices = vertices[sample_indices]
+    base_mesh = mesh.copy()
+    if base_mesh.visual is None or len(getattr(base_mesh.visual, "vertex_colors", [])) != len(base_mesh.vertices):
+        base_mesh.visual.vertex_colors = np.tile(np.asarray([180, 180, 180, 255], dtype=np.uint8), (len(base_mesh.vertices), 1))
+    else:
+        base_mesh.visual.vertex_colors = np.tile(np.asarray([180, 180, 180, 255], dtype=np.uint8), (len(base_mesh.vertices), 1))
 
-    contact_point = np.asarray(contact_point, dtype=np.float64)
-    functional_point = np.asarray(functional_point, dtype=np.float64)
-    handle_axis = _normalize(handle_axis)
-    line_half_extent = float(np.max(mesh.extents)) * 0.35
-    axis_line = np.vstack(
-        [
-            contact_point - (handle_axis * line_half_extent),
-            contact_point + (handle_axis * line_half_extent),
-        ]
-    )
+    marker_radius = max(float(np.max(mesh.extents)) * 0.035, 1e-4)
 
-    figure = plt.figure(figsize=(6.0, 6.0))
-    axis = figure.add_subplot(111, projection="3d")
-    axis.scatter(vertices[:, 0], vertices[:, 1], vertices[:, 2], s=1.0, c="#bfbfbf", alpha=0.30)
-    axis.scatter(contact_point[0], contact_point[1], contact_point[2], s=70.0, c="#d62728")
-    axis.scatter(functional_point[0], functional_point[1], functional_point[2], s=70.0, c="#1f77b4")
-    axis.plot(axis_line[:, 0], axis_line[:, 1], axis_line[:, 2], c="#2ca02c", linewidth=2.0)
-    axis.set_title("PartNext hammer preview")
-    axis.set_xlabel("x")
-    axis.set_ylabel("y")
-    axis.set_zlabel("z")
-    axis.set_box_aspect(np.maximum(mesh.extents, 1e-6))
-    figure.tight_layout()
+    def make_marker(point, color):
+        marker = trimesh.creation.icosphere(subdivisions=2, radius=marker_radius)
+        marker.apply_translation(np.asarray(point, dtype=np.float64))
+        marker.visual.vertex_colors = np.tile(np.asarray(color, dtype=np.uint8), (len(marker.vertices), 1))
+        return marker
 
-    buffer = BytesIO()
-    figure.savefig(buffer, format="png", dpi=160)
-    plt.close(figure)
-    return buffer.getvalue()
+    preview_mesh = trimesh.util.concatenate([
+        base_mesh,
+        make_marker(contact_point, [214, 39, 40, 255]),
+        make_marker(target_point, [44, 160, 44, 255]),
+        make_marker(functional_point, [31, 119, 180, 255]),
+    ])
+    return preview_mesh.export(file_type="ply")
 
 
-def write_asset_package(output_root: Path, prepared_asset: PreparedHammerAsset, preview_png: bytes) -> Path:
+def write_asset_package(output_root: Path, prepared_asset: PreparedHammerAsset, preview_ply: bytes) -> Path:
     asset_dir = output_root / prepared_asset.modelname
     (asset_dir / "visual").mkdir(parents=True, exist_ok=True)
     (asset_dir / "collision").mkdir(parents=True, exist_ok=True)
@@ -361,7 +349,10 @@ def write_asset_package(output_root: Path, prepared_asset: PreparedHammerAsset, 
         json.dumps(prepared_asset.source_meta, indent=2),
         encoding="utf-8",
     )
-    (asset_dir / "preview" / "overview.png").write_bytes(preview_png)
+    legacy_preview_path = asset_dir / "preview" / "overview.png"
+    if legacy_preview_path.exists():
+        legacy_preview_path.unlink()
+    (asset_dir / "preview" / "overview.ply").write_bytes(preview_ply)
     return asset_dir
 
 
@@ -468,7 +459,7 @@ __all__ = [
     "find_annotation_row",
     "load_annotation_rows",
     "pick_striking_label",
-    "render_preview_png",
+    "render_preview_ply",
     "select_candidate_glb",
     "write_asset_package",
 ]

@@ -152,7 +152,7 @@ class TestPartNextHammerEvalUtils(unittest.TestCase):
                 )
 
 
-    def test_write_asset_package_writes_package_files_and_preview(self):
+    def test_write_asset_package_writes_package_files_and_preview_ply(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             visual_src = root / "candidate_visual.glb"
@@ -187,21 +187,21 @@ class TestPartNextHammerEvalUtils(unittest.TestCase):
                     },
                 },
             )
-            preview_png = b"\x89PNG\r\n\x1a\npreview-bytes"
+            preview_ply = b"ply\nformat ascii 1.0\nend_header\n"
             output_root = root / "assets" / "objects"
 
             asset_dir = utils.write_asset_package(
                 output_root=output_root,
                 prepared_asset=prepared_asset,
-                preview_png=preview_png,
+                preview_ply=preview_ply,
             )
 
             self.assertEqual(asset_dir, output_root / "partnext_hammer_eval")
             self.assertEqual((asset_dir / "visual" / "base0.glb").read_bytes(), b"visual-glb")
             self.assertEqual((asset_dir / "collision" / "base0.glb").read_bytes(), b"collision-glb")
             self.assertEqual(
-                (asset_dir / "preview" / "overview.png").read_bytes(),
-                preview_png,
+                (asset_dir / "preview" / "overview.ply").read_bytes(),
+                preview_ply,
             )
 
             model_data = json.loads((asset_dir / "model_data0.json").read_text(encoding="utf-8"))

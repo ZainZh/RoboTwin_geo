@@ -9,7 +9,7 @@ import trimesh
 
 from partnext_hammer_eval_utils import (
     build_partnext_hammer_asset,
-    render_preview_png,
+    render_preview_ply,
     write_asset_package,
 )
 
@@ -40,16 +40,17 @@ def main() -> int:
     mesh = trimesh.load(prepared_asset.visual_glb_path, force="mesh")
     contact_pose = np.asarray(prepared_asset.model_data["contact_points_pose"][0], dtype=np.float64)
     functional_pose = np.asarray(prepared_asset.model_data["functional_matrix"][0], dtype=np.float64)
-    preview_png = render_preview_png(
+    target_pose = np.asarray(prepared_asset.model_data["target_pose"][0], dtype=np.float64)
+    preview_ply = render_preview_ply(
         mesh=mesh,
         contact_point=contact_pose[:3, 3],
+        target_point=target_pose[:3, 3],
         functional_point=functional_pose[:3, 3],
-        handle_axis=contact_pose[:3, 0],
     )
     asset_dir = write_asset_package(
         output_root=args.output_root,
         prepared_asset=prepared_asset,
-        preview_png=preview_png,
+        preview_ply=preview_ply,
     )
 
     summary = {
