@@ -13,7 +13,10 @@ if str(SCRIPT_DIR) not in sys.path:
 import partnext_hammer_eval_utils as utils
 
 from partnext_hammer_eval_utils import (
+    build_model_data,
     collect_region_face_ids,
+    compute_handle_contact_point,
+    compute_head_functional_point,
     estimate_uniform_scale,
     find_annotation_row,
     load_annotation_rows,
@@ -150,6 +153,63 @@ class TestPartNextHammerEvalUtils(unittest.TestCase):
                     annotation_rows=annotation_rows,
                     reference_loaded_extents=np.asarray([0.03, 0.18, 0.14], dtype=np.float32),
                 )
+
+
+    def test_compute_handle_contact_point_uses_handle_region_center(self):
+        handle_mesh = utils.trimesh.creation.box(extents=(0.1, 1.0, 0.1))
+        head_mesh = utils.trimesh.creation.box(extents=(0.3, 0.2, 0.3))
+        head_mesh.apply_translation([0.0, 0.7, 0.0])
+        mesh = utils.trimesh.util.concatenate([handle_mesh, head_mesh])
+        handle_face_ids = set(range(len(handle_mesh.faces)))
+
+        contact_point, handle_axis = compute_handle_contact_point(mesh, handle_face_ids)
+
+        expected_handle_center = np.asarray(mesh.triangles_center[sorted(handle_face_ids)], dtype=np.float64).mean(axis=0)
+        self.assertTrue(np.allclose(contact_point, expected_handle_center))
+        self.assertTrue(np.allclose(np.abs(handle_axis), np.asarray([0.0, 1.0, 0.0]), atol=1e-6))
+
+    def test_compute_head_functional_point_uses_head_region_center(self):
+        handle_mesh = utils.trimesh.creation.box(extents=(0.1, 1.0, 0.1))
+        head_mesh = utils.trimesh.creation.box(extents=(0.3, 0.2, 0.3))
+        head_mesh.apply_translation([0.0, 0.7, 0.0])
+        mesh = utils.trimesh.util.concatenate([handle_mesh, head_mesh])
+        head_face_ids = set(range(len(handle_mesh.faces), len(handle_mesh.faces) + len(head_mesh.faces)))
+
+        functional_point = compute_head_functional_point(
+            mesh,
+            head_face_ids,
+            np.asarray([0.0, 1.0, 0.0], dtype=np.float64),
+            np.asarray([0.0, 0.0, 0.0], dtype=np.float64),
+        )
+
+        expected_head_center = np.asarray(mesh.triangles_center[sorted(head_face_ids)], dtype=np.float64).mean(axis=0)
+        self.assertTrue(np.allclose(functional_point, expected_head_center))
+
+    def test_build_model_data_uses_target_point_and_requested_descriptions(self):
+        mesh = utils.trimesh.creation.box(extents=(0.1, 1.0, 0.1))
+        contact_pose = np.eye(4, dtype=np.float64)
+        functional_pose = np.eye(4, dtype=np.float64)
+        target_point = np.asarray([0.0, 0.2, 0.0], dtype=np.float64)
+
+        model_data = build_model_data(
+            mesh=mesh,
+            scale=1.0,
+            contact_pose=contact_pose,
+            functional_pose=functional_pose,
+            target_point=target_point,
+            stable=True,
+        )
+
+        self.assertTrue(np.allclose(np.asarray(model_data['target_pose'][0], dtype=np.float64)[:3, 3], target_point))
+        self.assertEqual(
+            model_data['contact_points_discription'][0],
+            "Grab the hammer's handle with the head facing outward.",
+        )
+        self.assertEqual(model_data['target_point_discription'][0], 'The center of the handle part.')
+        self.assertEqual(
+            model_data['functional_point_discription'][0],
+            'Point 0: The head of the hammer is facing outward.',
+        )
 
 
     def test_write_asset_package_writes_package_files_and_preview_ply(self):

@@ -4,18 +4,12 @@ import json
 import os
 import shutil
 from dataclasses import dataclass
-from io import BytesIO
 from pathlib import Path
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 
-import matplotlib
-
-matplotlib.use("Agg")
-
 import numpy as np
 import trimesh
-from matplotlib import pyplot as plt
 
 HANDLE_LABELS = ("Handle", "Shaft", "Grip", "Handle End")
 STRIKING_LABELS = ("Hammer Head", "Head", "Nail Puller")
@@ -240,12 +234,7 @@ def compute_handle_contact_point(mesh: trimesh.Trimesh, handle_face_ids: set[int
     covariance = centered.T @ centered
     _, eigenvectors = np.linalg.eigh(covariance)
     handle_axis = _normalize(eigenvectors[:, -1])
-
-    axis_projection = centered @ handle_axis
-    center_projection = float(np.median(axis_projection))
-    contact_index = int(np.argmin(np.abs(axis_projection - center_projection)))
-    contact_point = handle_centroids[contact_index]
-    return contact_point, handle_axis
+    return handle_center, handle_axis
 
 
 def compute_head_functional_point(
@@ -259,11 +248,7 @@ def compute_head_functional_point(
 
     head_indices = np.asarray(sorted(head_face_ids), dtype=np.int64)
     head_centroids = np.asarray(mesh.triangles_center[head_indices], dtype=np.float64)
-    handle_contact_point = np.asarray(handle_contact_point, dtype=np.float64)
-    handle_axis = _normalize(handle_axis)
-
-    forward_scores = (head_centroids - handle_contact_point) @ handle_axis
-    return head_centroids[int(np.argmax(forward_scores))]
+    return head_centroids.mean(axis=0)
 
 
 def build_model_data(
@@ -271,12 +256,13 @@ def build_model_data(
     scale: float,
     contact_pose: np.ndarray,
     functional_pose: np.ndarray,
+    target_point: np.ndarray,
     stable: bool = False,
 ) -> dict:
     center = np.asarray(mesh.bounding_box.centroid, dtype=np.float64)
     extents = np.asarray(mesh.extents, dtype=np.float64)
     target_pose = np.eye(4, dtype=np.float64)
-    target_pose[:3, 3] = center
+    target_pose[:3, 3] = np.asarray(target_point, dtype=np.float64)
 
     return {
         "center": center.tolist(),
@@ -286,16 +272,16 @@ def build_model_data(
         "target_pose": [target_pose.tolist()],
         "contact_points_pose": [np.asarray(contact_pose, dtype=np.float64).tolist()],
         "functional_matrix": [np.asarray(functional_pose, dtype=np.float64).tolist()],
-        "orientation_point": np.asarray(functional_pose, dtype=np.float64).tolist(),
+        "orientation_point": [np.asarray(functional_pose, dtype=np.float64).tolist()],
         "contact_points_group": [[0]],
         "contact_points_mask": [True],
-        "contact_points_description": ["Hammer handle grasp point."],
-        "functional_point_description": ["Hammer striking head point."],
-        "target_point_description": ["Hammer mesh center."],
-        "orientation_point_description": ["Hammer head facing direction."],
-        "contact_points_discription": ["Hammer handle grasp point."],
-        "functional_point_discription": ["Hammer striking head point."],
-        "target_point_discription": ["Hammer mesh center."],
+        "contact_points_description": ["Grab the hammer's handle with the head facing outward."],
+        "functional_point_description": ["Point 0: The head of the hammer is facing outward."],
+        "target_point_description": ["The center of the handle part."],
+        "orientation_point_description": ["Point 0: The head of the hammer is facing outward."],
+        "contact_points_discription": ["Grab the hammer's handle with the head facing outward."],
+        "functional_point_discription": ["Point 0: The head of the hammer is facing outward."],
+        "target_point_discription": ["The center of the handle part."],
         "stable": bool(stable),
     }
 
@@ -411,6 +397,7 @@ def build_partnext_hammer_asset(
         scale=scale,
         contact_pose=contact_pose,
         functional_pose=functional_pose,
+        target_point=contact_point,
         stable=bool(reference_model_data.get("stable", False)),
     )
 
@@ -434,6 +421,7 @@ def build_partnext_hammer_asset(
         },
         "generated_points": {
             "contact_point": contact_point.tolist(),
+            "target_point": contact_point.tolist(),
             "functional_point": functional_point.tolist(),
             "handle_axis": handle_axis.tolist(),
         },
