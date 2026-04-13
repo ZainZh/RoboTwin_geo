@@ -45,7 +45,8 @@ def eval_function_decorator(policy_name, model_name):
 
 def should_run_expert_check(args):
     custom_hammer_eval = args.get("custom_hammer_eval") or {}
-    return not bool(custom_hammer_eval.get("enabled"))
+    custom_mug_eval = args.get("custom_mug_eval") or {}
+    return not (bool(custom_hammer_eval.get("enabled")) or bool(custom_mug_eval.get("enabled")))
 
 
 def build_instruction_episode_info(task_name, task_env, episode_info=None):
@@ -66,6 +67,11 @@ def build_instruction_episode_info(task_name, task_env, episode_info=None):
         block_pose = block.get_functional_point(0, "pose").p
         arm_tag = "left" if block_pose[0] < 0 else "right"
         return {"info": {"{A}": hammer_asset_config["info_asset_path"], "{a}": arm_tag}}
+    if task_name == "hanging_mug":
+        mug_asset_config = getattr(task_env, "mug_asset_config", None)
+        if mug_asset_config is None:
+            raise ValueError("hanging_mug requires mug_asset_config to build instruction info")
+        return {"info": {"{A}": mug_asset_config["info_asset_path"], "{B}": "040_rack/base0"}}
     raise ValueError(f"cannot build instruction info without expert_check for task {task_name}")
 
 def get_camera_config(camera_type):

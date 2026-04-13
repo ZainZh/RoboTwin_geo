@@ -45,6 +45,7 @@ class TestEvalPolicyHelpers(unittest.TestCase):
         self.assertTrue(should_run_expert_check({}))
         self.assertTrue(should_run_expert_check({"custom_hammer_eval": {"enabled": False}}))
         self.assertFalse(should_run_expert_check({"custom_hammer_eval": {"enabled": True}}))
+        self.assertFalse(should_run_expert_check({"custom_mug_eval": {"enabled": True}}))
 
     def test_build_instruction_episode_info_for_beat_block_hammer_without_play_once(self):
         _, build_instruction_episode_info = load_helpers(
@@ -89,6 +90,27 @@ class TestEvalPolicyHelpers(unittest.TestCase):
         episode_info = build_instruction_episode_info("beat_block_hammer", env, episode_info=existing)
 
         self.assertIs(episode_info, existing)
+
+    def test_build_instruction_episode_info_for_hanging_mug_without_play_once(self):
+        _, build_instruction_episode_info = load_helpers(
+            "should_run_expert_check",
+            "build_instruction_episode_info",
+        )
+
+        env = types.SimpleNamespace(
+            mug_asset_config={"info_asset_path": "partnext_mug_eval/base3"},
+            info={
+                "cluttered_table_info": [],
+                "texture_info": {"wall_texture": None, "table_texture": None},
+            },
+        )
+
+        episode_info = build_instruction_episode_info("hanging_mug", env, episode_info=None)
+
+        self.assertEqual(
+            episode_info,
+            {"info": {"{A}": "partnext_mug_eval/base3", "{B}": "040_rack/base0"}},
+        )
 
 
 if __name__ == "__main__":
