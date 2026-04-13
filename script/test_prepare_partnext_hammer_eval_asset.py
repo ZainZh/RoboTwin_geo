@@ -82,6 +82,8 @@ class TestPreparePartNextHammerEvalAsset(unittest.TestCase):
             self.assertTrue((asset_dir / "model_data0.json").is_file())
             self.assertTrue((asset_dir / "model_data1.json").is_file())
             self.assertTrue((asset_dir / "points_info.json").is_file())
+            self.assertTrue((asset_dir / "preview" / "overview0.ply").is_file())
+            self.assertTrue((asset_dir / "preview" / "overview1.ply").is_file())
             self.assertFalse((output_root / "partnext_hammer_eval_a").exists())
             self.assertEqual([item["selected_glb"] for item in summaries], ["a.glb", "b.glb"])
             self.assertEqual([item["model_id"] for item in summaries], [0, 1])

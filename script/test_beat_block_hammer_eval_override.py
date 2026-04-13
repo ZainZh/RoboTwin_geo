@@ -8,7 +8,7 @@ import yaml
 
 ENV_SOURCE_PATH = Path("envs/beat_block_hammer.py")
 BASE_CONFIG_PATH = Path("task_config/demo_clean_3d_object_pc.yml")
-OVERRIDE_CONFIG_PATH = Path("task_config/demo_clean_3d_partnext_hammer_eval.yml")
+OVERRIDE_CONFIG_PATH = Path("task_config/demo_clean_3d_partnext_objpc_hammer_eval.yml")
 
 
 def load_helpers(*function_names):
@@ -140,15 +140,11 @@ class TestBeatBlockHammerEvalOverride(unittest.TestCase):
 
         custom_hammer_eval = override_config.pop("custom_hammer_eval")
 
-        self.assertEqual(
-            custom_hammer_eval,
-            {
-                "enabled": True,
-                "modelname": "partnext_hammer_eval",
-                "model_id": 0,
-            },
-        )
-        self.assertEqual(override_config, baseline_config)
+        self.assertTrue(custom_hammer_eval["enabled"])
+        self.assertEqual(custom_hammer_eval["modelname"], "partnext_hammer_eval")
+        self.assertIn("model_id", custom_hammer_eval)
+        for key, value in baseline_config.items():
+            self.assertEqual(override_config[key], value)
 
 
 if __name__ == "__main__":

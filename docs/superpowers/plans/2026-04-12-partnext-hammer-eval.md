@@ -570,7 +570,7 @@ class beat_block_hammer(Base_Task):
 ```
 
 ```yaml
-# task_config/demo_clean_3d_partnext_hammer_eval.yml
+# task_config/demo_clean_3d_partnext_objpc_hammer_eval.yml
 render_freq: 15
 episode_num: 50
 use_seed: false
@@ -633,7 +633,7 @@ Expected: `config ok`
 - [ ] **Step 5: Commit the task-side override**
 
 ```bash
-git add envs/beat_block_hammer.py script/test_beat_block_hammer_eval_override.py task_config/demo_clean_3d_partnext_hammer_eval.yml
+git add envs/beat_block_hammer.py script/test_beat_block_hammer_eval_override.py task_config/demo_clean_3d_partnext_objpc_hammer_eval.yml
 git commit -m "feat: add beat_block_hammer custom eval asset override"
 ```
 

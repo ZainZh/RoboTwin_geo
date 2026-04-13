@@ -72,14 +72,29 @@ def prepare_asset_package(
     }
 
 
+def build_preview_ply(prepared_asset) -> bytes:
+    mesh = trimesh.load(prepared_asset.visual_glb_path, force="mesh")
+    contact_pose = np.asarray(prepared_asset.model_data["contact_points_pose"][0], dtype=np.float64)
+    functional_pose = np.asarray(prepared_asset.model_data["functional_matrix"][0], dtype=np.float64)
+    target_pose = np.asarray(prepared_asset.model_data["target_pose"][0], dtype=np.float64)
+    return render_preview_ply(
+        mesh=mesh,
+        contact_point=contact_pose[:3, 3],
+        target_point=target_pose[:3, 3],
+        functional_point=functional_pose[:3, 3],
+    )
+
+
 def _write_asset_variant(
     *,
     asset_dir: Path,
     prepared_asset,
     model_id: int,
+    preview_ply: bytes,
 ) -> None:
     (asset_dir / "visual").mkdir(parents=True, exist_ok=True)
     (asset_dir / "collision").mkdir(parents=True, exist_ok=True)
+    (asset_dir / "preview").mkdir(parents=True, exist_ok=True)
 
     shutil.copy2(prepared_asset.visual_glb_path, asset_dir / "visual" / f"base{model_id}.glb")
     shutil.copy2(prepared_asset.collision_glb_path, asset_dir / "collision" / f"base{model_id}.glb")
@@ -87,6 +102,7 @@ def _write_asset_variant(
         json.dumps(prepared_asset.model_data, indent=2),
         encoding="utf-8",
     )
+    (asset_dir / "preview" / f"overview{model_id}.ply").write_bytes(preview_ply)
 
 
 def prepare_asset_package_all(
@@ -115,10 +131,12 @@ def prepare_asset_package_all(
             reference_model_data_path=reference_model_data,
             requested_glb_name=current_glb_name,
         )
+        preview_ply = build_preview_ply(prepared_asset)
         _write_asset_variant(
             asset_dir=asset_dir,
             prepared_asset=prepared_asset,
             model_id=model_id,
+            preview_ply=preview_ply,
         )
         if points_info is None:
             points_info = prepared_asset.points_info
