@@ -1,8 +1,14 @@
 from ._base_task import Base_Task
 from .utils import *
 import sapien
+import json
+import numpy as np
+import transforms3d as t3d
 from pathlib import Path
 from ._GLOBAL_CONFIGS import *
+
+DEFAULT_HAMMER_SPAWN_POSITION = [0.0, -0.06, 0.783]
+DEFAULT_HAMMER_SPAWN_QUATERNION = [0.0, 0.0, 0.995, 0.105]
 
 
 def resolve_hammer_asset_config(custom_hammer_eval=None, episode_index=0):
@@ -62,6 +68,57 @@ def validate_hammer_asset_config(hammer_asset_config, repo_root=None):
         )
 
 
+def pose_to_matrix(position, quaternion):
+    transform = np.eye(4, dtype=np.float64)
+    transform[:3, :3] = t3d.quaternions.quat2mat(np.asarray(quaternion, dtype=np.float64))
+    transform[:3, 3] = np.asarray(position, dtype=np.float64)
+    return transform
+
+
+def load_scaled_local_pose_matrix(modelname, model_id, point_key, repo_root=None):
+    repo_root = Path(repo_root) if repo_root is not None else Path(".")
+    model_dir = repo_root / "assets" / "objects" / modelname
+    model_data_path = model_dir / ("model_data.json" if model_id is None else f"model_data{model_id}.json")
+    model_data = json.loads(model_data_path.read_text(encoding="utf-8"))
+    point_matrices = model_data.get(point_key)
+    if not point_matrices:
+        raise ValueError(f"{modelname} is missing {point_key}")
+    local_matrix = np.asarray(point_matrices[0], dtype=np.float64).copy()
+    local_matrix[:3, 3] *= np.asarray(model_data.get("scale", [1.0, 1.0, 1.0]), dtype=np.float64)
+    return local_matrix
+
+
+def resolve_hammer_spawn_pose(hammer_asset_config, custom_hammer_eval=None, repo_root=None):
+    spawn_pose = {
+        "position": list(DEFAULT_HAMMER_SPAWN_POSITION),
+        "quaternion": list(DEFAULT_HAMMER_SPAWN_QUATERNION),
+    }
+    hammer_eval = custom_hammer_eval or {}
+    if not hammer_eval.get("enabled"):
+        return spawn_pose
+    if hammer_eval.get("spawn_pose_mode", "match_reference_contact") != "match_reference_contact":
+        return spawn_pose
+
+    reference_world = pose_to_matrix(DEFAULT_HAMMER_SPAWN_POSITION, DEFAULT_HAMMER_SPAWN_QUATERNION)
+    reference_local = load_scaled_local_pose_matrix(
+        "020_hammer",
+        0,
+        "contact_points_pose",
+        repo_root=repo_root,
+    )
+    custom_local = load_scaled_local_pose_matrix(
+        hammer_asset_config["modelname"],
+        hammer_asset_config["model_id"],
+        "contact_points_pose",
+        repo_root=repo_root,
+    )
+    custom_world = reference_world @ reference_local @ np.linalg.inv(custom_local)
+    return {
+        "position": custom_world[:3, 3].tolist(),
+        "quaternion": t3d.quaternions.mat2quat(custom_world[:3, :3]).tolist(),
+    }
+
+
 class beat_block_hammer(Base_Task):
 
     def setup_demo(self, **kwags):
@@ -72,12 +129,16 @@ class beat_block_hammer(Base_Task):
         )
         if (self.custom_hammer_eval or {}).get("enabled"):
             validate_hammer_asset_config(self.hammer_asset_config)
+        self.hammer_spawn_pose = resolve_hammer_spawn_pose(
+            self.hammer_asset_config,
+            self.custom_hammer_eval,
+        )
         super()._init_task_env_(**kwags)
 
     def load_actors(self):
         self.hammer = create_actor(
             scene=self,
-            pose=sapien.Pose([0, -0.06, 0.783], [0, 0, 0.995, 0.105]),
+            pose=sapien.Pose(self.hammer_spawn_pose["position"], self.hammer_spawn_pose["quaternion"]),
             modelname=self.hammer_asset_config["modelname"],
             convex=True,
             model_id=self.hammer_asset_config["model_id"],

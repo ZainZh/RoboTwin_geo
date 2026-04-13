@@ -50,5 +50,6 @@ collect_data: true
 eval_video_log: true
 custom_hammer_eval:
   enabled: true
-  modelname: partnext_hammer_eval
-  model_id: [ 0,1 ,7 ,37, 42 ]
+  modelname: partnext_hammer_eval_2
+  ## 3 4 5 6 7 37
+  model_id: [ 1]

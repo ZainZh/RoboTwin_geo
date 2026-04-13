@@ -42,6 +42,32 @@ def eval_function_decorator(policy_name, model_name):
     except ImportError as e:
         raise e
 
+
+def should_run_expert_check(args):
+    custom_hammer_eval = args.get("custom_hammer_eval") or {}
+    return not bool(custom_hammer_eval.get("enabled"))
+
+
+def build_instruction_episode_info(task_name, task_env, episode_info=None):
+    if episode_info is not None:
+        return episode_info
+    existing_info = getattr(task_env, "info", None)
+    if (
+        isinstance(existing_info, dict)
+        and isinstance(existing_info.get("info"), dict)
+        and len(existing_info["info"]) > 0
+    ):
+        return existing_info
+    if task_name == "beat_block_hammer":
+        hammer_asset_config = getattr(task_env, "hammer_asset_config", None)
+        block = getattr(task_env, "block", None)
+        if hammer_asset_config is None or block is None:
+            raise ValueError("beat_block_hammer requires hammer_asset_config and block to build instruction info")
+        block_pose = block.get_functional_point(0, "pose").p
+        arm_tag = "left" if block_pose[0] < 0 else "right"
+        return {"info": {"{A}": hammer_asset_config["info_asset_path"], "{a}": arm_tag}}
+    raise ValueError(f"cannot build instruction info without expert_check for task {task_name}")
+
 def get_camera_config(camera_type):
     camera_config_path = os.path.join(parent_directory, "../task_config/_camera_config.yml")
 
@@ -197,7 +223,7 @@ def eval_policy(task_name,
     print(f"\033[34mTask Name: {args['task_name']}\033[0m")
     print(f"\033[34mPolicy Name: {args['policy_name']}\033[0m")
 
-    expert_check = True
+    expert_check = should_run_expert_check(args)
     TASK_ENV.suc = 0
     TASK_ENV.test_num = 0
 
@@ -219,29 +245,27 @@ def eval_policy(task_name,
         render_freq = args["render_freq"]
         args["render_freq"] = 0
 
-        if expert_check:
-            try:
-                TASK_ENV.setup_demo(now_ep_num=now_id, seed=now_seed, is_test=True, **args)
+        try:
+            TASK_ENV.setup_demo(now_ep_num=now_id, seed=now_seed, is_test=True, **args)
+            if expert_check:
                 episode_info = TASK_ENV.play_once()
-                TASK_ENV.close_env()
-            except UnStableError as e:
-                # print(" -------------")
-                # print("Error: ", e)
-                # print(" -------------")
-                TASK_ENV.close_env()
-                now_seed += 1
-                args["render_freq"] = render_freq
-                continue
-            except Exception as e:
-                # stack_trace = traceback.format_exc()
-                # print(" -------------")
-                # print("Error: ", e)
-                # print(" -------------")
-                TASK_ENV.close_env()
-                now_seed += 1
-                args["render_freq"] = render_freq
-                print("error occurs !")
-                continue
+            else:
+                episode_info = build_instruction_episode_info(task_name, TASK_ENV, episode_info=None)
+            TASK_ENV.close_env()
+        except UnStableError as e:
+            TASK_ENV.close_env()
+            now_seed += 1
+            args["render_freq"] = render_freq
+            continue
+        except Exception as e:
+            print(" -------------")
+            print("Error: ", e)
+            print(" -------------")
+            TASK_ENV.close_env()
+            now_seed += 1
+            args["render_freq"] = render_freq
+            print("error occurs !")
+            continue
 
         if (not expert_check) or (TASK_ENV.plan_success and TASK_ENV.check_success()):
             succ_seed += 1

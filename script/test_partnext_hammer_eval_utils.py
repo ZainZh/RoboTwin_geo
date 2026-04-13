@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 import numpy as np
+import transforms3d as t3d
 
 SCRIPT_DIR = Path(__file__).resolve().parents[1] / "script"
 if str(SCRIPT_DIR) not in sys.path:
@@ -13,6 +14,8 @@ if str(SCRIPT_DIR) not in sys.path:
 import partnext_hammer_eval_utils as utils
 
 from partnext_hammer_eval_utils import (
+    build_contact_pose_for_topdown_grasp,
+    build_functional_pose_for_beating,
     build_model_data,
     build_partnext_hammer_asset,
     collect_region_face_ids,
@@ -219,6 +222,75 @@ class TestPartNextHammerEvalUtils(unittest.TestCase):
         self.assertEqual(prepared_asset.visual_glb_path, second_glb)
         self.assertEqual(prepared_asset.source_meta["glb_dst"], "second.glb")
 
+    def test_build_partnext_hammer_asset_generates_split_collision_glb(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            partnext_dir = root / "partnext"
+            partnext_dir.mkdir()
+
+            head_mesh = utils.trimesh.creation.box(extents=(0.3, 0.2, 0.3))
+            head_mesh.apply_translation([0.0, 0.7, 0.0])
+            handle_mesh = utils.trimesh.creation.box(extents=(0.1, 1.0, 0.1))
+            scene = utils.trimesh.Scene()
+            scene.add_geometry(head_mesh, geom_name="candidate.glb_0")
+            scene.add_geometry(handle_mesh, geom_name="candidate.glb_1")
+            candidate_glb = partnext_dir / "candidate.glb"
+            scene.export(candidate_glb)
+
+            annotation_path = root / "annotation.jsonl"
+            annotation_path.write_text(
+                json.dumps(
+                    {
+                        "glb_dst": "candidate.glb",
+                        "model_id": "candidate",
+                        "hierarchyList": json.dumps(
+                            [
+                                {
+                                    "name": "Hammer",
+                                    "children": [
+                                        {
+                                            "name": "Head",
+                                            "children": [{"name": "Hammer Head", "maskId": 0}],
+                                        },
+                                        {
+                                            "name": "Handle",
+                                            "children": [{"name": "Grip", "maskId": 3}],
+                                        },
+                                    ],
+                                }
+                            ]
+                        ),
+                        "masks": json.dumps({"0": {"0": list(range(12))}, "3": {"1": list(range(12))}}),
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            reference_model_data_path = root / "model_data0.json"
+            reference_model_data_path.write_text(
+                json.dumps(
+                    {
+                        "extents": [0.1, 0.4, 0.12],
+                        "scale": [1.0, 1.0, 1.0],
+                        "stable": False,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            prepared_asset = build_partnext_hammer_asset(
+                partnext_dir=partnext_dir,
+                annotation_path=annotation_path,
+                output_modelname="partnext_hammer_eval",
+                reference_model_data_path=reference_model_data_path,
+                requested_glb_name="candidate.glb",
+            )
+
+            self.assertNotEqual(prepared_asset.collision_glb_path, prepared_asset.visual_glb_path)
+            collision_scene = utils.trimesh.load(prepared_asset.collision_glb_path, force="scene")
+            self.assertGreaterEqual(len(collision_scene.geometry), 2)
+
 
     def test_select_candidate_glb_reports_candidate_rejection_details(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -293,6 +365,49 @@ class TestPartNextHammerEvalUtils(unittest.TestCase):
         expected_handle_center = np.asarray(mesh.triangles_center[sorted(handle_face_ids)], dtype=np.float64).mean(axis=0)
         self.assertTrue(np.allclose(contact_point, expected_handle_center))
         self.assertTrue(np.allclose(np.abs(handle_axis), np.asarray([0.0, 1.0, 0.0]), atol=1e-6))
+
+    def test_build_contact_pose_for_topdown_grasp_prefers_negative_local_up(self):
+        handle_axis = np.asarray([1.0, 0.0, 0.0], dtype=np.float64)
+        contact_point = np.asarray([0.1, -0.2, 0.3], dtype=np.float64)
+
+        contact_pose = build_contact_pose_for_topdown_grasp(
+            origin=contact_point,
+            handle_axis=handle_axis,
+        )
+
+        self.assertTrue(np.allclose(contact_pose[:3, 0], handle_axis))
+        self.assertGreater(-float(contact_pose[2, 1]), 0.99)
+
+    def test_build_contact_pose_for_topdown_grasp_matches_beat_block_hammer_topdown_approach(self):
+        handle_axis = np.asarray([0.0, 1.0, 0.0], dtype=np.float64)
+        contact_point = np.asarray([0.0, 0.0, 0.0], dtype=np.float64)
+        contact_pose = build_contact_pose_for_topdown_grasp(
+            origin=contact_point,
+            handle_axis=handle_axis,
+        )
+
+        grasp_transform = np.asarray(
+            [
+                [0.0, 0.0, 1.0, 0.0],
+                [-1.0, 0.0, 0.0, 0.0],
+                [0.0, -1.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            dtype=np.float64,
+        )
+        spawn_rotation = t3d.quaternions.quat2mat(np.asarray([0.0, 0.0, 0.995, 0.105], dtype=np.float64))
+        world_grasp_frame = spawn_rotation @ (contact_pose[:3, :3] @ grasp_transform[:3, :3])
+        world_approach_direction = -world_grasp_frame[:, 0]
+
+        self.assertGreater(float(world_approach_direction[2]), 0.9)
+
+    def test_build_functional_pose_for_beating_uses_identity_orientation(self):
+        functional_point = np.asarray([0.2, -0.1, 0.3], dtype=np.float64)
+
+        functional_pose = build_functional_pose_for_beating(functional_point)
+
+        self.assertTrue(np.allclose(functional_pose[:3, :3], np.eye(3)))
+        self.assertTrue(np.allclose(functional_pose[:3, 3], functional_point))
 
     def test_compute_head_functional_point_prefers_perpendicular_workface_for_merged_mesh(self):
         handle_mesh = utils.trimesh.creation.box(extents=(0.1, 1.0, 0.1))
