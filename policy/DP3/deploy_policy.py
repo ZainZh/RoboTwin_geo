@@ -177,6 +177,7 @@ def encode_obs(observation, model):  # Post-Process Observation
 
     if use_actorseg_objpc:
         per_placeholder_clouds = []
+        actorseg_object_pointcloud = {}
         for placeholder in getattr(model, "object_placeholders", []):
             actor_ids = getattr(model, "actorseg_actor_ids_by_placeholder", {}).get(placeholder, [])
             object_pc, _ = model.actorseg_extract_fn(
@@ -187,11 +188,13 @@ def encode_obs(observation, model):  # Post-Process Observation
                 target_num_points=int(getattr(model, "target_num_points", 1024)),
                 segmentation_key=str(getattr(model, "actorseg_segmentation_key", "actor_segmentation")),
             )
+            actorseg_object_pointcloud[str(placeholder)] = object_pc
             per_placeholder_clouds.append(object_pc)
         point_cloud = merge_object_point_clouds(
             per_placeholder_clouds,
             target_num_points=int(getattr(model, "target_num_points", 1024)),
         )
+        object_pointcloud = actorseg_object_pointcloud
 
     elif use_sam3_objpc:
         per_placeholder_clouds = []

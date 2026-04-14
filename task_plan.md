@@ -1,10 +1,10 @@
-# Task Plan: Diagnose NDF Underperformance and Add Hybrid Pointwise Paths
+# Task Plan: Add ActorSeg Hybrid Training/Eval Paths for NDF and Semantic
 
 ## Goal
 Investigate why `train_ndf_pointwise` is flat or slightly worse than `train_objpc`, determine whether the main cause is evaluation setup, training recipe mismatch, incorrect usage, or the representation itself, and implement a new `ndf_pointwise_hybrid` path that preserves baseline merged object-PCD inputs while adding NDF pointwise features.
 
 ## Current Phase
-Phase 7
+Phase 1
 
 ## Phases
 
@@ -44,12 +44,28 @@ Phase 7
 - [x] Verify the new test passes and the new shell/python entrypoints are syntactically valid
 - **Status:** complete
 
-### Phase 7: Semantic Hybrid Follow-Up
-- [x] Read the existing `train_ndf_pointwise_hybrid.sh` chain end-to-end and document exactly how raw merged ObjPC and NDF pointwise features coexist
-- [x] Compare the semantic pointwise path against the NDF hybrid path to identify the minimum code delta needed for a semantic hybrid
-- [x] Add a failing test for `semantic_pointwise_hybrid` that proves the main `point_cloud` still keeps `{A}+{B}` while `semantic_point_cloud_A/B` are still injected
-- [x] Implement preprocess/train/eval/config/runtime support for `semantic_pointwise_hybrid`
-- [x] Verify the new tests, shell entrypoints, and Python modules pass targeted checks
+### Phase 1: Design & Scope
+- [x] Map the existing `objpc_actorseg`, `ndf_pointwise_hybrid`, and `semantic_pointwise_hybrid` paths
+- [x] Write a short spec for actorseg-based hybrid NDF / semantic training and eval
+- [x] Get user approval on the written design before implementation
+- **Status:** complete
+
+### Phase 2: Test Design
+- [x] Add failing tests for actorseg+NDF hybrid online observation construction
+- [x] Add failing tests for actorseg+semantic hybrid online observation construction
+- [x] Add failing tests for actorseg offline preprocess wrappers / argument plumbing where needed
+- **Status:** complete
+
+### Phase 3: Implementation
+- [x] Add actorseg+NDF hybrid preprocess/train/eval/config paths
+- [x] Add actorseg+semantic hybrid preprocess/train/eval/config paths
+- [x] Extend runtime eval observation building in `deploy_policy.py` without changing existing working paths
+- **Status:** complete
+
+### Phase 4: Verification
+- [x] Run targeted unit tests for the new actorseg hybrid paths
+- [x] Run `python -m py_compile` on new and modified Python files
+- [x] Run `bash -n` on new shell entrypoints
 - **Status:** complete
 
 ## Key Questions
@@ -66,6 +82,7 @@ Phase 7
 | Distinguish benchmark-design explanations from implementation/usage explanations | Both are plausible, and the user explicitly asked about novel-object evaluation vs. misuse vs. weak representation |
 | Add a separate `ndf_pointwise_hybrid` path instead of redefining `ndf_pointwise` | This isolates the new experiment and keeps old checkpoints / notes interpretable |
 | Mirror the new semantic work after the NDF hybrid structure instead of inventing a new pattern | The user explicitly asked for a semantic hybrid that follows the same raw-ObjPC-plus-feature-branch structure |
+| Keep the new actorseg+hybrid work on separate config/script names | The user explicitly asked not to pollute existing paths that already run correctly |
 
 ## Errors Encountered
 | Error | Attempt | Resolution |

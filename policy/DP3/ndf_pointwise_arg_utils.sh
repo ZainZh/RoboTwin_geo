@@ -25,7 +25,7 @@ normalize_ndf_train_args() {
     ndf_point_num="${args[10]:-128}"
     ndf_legacy_shifted=false
 
-    if looks_like_placeholder_arg "${args[8]:-}" && looks_like_integer_arg "${args[9]:-}" && [ "${#args[@]}" -le 10 ]; then
+    if looks_like_placeholder_arg "${args[8]:-}" && looks_like_integer_arg "${args[9]:-}"; then
         ndf_dgcnn_placeholders=""
         object_placeholders="${args[8]}"
         ndf_point_num="${args[9]}"
@@ -51,7 +51,7 @@ normalize_ndf_eval_args() {
     ndf_point_num="${args[12]:-128}"
     ndf_legacy_shifted=false
 
-    if looks_like_placeholder_arg "${args[9]:-}" && looks_like_integer_arg "${args[10]:-}" && [ "${#args[@]}" -le 11 ]; then
+    if looks_like_placeholder_arg "${args[9]:-}" && looks_like_integer_arg "${args[10]:-}"; then
         ndf_dgcnn_placeholders=""
         object_placeholders="${args[9]}"
         checkpoint_num="${args[10]}"
@@ -77,7 +77,7 @@ normalize_ndf_eval_hybrid_args() {
     ndf_point_num="${args[11]:-128}"
     ndf_legacy_shifted=false
 
-    if looks_like_placeholder_arg "${args[8]:-}" && looks_like_integer_arg "${args[9]:-}" && [ "${#args[@]}" -le 10 ]; then
+    if looks_like_placeholder_arg "${args[8]:-}" && looks_like_integer_arg "${args[9]:-}"; then
         ndf_dgcnn_placeholders=""
         object_placeholders="${args[8]}"
         checkpoint_num="${args[9]}"

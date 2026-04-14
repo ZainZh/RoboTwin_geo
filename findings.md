@@ -152,6 +152,7 @@
 - `train_semantic_pointwise.sh` now defaults back to `batch_size=256`, `val_batch_size=batch_size`, and `use_ema=true`
 - `use_ema` in this codebase means training and saving an exponential moving average copy of the policy weights. In practice it usually stabilizes eval and often gives a modest improvement, but the impact is task-dependent rather than guaranteed to be large.
 - New task on 2026-04-13: explain how `train_ndf_pointwise_hybrid.sh` combines baseline object-PCD observations with NDF pointwise features, then build the analogous `semantic_pointwise_hybrid` path.
+- New task on 2026-04-14: add actorseg-based hybrid training/eval for both NDF and semantic, mirroring the successful `objpc + feature-branch` hybrid structure while using mask-project-fuse object point clouds like `train_objpc_actorseg`.
 - User-provided experiment evidence: the existing global-NDF path (`train_ndf.sh` / `robot_dp3_ndf`) was already tested using `policy/DP3/checkpoints/hanging_mug-demo_clean_3d_object_pc-objpc-ndf-50_0`, and it caused a severe behavioral regression: the robot often failed to approach the mug, consistent with losing or underusing object location information.
 - This is consistent with the current global-NDF integration design:
 - `compute_ndf_feature(...)` explicitly normalizes the object point cloud by centering and scaling it before extracting the descriptor, making the NDF feature pose-invariant by construction, see `normalize_object_point_cloud(...)` in [ndf_feature_utils.py](/home/zheng/github/RoboTwin_geo/policy/DP3/scripts/ndf_feature_utils.py#L431).
@@ -240,6 +241,48 @@
     - `policy/DP3/train_ndf_pointwise_hybrid.sh`
     - `policy/DP3/eval_ndf_pointwise.sh`
     - `policy/DP3/train_ndf_pointwise.sh`
+- Current actorseg+hybrid design constraint:
+  - training must use actorseg-projected fused object clouds as the main `point_cloud`
+  - hybrid branches must still add `ndf_point_cloud_A/B` or `semantic_point_cloud_A/B` on top of that raw actorseg point cloud
+  - eval must perform the same online actorseg extraction once per placeholder and reuse that same per-placeholder cloud for both the main merged `point_cloud` and the feature branches
+- The cleanest implementation path is to add separate pipelines rather than mutating existing working ones:
+  - `objpc_actorseg_ndf_pointwise_hybrid`
+  - `objpc_actorseg_semantic_pointwise_hybrid`
+- Actorseg hybrid runtime support is now implemented in `deploy_policy.py` by reusing the per-placeholder actorseg-extracted point clouds for both:
+  - the merged raw `point_cloud`
+  - the `ndf_point_cloud_A/B` or `semantic_point_cloud_A/B` feature branches
+  This keeps online eval semantics aligned with offline preprocessing.
+- New actorseg hybrid preprocessing entrypoints now exist:
+  - `policy/DP3/scripts/process_data_ndf_pointwise_actorseg_hybrid.py`
+  - `policy/DP3/scripts/process_data_semantic_pointwise_actorseg_hybrid.py`
+  - `policy/DP3/process_data_ndf_pointwise_actorseg_hybrid.sh`
+  - `policy/DP3/process_data_semantic_pointwise_actorseg_hybrid.sh`
+- New actorseg hybrid train/eval entrypoints now exist:
+  - `policy/DP3/train_ndf_pointwise_actorseg_hybrid.sh`
+  - `policy/DP3/train_semantic_pointwise_actorseg_hybrid.sh`
+  - `policy/DP3/eval_ndf_pointwise_actorseg_hybrid.sh`
+  - `policy/DP3/eval_semantic_pointwise_actorseg_hybrid.sh`
+- New Hydra configs now exist:
+  - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/robot_dp3_objpc_actorseg_ndf_pointwise_hybrid.yaml`
+  - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/robot_dp3_objpc_actorseg_semantic_pointwise_hybrid.yaml`
+  - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/task/demo_task_objpc_actorseg_ndf_pointwise_hybrid.yaml`
+  - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/task/demo_task_objpc_actorseg_semantic_pointwise_hybrid.yaml`
+- Targeted regression coverage now exists in `policy/DP3/scripts/test_actorseg_pointwise_hybrid.py`, proving:
+  - actorseg+NDF hybrid keeps merged raw actorseg `point_cloud` and emits `ndf_point_cloud_A`
+  - actorseg+semantic hybrid keeps merged raw actorseg `point_cloud` and emits `semantic_point_cloud_A`
+- Fresh verification evidence for the actorseg hybrid work:
+  - `python policy/DP3/scripts/test_actorseg_pointwise_hybrid.py` passed with `2` tests
+  - `python policy/DP3/scripts/test_ndf_pointwise_hybrid.py` still passed with `3` tests
+  - `python policy/DP3/scripts/test_semantic_pointwise_hybrid.py` still passed with `3` tests
+  - `bash policy/DP3/scripts/test_ndf_pointwise_arg_utils.sh` passed
+  - `python -m py_compile policy/DP3/deploy_policy.py policy/DP3/scripts/process_data_ndf_pointwise_actorseg_hybrid.py policy/DP3/scripts/process_data_semantic_pointwise_actorseg_hybrid.py policy/DP3/scripts/test_actorseg_pointwise_hybrid.py` passed
+  - `bash -n` passed for:
+    - `policy/DP3/process_data_ndf_pointwise_actorseg_hybrid.sh`
+    - `policy/DP3/process_data_semantic_pointwise_actorseg_hybrid.sh`
+    - `policy/DP3/train_ndf_pointwise_actorseg_hybrid.sh`
+    - `policy/DP3/train_semantic_pointwise_actorseg_hybrid.sh`
+    - `policy/DP3/eval_ndf_pointwise_actorseg_hybrid.sh`
+    - `policy/DP3/eval_semantic_pointwise_actorseg_hybrid.sh`
 - Follow-up bug found during first real user run: `process_data_ndf_pointwise_hybrid.py` originally forwarded `--output_suffix` as two argv items, and the value `-objpc-ndf-pointwise-hybrid` was parsed as a new option because it starts with `-`.
 - Root-cause fix: `policy/DP3/scripts/process_data_ndf_pointwise_hybrid.py` now builds argv through `build_hybrid_argv(...)` and passes `--output_suffix=-objpc-ndf-pointwise-hybrid` as an attached option.
 - The regression test `policy/DP3/scripts/test_ndf_pointwise_hybrid.py` now includes a dedicated wrapper-argv check for this case and passes with `3` tests.

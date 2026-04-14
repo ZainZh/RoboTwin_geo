@@ -307,6 +307,67 @@
   - Ran `bash -n policy/DP3/train_ndf_pointwise.sh`
 - Files created/modified:
   - `progress.md` (updated)
+
+## Session: 2026-04-14 (ActorSeg Hybrid Design)
+
+### Phase 1: Discovery & Design
+- **Status:** in_progress
+- Actions taken:
+  - Captured the new task: use actorseg mask-projected object point clouds as the main raw input while adding NDF or semantic hybrid branches, matching the already-successful objpc hybrid structure.
+  - Re-read the current `objpc_actorseg` training/eval/preprocess chain.
+  - Re-read the existing `ndf_pointwise_hybrid` and `semantic_pointwise_hybrid` paths to identify the minimum extension pattern.
+  - Chose a non-invasive design: add separate actorseg+hybrid paths instead of mutating existing working scripts and configs.
+- Files created/modified:
+  - `task_plan.md` (updated)
+  - `findings.md` (updated)
+  - `progress.md` (updated)
+
+### Phase 2: Test Design
+- **Status:** complete
+- Actions taken:
+  - Added `policy/DP3/scripts/test_actorseg_pointwise_hybrid.py`.
+  - First wrote the runtime tests too weakly by checking only output shapes; they passed immediately and did not prove actorseg point clouds were feeding the feature branches.
+  - Tightened the assertions to require that `ndf_point_cloud_A` / `semantic_point_cloud_A` equal the mocked feature outputs, which correctly produced failing tests against the old runtime logic.
+- Files created/modified:
+  - `policy/DP3/scripts/test_actorseg_pointwise_hybrid.py` (created)
+
+### Phase 3: Implementation
+- **Status:** complete
+- Actions taken:
+  - Updated `policy/DP3/deploy_policy.py` so actorseg-extracted per-placeholder point clouds are reused for hybrid feature branches instead of being discarded after building the merged raw cloud.
+  - Added actorseg+NDF hybrid preprocess/train/eval/config entrypoints.
+  - Added actorseg+semantic hybrid preprocess/train/eval/config entrypoints.
+  - Reused existing actorseg metadata requirements and incremental zarr writing.
+  - Extended the NDF bash-argument compatibility helper to remain valid when actorseg camera-name parameters are appended to the end of the command line.
+- Files created/modified:
+  - `policy/DP3/deploy_policy.py` (modified)
+  - `policy/DP3/ndf_pointwise_arg_utils.sh` (modified)
+  - `policy/DP3/scripts/process_data_ndf_pointwise_actorseg_hybrid.py` (created)
+  - `policy/DP3/scripts/process_data_semantic_pointwise_actorseg_hybrid.py` (created)
+  - `policy/DP3/process_data_ndf_pointwise_actorseg_hybrid.sh` (created)
+  - `policy/DP3/process_data_semantic_pointwise_actorseg_hybrid.sh` (created)
+  - `policy/DP3/train_ndf_pointwise_actorseg_hybrid.sh` (created)
+  - `policy/DP3/train_semantic_pointwise_actorseg_hybrid.sh` (created)
+  - `policy/DP3/eval_ndf_pointwise_actorseg_hybrid.sh` (created)
+  - `policy/DP3/eval_semantic_pointwise_actorseg_hybrid.sh` (created)
+  - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/robot_dp3_objpc_actorseg_ndf_pointwise_hybrid.yaml` (created)
+  - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/robot_dp3_objpc_actorseg_semantic_pointwise_hybrid.yaml` (created)
+  - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/task/demo_task_objpc_actorseg_ndf_pointwise_hybrid.yaml` (created)
+  - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/task/demo_task_objpc_actorseg_semantic_pointwise_hybrid.yaml` (created)
+
+### Phase 4: Verification
+- **Status:** complete
+- Actions taken:
+  - Ran `python policy/DP3/scripts/test_actorseg_pointwise_hybrid.py`
+  - Ran `python policy/DP3/scripts/test_ndf_pointwise_hybrid.py`
+  - Ran `python policy/DP3/scripts/test_semantic_pointwise_hybrid.py`
+  - Ran `bash policy/DP3/scripts/test_ndf_pointwise_arg_utils.sh`
+  - Ran `python -m py_compile policy/DP3/deploy_policy.py policy/DP3/scripts/process_data_ndf_pointwise_actorseg_hybrid.py policy/DP3/scripts/process_data_semantic_pointwise_actorseg_hybrid.py policy/DP3/scripts/test_actorseg_pointwise_hybrid.py`
+  - Ran `bash -n` on all six new actorseg hybrid shell entrypoints
+- Files created/modified:
+  - `task_plan.md` (updated)
+  - `findings.md` (updated)
+  - `progress.md` (updated)
 - **Status:** complete
 - Actions taken:
   - Read the saved Hydra overrides for the existing local `objpc`, `ndf_pointwise`, and `semantic_pointwise` training runs.
