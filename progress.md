@@ -218,6 +218,51 @@
   - `progress.md` (updated)
 
 ### Phase 3: Evidence Gathering
+
+## Session: 2026-04-13 (Semantic Hybrid Follow-Up)
+
+### Phase 7: Discovery & Design
+- **Status:** in_progress
+- Actions taken:
+  - Restored planning context and added a new follow-up phase for the semantic hybrid request.
+  - Read `train_ndf_pointwise_hybrid.sh`, `process_data_ndf_pointwise_hybrid.sh`, `process_data_ndf_pointwise.py`, `deploy_policy.py`, and the matching NDF hybrid Hydra configs to pin down the exact hybrid pattern.
+  - Read the existing semantic pointwise preprocess/train/eval chain and confirmed it still removes feature placeholders from the main merged `point_cloud`.
+  - Confirmed the NDF hybrid pattern is two-part: keep the raw merged ObjPC in `point_cloud`, then append `ndf_point_cloud_A/B` as extra observation keys with explicit shape overrides.
+  - Confirmed the semantic path can follow the same structure with a small extension instead of a new architecture.
+- Files created/modified:
+  - `task_plan.md` (updated)
+  - `findings.md` (updated)
+  - `progress.md` (updated)
+
+### Phase 7: Implementation & Verification
+- **Status:** complete
+- Actions taken:
+  - Added a failing regression test `policy/DP3/scripts/test_semantic_pointwise_hybrid.py` covering both the old semantic pointwise behavior and the new hybrid behavior.
+  - Refactored `process_data_semantic_pointwise.py` to expose `build_parser()`, accept `--keep_feature_placeholders_in_context`, and reuse `pointwise_context_utils.py`.
+  - Added the thin wrapper `policy/DP3/scripts/process_data_semantic_pointwise_hybrid.py`.
+  - Added new shell entrypoints:
+    - `policy/DP3/process_data_semantic_pointwise_hybrid.sh`
+    - `policy/DP3/train_semantic_pointwise_hybrid.sh`
+    - `policy/DP3/eval_semantic_pointwise_hybrid.sh`
+  - Added new Hydra configs:
+    - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/robot_dp3_semantic_pointwise_hybrid.yaml`
+    - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/task/demo_task_semantic_pointwise_hybrid.yaml`
+  - Extended `policy/DP3/deploy_policy.py` with `use_semantic_pointwise_hybrid` and reused the same “keep feature placeholders in main context” path as the NDF hybrid.
+  - Verified the new semantic hybrid tests pass and the existing NDF hybrid regression test still passes.
+  - Verified Python compilation and shell syntax for all newly added semantic hybrid entrypoints.
+- Files created/modified:
+  - `policy/DP3/scripts/test_semantic_pointwise_hybrid.py` (created)
+  - `policy/DP3/scripts/process_data_semantic_pointwise.py` (modified)
+  - `policy/DP3/scripts/process_data_semantic_pointwise_hybrid.py` (created)
+  - `policy/DP3/process_data_semantic_pointwise_hybrid.sh` (created)
+  - `policy/DP3/train_semantic_pointwise_hybrid.sh` (created)
+  - `policy/DP3/eval_semantic_pointwise_hybrid.sh` (created)
+  - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/robot_dp3_semantic_pointwise_hybrid.yaml` (created)
+  - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/task/demo_task_semantic_pointwise_hybrid.yaml` (created)
+  - `policy/DP3/deploy_policy.py` (modified)
+  - `task_plan.md` (updated)
+  - `findings.md` (updated)
+  - `progress.md` (updated)
 - **Status:** complete
 - Actions taken:
   - Read the saved Hydra overrides for the existing local `objpc`, `ndf_pointwise`, and `semantic_pointwise` training runs.

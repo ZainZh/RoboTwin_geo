@@ -71,7 +71,7 @@ def validate_mug_asset_config(mug_asset_config, repo_root=None):
         )
 
 
-def load_scaled_local_pose_matrix(modelname, model_id, point_key, repo_root=None):
+def load_scaled_local_pose_matrix(modelname, model_id, point_key, repo_root=None, point_index=0):
     repo_root = Path(repo_root) if repo_root is not None else Path(".")
     model_dir = repo_root / "assets" / "objects" / modelname
     model_data_path = model_dir / f"model_data{model_id}.json"
@@ -79,7 +79,7 @@ def load_scaled_local_pose_matrix(modelname, model_id, point_key, repo_root=None
     point_matrices = model_data.get(point_key)
     if not point_matrices:
         raise ValueError(f"{modelname} is missing {point_key}")
-    local_matrix = np.asarray(point_matrices[0], dtype=np.float64).copy()
+    local_matrix = np.asarray(point_matrices[int(point_index)], dtype=np.float64).copy()
     local_matrix[:3, 3] *= np.asarray(model_data.get("scale", [1.0, 1.0, 1.0]), dtype=np.float64)
     return local_matrix
 
@@ -89,21 +89,23 @@ def resolve_mug_spawn_qpos(mug_asset_config, custom_mug_eval=None, repo_root=Non
     mug_eval = custom_mug_eval or {}
     if not mug_eval.get("enabled"):
         return spawn_qpos
-    if mug_eval.get("spawn_pose_mode", "match_reference_contact") != "match_reference_contact":
+    if mug_eval.get("spawn_pose_mode", "match_reference_bottom") != "match_reference_bottom":
         return spawn_qpos
 
     reference_root = t3d.quaternions.quat2mat(np.asarray(DEFAULT_MUG_SPAWN_QPOS, dtype=np.float64))
     reference_local = load_scaled_local_pose_matrix(
         "039_mug",
         0,
-        "contact_points_pose",
+        "functional_matrix",
         repo_root=repo_root,
+        point_index=1,
     )
     custom_local = load_scaled_local_pose_matrix(
         mug_asset_config["modelname"],
         mug_asset_config["model_id"],
-        "contact_points_pose",
+        "functional_matrix",
         repo_root=repo_root,
+        point_index=1,
     )
     custom_root = reference_root @ reference_local[:3, :3] @ np.linalg.inv(custom_local[:3, :3])
     return t3d.quaternions.mat2quat(custom_root).tolist()

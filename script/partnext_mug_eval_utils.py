@@ -11,17 +11,12 @@ os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 import numpy as np
 import trimesh
 
-from partnext_hammer_eval_utils import (
-    estimate_uniform_scale,
-    find_annotation_row,
-    load_annotation_rows,
-    load_scene_geometries,
-    render_preview_ply,
-)
+from partnext_hammer_eval_utils import find_annotation_row, load_annotation_rows, load_scene_geometries, render_preview_ply
 
 
 BODY_LABELS = ("Main Body", "Body")
 HANDLE_LABELS = ("Handle",)
+MUG_SCALE_MULTIPLIER = 0.95
 DEFAULT_MUG_DESCRIPTION = {
     "raw_description": "mug",
     "seen": [
@@ -186,6 +181,100 @@ def _collect_region_geometry(
     return np.vstack(centroid_groups), np.vstack(normal_groups), np.vstack(vertex_groups)
 
 
+def _extract_region_submesh(
+    geometry_meshes: list[trimesh.Trimesh],
+    face_specs: dict[int, set[int]],
+) -> trimesh.Trimesh:
+    region_meshes: list[trimesh.Trimesh] = []
+    for submesh_id, face_ids in sorted(face_specs.items()):
+        if not face_ids:
+            continue
+        geometry = geometry_meshes[int(submesh_id)]
+        face_indices = np.asarray(sorted(face_ids), dtype=np.int64)
+        submesh = geometry.submesh([face_indices], append=True, repair=False)
+        if isinstance(submesh, list):
+            if len(submesh) == 0:
+                continue
+            submesh = trimesh.util.concatenate(submesh)
+        if submesh is None or len(submesh.faces) == 0:
+            continue
+        region_meshes.append(submesh)
+    if not region_meshes:
+        raise ValueError("region face specs produced no submesh")
+    if len(region_meshes) == 1:
+        return region_meshes[0]
+    return trimesh.util.concatenate(region_meshes)
+
+
+def align_geometry_meshes_to_face_specs(
+    geometry_meshes: list[trimesh.Trimesh],
+    *face_spec_groups: dict[int, set[int]],
+) -> list[trimesh.Trimesh]:
+    merged_specs: dict[int, set[int]] = {}
+    for face_specs in face_spec_groups:
+        _merge_face_specs(merged_specs, face_specs)
+    if not merged_specs:
+        return geometry_meshes
+
+    def is_direct_mapping_valid() -> bool:
+        for submesh_id, face_ids in merged_specs.items():
+            if submesh_id < 0 or submesh_id >= len(geometry_meshes):
+                return False
+            if not face_ids:
+                continue
+            if max(face_ids) >= len(geometry_meshes[submesh_id].faces):
+                return False
+        return True
+
+    if is_direct_mapping_valid():
+        return geometry_meshes
+
+    submesh_ids = sorted(merged_specs.keys())
+    face_counts = [len(mesh.faces) for mesh in geometry_meshes]
+    candidate_indices: list[list[int]] = []
+    for submesh_id in submesh_ids:
+        max_face_id = max(merged_specs[submesh_id]) if merged_specs[submesh_id] else -1
+        compatible = [idx for idx, face_count in enumerate(face_counts) if face_count > max_face_id]
+        if not compatible:
+            raise IndexError(f"no geometry is compatible with submesh {submesh_id} (max face id {max_face_id})")
+        candidate_indices.append(compatible)
+
+    best_assignment = None
+    best_score = None
+
+    def backtrack(position: int, used: set[int], current: dict[int, int]) -> None:
+        nonlocal best_assignment, best_score
+        if position == len(submesh_ids):
+            score = 0.0
+            for submesh_id, geometry_idx in current.items():
+                max_face_id = max(merged_specs[submesh_id]) if merged_specs[submesh_id] else -1
+                score += abs((face_counts[geometry_idx] - 1) - max_face_id)
+            if best_score is None or score < best_score:
+                best_score = score
+                best_assignment = dict(current)
+            return
+
+        submesh_id = submesh_ids[position]
+        for geometry_idx in candidate_indices[position]:
+            if geometry_idx in used:
+                continue
+            used.add(geometry_idx)
+            current[submesh_id] = geometry_idx
+            backtrack(position + 1, used, current)
+            used.remove(geometry_idx)
+            current.pop(submesh_id, None)
+
+    backtrack(0, set(), {})
+    if best_assignment is None:
+        raise IndexError("failed to align Mug_new submesh ids to loaded geometries")
+
+    aligned_meshes = list(geometry_meshes)
+    for submesh_id, geometry_idx in best_assignment.items():
+        if submesh_id < len(aligned_meshes):
+            aligned_meshes[submesh_id] = geometry_meshes[geometry_idx]
+    return aligned_meshes
+
+
 def compute_mug_body_frame(
     geometry_meshes: list[trimesh.Trimesh],
     body_face_specs: dict[int, set[int]],
@@ -218,17 +307,52 @@ def compute_mug_body_frame(
     side_mask = np.abs(body_normals @ up_axis) < 0.45
     side_centroids = body_centroids[side_mask] if np.any(side_mask) else body_centroids
     side_normals = body_normals[side_mask] if np.any(side_mask) else body_normals
+    local_radial = centered_vertices @ radial_axis
+    local_secondary = centered_vertices @ secondary_axis
+    local_up = centered_vertices @ up_axis
 
     return {
         "body_center": body_center,
         "bottom_center": bottom_center,
         "top_center": top_center,
+        "body_extents": np.ptp(body_vertices, axis=0),
+        "body_vertices": body_vertices,
+        "body_height": float(np.max(local_up) - np.min(local_up)),
+        "body_radius": float(max(np.quantile(np.abs(local_radial), 0.95), np.quantile(np.abs(local_secondary), 0.95))),
         "up_axis": up_axis,
         "radial_axis": radial_axis,
         "secondary_axis": secondary_axis,
         "side_centroids": side_centroids,
         "side_normals": side_normals,
     }
+
+
+def estimate_mug_uniform_scale(
+    reference_loaded_extents: np.ndarray,
+    candidate_body_extents: np.ndarray,
+    candidate_full_extents: np.ndarray | None = None,
+) -> float:
+    reference_dominant_extent = float(np.max(np.asarray(reference_loaded_extents, dtype=np.float64)))
+    candidate_dominant_extent = float(np.max(np.asarray(candidate_body_extents, dtype=np.float64)))
+    if candidate_dominant_extent <= 0.0:
+        raise ValueError("candidate mug body extents must be positive")
+    scale = reference_dominant_extent / candidate_dominant_extent
+    if candidate_full_extents is not None:
+        candidate_full_dominant_extent = float(np.max(np.asarray(candidate_full_extents, dtype=np.float64)))
+        if candidate_full_dominant_extent > 0.0:
+            scale = min(scale, reference_dominant_extent / candidate_full_dominant_extent)
+    return float(np.clip(scale * MUG_SCALE_MULTIPLIER, 1e-6, 1e6))
+
+
+def load_reference_mug_loaded_extents(reference_model_data_path: Path) -> np.ndarray:
+    reference_model_data = json.loads(reference_model_data_path.read_text(encoding="utf-8"))
+    reference_scale = np.asarray(reference_model_data.get("scale", [1.0, 1.0, 1.0]), dtype=np.float64)
+    collision_path = reference_model_data_path.parent / "collision" / "base0.glb"
+    if collision_path.exists():
+        collision_meshes = load_scene_geometries(collision_path)
+        collision_mesh = trimesh.util.concatenate([mesh.copy() for mesh in collision_meshes])
+        return np.asarray(collision_mesh.extents, dtype=np.float64) * reference_scale
+    return np.asarray(reference_model_data["extents"], dtype=np.float64) * reference_scale
 
 
 def compute_handle_frame(
@@ -277,6 +401,7 @@ def compute_handle_frame(
     handle_span = float(np.ptp(projections))
     return {
         "handle_center": handle_center,
+        "handle_vertices": handle_vertices,
         "outward_axis": outward_axis,
         "hanging_point": hanging_point,
         "handle_span": handle_span,
@@ -328,31 +453,49 @@ def build_mug_functional_poses(body_frame: dict, handle_frame: dict) -> tuple[np
 
 
 def build_mug_collision_glb(
-    geometry_meshes: list[trimesh.Trimesh],
-    body_face_specs: dict[int, set[int]],
-    handle_face_specs: dict[int, set[int]],
+    body_frame: dict,
+    handle_mesh: trimesh.Trimesh,
 ) -> Path:
     collision_scene = trimesh.Scene()
+    body_radius = max(float(body_frame["body_radius"]) * 0.96, 1e-4)
+    body_height = max(float(body_frame["body_height"]) * 0.98, 1e-4)
+    body_center = 0.5 * (
+        np.asarray(body_frame["bottom_center"], dtype=np.float64)
+        + np.asarray(body_frame["top_center"], dtype=np.float64)
+    )
+    radial_axis = np.asarray(body_frame["radial_axis"], dtype=np.float64)
+    secondary_axis = np.asarray(body_frame["secondary_axis"], dtype=np.float64)
+    up_axis = np.asarray(body_frame["up_axis"], dtype=np.float64)
+    wall_height = max(body_height * 0.94, 1e-4)
+    wall_thickness = max(body_radius * 0.18, 1e-4)
+    panel_count = 12
+    panel_length = max((2.0 * np.pi * body_radius / panel_count) * 0.82, wall_thickness)
+    panel_radius = max(body_radius - (0.5 * wall_thickness), wall_thickness * 0.5)
 
-    def add_region(region_name: str, face_specs: dict[int, set[int]]):
-        for submesh_id, face_ids in sorted(face_specs.items()):
-            if not face_ids:
-                continue
-            geometry = geometry_meshes[int(submesh_id)]
-            face_indices = np.asarray(sorted(face_ids), dtype=np.int64)
-            submesh = geometry.submesh([face_indices], append=True, repair=False)
-            if isinstance(submesh, list):
-                if len(submesh) == 0:
-                    continue
-                submesh = trimesh.util.concatenate(submesh)
-            if submesh is None or len(submesh.faces) == 0:
-                continue
-            collision_scene.add_geometry(submesh, geom_name=f"{region_name}_{submesh_id}")
+    for panel_idx in range(panel_count):
+        theta = (2.0 * np.pi * panel_idx) / panel_count
+        outward_dir = _normalize(np.cos(theta) * radial_axis + np.sin(theta) * secondary_axis)
+        tangent_dir = _normalize(np.cross(up_axis, outward_dir))
+        panel_center = body_center + (panel_radius * outward_dir)
+        panel_mesh = trimesh.creation.box(extents=[wall_thickness, panel_length, wall_height])
+        panel_transform = np.eye(4, dtype=np.float64)
+        panel_transform[:3, 0] = outward_dir
+        panel_transform[:3, 1] = tangent_dir
+        panel_transform[:3, 2] = up_axis
+        panel_transform[:3, 3] = panel_center
+        panel_mesh.apply_transform(panel_transform)
+        collision_scene.add_geometry(panel_mesh, geom_name=f"body_panel_{panel_idx}")
 
-    add_region("body", body_face_specs)
-    add_region("handle", handle_face_specs)
-    if len(collision_scene.geometry) == 0:
-        raise ValueError("collision export produced zero components")
+    base_height = max(body_height * 0.10, 1e-4)
+    base_mesh = trimesh.creation.cylinder(radius=max(body_radius * 0.92, wall_thickness), height=base_height, sections=24)
+    base_transform = np.eye(4, dtype=np.float64)
+    base_transform[:3, 0] = radial_axis
+    base_transform[:3, 1] = secondary_axis
+    base_transform[:3, 2] = up_axis
+    base_transform[:3, 3] = np.asarray(body_frame["bottom_center"], dtype=np.float64) + (0.5 * base_height * up_axis)
+    base_mesh.apply_transform(base_transform)
+    collision_scene.add_geometry(base_mesh, geom_name="body_base")
+    collision_scene.add_geometry(handle_mesh.copy(), geom_name="handle")
 
     with tempfile.NamedTemporaryFile(prefix="partnext_mug_collision_", suffix=".glb", delete=False) as tmp:
         collision_path = Path(tmp.name)
@@ -415,9 +558,7 @@ def build_partnext_mug_asset(
     if reference_model_data_path is None:
         reference_model_data_path = Path(__file__).resolve().parents[1] / "assets" / "objects" / "039_mug" / "model_data0.json"
     reference_model_data = json.loads(reference_model_data_path.read_text(encoding="utf-8"))
-    reference_loaded_extents = np.asarray(reference_model_data["extents"], dtype=np.float64) * np.asarray(
-        reference_model_data["scale"], dtype=np.float64
-    )
+    reference_loaded_extents = load_reference_mug_loaded_extents(reference_model_data_path)
 
     if requested_glb_name is None:
         glb_paths = sorted(partnext_dir.glob("*.glb"))
@@ -433,6 +574,11 @@ def build_partnext_mug_asset(
     mesh = trimesh.load(candidate_glb, force="mesh")
     geometry_meshes = load_scene_geometries(candidate_glb)
     body_face_specs, handle_face_specs, handle_labels_used = collect_body_and_handle_face_specs(annotation_row)
+    geometry_meshes = align_geometry_meshes_to_face_specs(
+        geometry_meshes,
+        body_face_specs,
+        handle_face_specs,
+    )
 
     body_frame = compute_mug_body_frame(geometry_meshes, body_face_specs)
     handle_frame = compute_handle_frame(
@@ -441,10 +587,15 @@ def build_partnext_mug_asset(
         body_center=body_frame["body_center"],
         up_axis=body_frame["up_axis"],
     )
+    handle_mesh = _extract_region_submesh(geometry_meshes, handle_face_specs)
     contact_poses = build_mug_contact_poses(body_frame, handle_frame)
     hanging_pose, bottom_pose = build_mug_functional_poses(body_frame, handle_frame)
-    scale = estimate_uniform_scale(reference_loaded_extents, np.asarray(mesh.extents, dtype=np.float64))
-    collision_glb_path = build_mug_collision_glb(geometry_meshes, body_face_specs, handle_face_specs)
+    scale = estimate_mug_uniform_scale(
+        reference_loaded_extents,
+        body_frame["body_extents"],
+        candidate_full_extents=np.asarray(mesh.extents, dtype=np.float64),
+    )
+    collision_glb_path = build_mug_collision_glb(body_frame, handle_mesh)
     model_data = build_model_data(
         mesh=mesh,
         scale=scale,
@@ -473,6 +624,7 @@ def build_partnext_mug_asset(
         "scale_estimate": {
             "reference_loaded_extents": reference_loaded_extents.tolist(),
             "candidate_extents": np.asarray(mesh.extents, dtype=np.float64).tolist(),
+            "candidate_body_extents": np.asarray(body_frame["body_extents"], dtype=np.float64).tolist(),
             "uniform_scale": float(scale),
         },
         "generated_points": {
@@ -499,6 +651,7 @@ __all__ = [
     "build_model_data",
     "build_mug_collision_glb",
     "build_partnext_mug_asset",
+    "estimate_mug_uniform_scale",
     "collect_body_and_handle_face_specs",
     "compute_handle_frame",
     "compute_mug_body_frame",

@@ -173,6 +173,7 @@ def encode_obs(observation, model):  # Post-Process Observation
     use_ndf_pointwise = bool(getattr(model, "use_ndf_pointwise", False))
     use_ndf_pointwise_hybrid = bool(getattr(model, "use_ndf_pointwise_hybrid", False))
     use_semantic_pointwise = bool(getattr(model, "use_semantic_pointwise", False))
+    use_semantic_pointwise_hybrid = bool(getattr(model, "use_semantic_pointwise_hybrid", False))
 
     if use_actorseg_objpc:
         per_placeholder_clouds = []
@@ -227,7 +228,9 @@ def encode_obs(observation, model):  # Post-Process Observation
                 placeholders=placeholders,
                 feature_placeholders=sorted(feature_placeholders),
                 target_num_points=int(getattr(model, "target_num_points", 1024)),
-                keep_feature_placeholders_in_context=use_ndf_pointwise_hybrid,
+                keep_feature_placeholders_in_context=(
+                    use_ndf_pointwise_hybrid or use_semantic_pointwise_hybrid
+                ),
             )
         else:
             ordered_point_clouds = [object_pointcloud[key] for key in placeholders if key in object_pointcloud]
@@ -390,6 +393,7 @@ def get_model(usr_args):
     use_ndf_pointwise = "ndf_pointwise" in usr_args["config_name"]
     use_ndf_pointwise_hybrid = "ndf_pointwise_hybrid" in usr_args["config_name"]
     use_semantic_pointwise = "semantic_pointwise" in usr_args["config_name"]
+    use_semantic_pointwise_hybrid = "semantic_pointwise_hybrid" in usr_args["config_name"]
     use_object_pointcloud = (
         (("objpc" in usr_args["config_name"]) and not use_sam3_objpc and not use_actorseg_objpc)
         or use_ndf_pointwise
@@ -501,6 +505,7 @@ def get_model(usr_args):
     DP3_Model.use_ndf_pointwise = use_ndf_pointwise
     DP3_Model.use_ndf_pointwise_hybrid = use_ndf_pointwise_hybrid
     DP3_Model.use_semantic_pointwise = use_semantic_pointwise
+    DP3_Model.use_semantic_pointwise_hybrid = use_semantic_pointwise_hybrid
     DP3_Model.object_placeholders = object_placeholders
     DP3_Model.target_num_points = target_num_points
     DP3_Model.actorseg_extract_fn = actorseg_extract_fn

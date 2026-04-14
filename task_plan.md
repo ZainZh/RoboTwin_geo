@@ -1,10 +1,10 @@
-# Task Plan: Diagnose NDF Underperformance and Add a Hybrid NDF Pointwise Path
+# Task Plan: Diagnose NDF Underperformance and Add Hybrid Pointwise Paths
 
 ## Goal
 Investigate why `train_ndf_pointwise` is flat or slightly worse than `train_objpc`, determine whether the main cause is evaluation setup, training recipe mismatch, incorrect usage, or the representation itself, and implement a new `ndf_pointwise_hybrid` path that preserves baseline merged object-PCD inputs while adding NDF pointwise features.
 
 ## Current Phase
-Phase 6
+Phase 7
 
 ## Phases
 
@@ -44,6 +44,14 @@ Phase 6
 - [x] Verify the new test passes and the new shell/python entrypoints are syntactically valid
 - **Status:** complete
 
+### Phase 7: Semantic Hybrid Follow-Up
+- [x] Read the existing `train_ndf_pointwise_hybrid.sh` chain end-to-end and document exactly how raw merged ObjPC and NDF pointwise features coexist
+- [x] Compare the semantic pointwise path against the NDF hybrid path to identify the minimum code delta needed for a semantic hybrid
+- [x] Add a failing test for `semantic_pointwise_hybrid` that proves the main `point_cloud` still keeps `{A}+{B}` while `semantic_point_cloud_A/B` are still injected
+- [x] Implement preprocess/train/eval/config/runtime support for `semantic_pointwise_hybrid`
+- [x] Verify the new tests, shell entrypoints, and Python modules pass targeted checks
+- **Status:** complete
+
 ## Key Questions
 1. Is the current `objpc` vs `semantic_pointwise` vs `ndf_pointwise` comparison controlled, or are training recipes different?
 2. Is the current NDF experiment using the intended checkpoint and encoder architecture?
@@ -57,6 +65,7 @@ Phase 6
 | Use the saved zarr/checkpoint artifacts as primary evidence | The current raw demo folder is no longer the same complete source dataset used to build the existing 50-episode DP3 artifacts |
 | Distinguish benchmark-design explanations from implementation/usage explanations | Both are plausible, and the user explicitly asked about novel-object evaluation vs. misuse vs. weak representation |
 | Add a separate `ndf_pointwise_hybrid` path instead of redefining `ndf_pointwise` | This isolates the new experiment and keeps old checkpoints / notes interpretable |
+| Mirror the new semantic work after the NDF hybrid structure instead of inventing a new pattern | The user explicitly asked for a semantic hybrid that follows the same raw-ObjPC-plus-feature-branch structure |
 
 ## Errors Encountered
 | Error | Attempt | Resolution |

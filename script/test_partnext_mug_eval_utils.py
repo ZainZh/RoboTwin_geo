@@ -11,10 +11,106 @@ SCRIPT_DIR = Path(__file__).resolve().parents[1] / "script"
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from partnext_mug_eval_utils import build_partnext_mug_asset
+from partnext_mug_eval_utils import (
+    align_geometry_meshes_to_face_specs,
+    build_partnext_mug_asset,
+    estimate_mug_uniform_scale,
+)
 
 
 class TestPartNextMugEvalUtils(unittest.TestCase):
+    def test_estimate_mug_uniform_scale_allows_large_source_units(self):
+        scale = estimate_mug_uniform_scale(
+            np.asarray([0.16714027334546772, 0.11308741409665699, 0.17986542826818805], dtype=np.float64),
+            np.asarray([203.500346660614, 174.69572639465332, 264.05914878845215], dtype=np.float64),
+            candidate_full_extents=np.asarray([203.500346660614, 174.69572639465332, 264.05914878845215], dtype=np.float64),
+        )
+        self.assertLess(scale, 0.001)
+        self.assertGreater(scale, 0.0)
+
+    def test_estimate_mug_uniform_scale_clamps_oversized_handles(self):
+        scale = estimate_mug_uniform_scale(
+            np.asarray([0.16714027334546772, 0.11308741409665699, 0.17986542826818805], dtype=np.float64),
+            np.asarray([0.1738, 0.1799, 0.1670], dtype=np.float64),
+            candidate_full_extents=np.asarray([0.2547, 0.1799, 0.1670], dtype=np.float64),
+        )
+        self.assertLess(scale, 1.0)
+
+    def test_build_partnext_mug_asset_applies_scene_node_transforms(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            partnext_dir = root / "partnext"
+            partnext_dir.mkdir()
+
+            body = trimesh.creation.cylinder(radius=1.0, height=3.0, sections=32)
+            handle = trimesh.creation.box(extents=(0.6, 0.3, 1.2))
+            body.apply_translation([0.0, 2.0, 0.0])
+            handle.apply_translation([1.6, 2.0, 0.0])
+            scene = trimesh.Scene()
+            scene.add_geometry(body, geom_name="candidate.glb_0", transform=trimesh.transformations.scale_matrix(0.05))
+            scene.add_geometry(handle, geom_name="candidate.glb_1", transform=trimesh.transformations.scale_matrix(0.05))
+            candidate_glb = partnext_dir / "candidate.glb"
+            scene.export(candidate_glb)
+
+            annotation_path = root / "annotation.jsonl"
+            annotation_path.write_text(
+                json.dumps(
+                    {
+                        "glb_dst": "candidate.glb",
+                        "model_id": "candidate",
+                        "object_name": "Mug",
+                        "hierarchyList": json.dumps(
+                            [
+                                {
+                                    "name": "Mug",
+                                    "children": [
+                                        {"name": "Body", "children": [{"name": "Main Body", "maskId": 0}]},
+                                        {"name": "Handle", "maskId": 1},
+                                    ],
+                                }
+                            ]
+                        ),
+                        "masks": json.dumps({"0": {"0": list(range(len(body.faces)))}, "1": {"1": list(range(len(handle.faces)))}}),
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            reference_model_data_path = root / "model_data0.json"
+            reference_model_data_path.write_text(
+                json.dumps(
+                    {
+                        "extents": [2.0, 1.4, 2.2],
+                        "scale": [0.08, 0.08, 0.08],
+                        "stable": False,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            prepared_asset = build_partnext_mug_asset(
+                partnext_dir=partnext_dir,
+                annotation_path=annotation_path,
+                output_modelname="partnext_mug_eval",
+                reference_model_data_path=reference_model_data_path,
+                requested_glb_name="candidate.glb",
+            )
+
+            self.assertGreater(prepared_asset.model_data["scale"][0], 0.5)
+
+    def test_align_geometry_meshes_to_face_specs_matches_submesh_by_face_capacity(self):
+        large = trimesh.creation.icosphere(subdivisions=4)
+        small = trimesh.creation.box()
+        geometry_meshes = [small, large]
+        body_specs = {0: set(range(len(large.faces)))}
+        handle_specs = {1: set(range(len(small.faces)))}
+
+        aligned = align_geometry_meshes_to_face_specs(geometry_meshes, body_specs, handle_specs)
+
+        self.assertEqual(len(aligned[0].faces), len(large.faces))
+        self.assertEqual(len(aligned[1].faces), len(small.faces))
+
     def test_build_partnext_mug_asset_honors_requested_glb(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -144,7 +240,8 @@ class TestPartNextMugEvalUtils(unittest.TestCase):
             self.assertNotEqual(prepared_asset.collision_glb_path, prepared_asset.visual_glb_path)
 
             collision_scene = trimesh.load(prepared_asset.collision_glb_path, force="scene")
-            self.assertGreaterEqual(len(collision_scene.geometry), 2)
+            self.assertGreaterEqual(len(collision_scene.geometry), 8)
+            self.assertIn("handle", set(collision_scene.geometry.keys()))
 
             hanging_fp = np.asarray(prepared_asset.model_data["functional_matrix"][0], dtype=np.float64)
             bottom_fp = np.asarray(prepared_asset.model_data["functional_matrix"][1], dtype=np.float64)

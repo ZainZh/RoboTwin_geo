@@ -19,7 +19,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Prepare RobotWin mug assets from PartNext Mug_new data.")
     parser.add_argument("--partnext_dir", type=Path, required=True)
     parser.add_argument("--annotation_path", type=Path, required=True)
-    parser.add_argument("--output_modelname", type=str, default="partnext_mug_eval")
+    parser.add_argument("--output_modelname", type=str, default="partnext_mug_eval_v9")
     parser.add_argument(
         "--output_root",
         type=Path,

@@ -95,6 +95,15 @@ def load_scene_geometries(mesh_path: Path) -> list[trimesh.Trimesh]:
         return [scene]
     if not isinstance(scene, trimesh.Scene):
         raise TypeError(f"expected Scene or Trimesh for {mesh_path}, got {type(scene).__name__}")
+    node_names = sorted(scene.graph.nodes_geometry, key=_geometry_index_from_name)
+    transformed_geometries: list[trimesh.Trimesh] = []
+    for node_name in node_names:
+        transform, geometry_name = scene.graph[node_name]
+        geometry = scene.geometry[geometry_name].copy()
+        geometry.apply_transform(np.asarray(transform, dtype=np.float64))
+        transformed_geometries.append(geometry)
+    if transformed_geometries:
+        return transformed_geometries
     geometry_items = sorted(scene.geometry.items(), key=lambda item: _geometry_index_from_name(item[0]))
     return [geometry.copy() for _, geometry in geometry_items]
 

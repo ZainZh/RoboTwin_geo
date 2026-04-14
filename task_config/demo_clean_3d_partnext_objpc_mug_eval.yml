@@ -42,5 +42,6 @@ collect_data: true
 eval_video_log: true
 custom_mug_eval:
   enabled: true
-  modelname: partnext_mug_eval
-  model_id: [0]
+  modelname: partnext_mug_eval_v9
+  # 33 26
+  model_id:  [33]

@@ -100,7 +100,7 @@ class TestHangingMugEvalOverride(unittest.TestCase):
                 repo_root=repo_root,
             )
 
-    def test_resolve_mug_spawn_qpos_aligns_custom_contact_frame_to_reference(self):
+    def test_resolve_mug_spawn_qpos_aligns_custom_bottom_frame_to_reference(self):
         (
             resolve_mug_spawn_qpos,
             load_scaled_local_pose_matrix,
@@ -130,6 +130,20 @@ class TestHangingMugEvalOverride(unittest.TestCase):
                                 [0.0, 0.0, 0.0, 1.0],
                             ]
                         ],
+                        "functional_matrix": [
+                            [
+                                [1.0, 0.0, 0.0, 0.0],
+                                [0.0, 1.0, 0.0, 0.0],
+                                [0.0, 0.0, 1.0, 0.0],
+                                [0.0, 0.0, 0.0, 1.0],
+                            ],
+                            [
+                                [1.0, 0.0, 0.0, 0.0],
+                                [0.0, 0.0, 1.0, 0.0],
+                                [0.0, -1.0, 0.0, 0.0],
+                                [0.0, 0.0, 0.0, 1.0],
+                            ],
+                        ],
                     }
                 ),
                 encoding="utf-8",
@@ -145,6 +159,20 @@ class TestHangingMugEvalOverride(unittest.TestCase):
                                 [0.0, 0.0, 1.0, 0.3],
                                 [0.0, 0.0, 0.0, 1.0],
                             ]
+                        ],
+                        "functional_matrix": [
+                            [
+                                [1.0, 0.0, 0.0, 0.0],
+                                [0.0, 1.0, 0.0, 0.0],
+                                [0.0, 0.0, 1.0, 0.0],
+                                [0.0, 0.0, 0.0, 1.0],
+                            ],
+                            [
+                                [0.0, -1.0, 0.0, 0.1],
+                                [1.0, 0.0, 0.0, 0.2],
+                                [0.0, 0.0, 1.0, 0.3],
+                                [0.0, 0.0, 0.0, 1.0],
+                            ],
                         ],
                     }
                 ),
@@ -162,8 +190,8 @@ class TestHangingMugEvalOverride(unittest.TestCase):
             )
 
             ref_root = t3d.quaternions.quat2mat(np.asarray([0.707, 0.707, 0.0, 0.0], dtype=np.float64))
-            ref_local = load_scaled_local_pose_matrix("039_mug", 0, "contact_points_pose", repo_root=repo_root)
-            cur_local = load_scaled_local_pose_matrix("partnext_mug_eval", 0, "contact_points_pose", repo_root=repo_root)
+            ref_local = load_scaled_local_pose_matrix("039_mug", 0, "functional_matrix", repo_root=repo_root, point_index=1)
+            cur_local = load_scaled_local_pose_matrix("partnext_mug_eval", 0, "functional_matrix", repo_root=repo_root, point_index=1)
             cur_root = t3d.quaternions.quat2mat(np.asarray(spawn_qpos, dtype=np.float64))
 
             self.assertTrue(np.allclose(ref_root @ ref_local[:3, :3], cur_root @ cur_local[:3, :3], atol=1e-6))

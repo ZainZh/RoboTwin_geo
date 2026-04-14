@@ -20,6 +20,7 @@ from object_pointcloud_utils import (
     parse_target_extents,
     valid_xyz_centroid,
 )
+from pointwise_context_utils import build_context_point_cloud, resolve_context_placeholders
 from semantic_feature_utils import compute_semantic_pointwise_cloud, load_semantic_model
 
 
@@ -78,7 +79,7 @@ def infer_placeholder_order(scene_info: dict, first_episode: dict) -> list[str]:
     return placeholders
 
 
-def main():
+def build_parser():
     parser = argparse.ArgumentParser(
         description="Process RoboTwin episodes into DP3 zarr using context object point clouds and point-wise semantic embeddings."
     )
@@ -96,7 +97,13 @@ def main():
     parser.add_argument("--table_quantile", type=float, default=0.08)
     parser.add_argument("--table_margin", type=float, default=0.01)
     parser.add_argument("--save_placeholder_point_clouds", action="store_true")
-    args = parser.parse_args()
+    parser.add_argument("--keep_feature_placeholders_in_context", action="store_true")
+    return parser
+
+
+def main(argv=None):
+    parser = build_parser()
+    args = parser.parse_args(argv)
 
     task_name = args.task_name
     task_config = args.task_config
@@ -139,7 +146,11 @@ def main():
     semantic_feat_dim = int(unique_semantic_dims[0])
 
     feature_placeholders = [placeholder for placeholder in placeholders if placeholder in model_by_placeholder]
-    context_placeholders = [placeholder for placeholder in placeholders if placeholder not in model_by_placeholder]
+    context_placeholders = resolve_context_placeholders(
+        placeholders,
+        feature_placeholders,
+        keep_feature_placeholders_in_context=bool(args.keep_feature_placeholders_in_context),
+    )
     if len(feature_placeholders) == 0:
         raise RuntimeError("None of the requested object placeholders has a semantic model configured.")
 
@@ -194,17 +205,13 @@ def main():
                     prev_centroids[placeholder] = centroid
 
             if frame_idx != vector_all.shape[0] - 1:
-                context_clouds = [
-                    per_placeholder_point_clouds[placeholder]
-                    for placeholder in context_placeholders
-                ]
-                if len(context_clouds) > 0:
-                    context_point_cloud = merge_object_point_clouds(
-                        context_clouds,
-                        target_num_points=int(args.target_num_points),
-                    )
-                else:
-                    context_point_cloud = np.zeros((int(args.target_num_points), 6), dtype=np.float32)
+                context_point_cloud, _ = build_context_point_cloud(
+                    per_placeholder_point_clouds,
+                    placeholders=placeholders,
+                    feature_placeholders=feature_placeholders,
+                    target_num_points=int(args.target_num_points),
+                    keep_feature_placeholders_in_context=bool(args.keep_feature_placeholders_in_context),
+                )
                 point_cloud_arrays.append(context_point_cloud.astype(np.float32))
                 state_arrays.append(vector_all[frame_idx])
 
@@ -321,6 +328,7 @@ def main():
         "semantic_num_points": int(args.semantic_num_points),
         "semantic_feat_dim": semantic_feat_dim,
         "semantic_feat_dims": semantic_feat_dims,
+        "keep_feature_placeholders_in_context": bool(args.keep_feature_placeholders_in_context),
         "episodes": episode_stats,
     }
     with open(meta_path, "w", encoding="utf-8") as f:

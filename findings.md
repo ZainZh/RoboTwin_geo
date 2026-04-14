@@ -151,6 +151,7 @@
 - `train_ndf_pointwise.sh` correctly forwards `ndf_dgcnn_placeholders`
 - `train_semantic_pointwise.sh` now defaults back to `batch_size=256`, `val_batch_size=batch_size`, and `use_ema=true`
 - `use_ema` in this codebase means training and saving an exponential moving average copy of the policy weights. In practice it usually stabilizes eval and often gives a modest improvement, but the impact is task-dependent rather than guaranteed to be large.
+- New task on 2026-04-13: explain how `train_ndf_pointwise_hybrid.sh` combines baseline object-PCD observations with NDF pointwise features, then build the analogous `semantic_pointwise_hybrid` path.
 - User-provided experiment evidence: the existing global-NDF path (`train_ndf.sh` / `robot_dp3_ndf`) was already tested using `policy/DP3/checkpoints/hanging_mug-demo_clean_3d_object_pc-objpc-ndf-50_0`, and it caused a severe behavioral regression: the robot often failed to approach the mug, consistent with losing or underusing object location information.
 - This is consistent with the current global-NDF integration design:
 - `compute_ndf_feature(...)` explicitly normalizes the object point cloud by centering and scaling it before extracting the descriptor, making the NDF feature pose-invariant by construction, see `normalize_object_point_cloud(...)` in [ndf_feature_utils.py](/home/zheng/github/RoboTwin_geo/policy/DP3/scripts/ndf_feature_utils.py#L431).
@@ -193,6 +194,38 @@
 - `bash -n policy/DP3/process_data_ndf_pointwise_hybrid.sh` passed
 - `bash -n policy/DP3/train_ndf_pointwise_hybrid.sh` passed
 - `bash -n policy/DP3/eval_ndf_pointwise_hybrid.sh` passed
+- `train_ndf_pointwise_hybrid.sh` keeps the baseline merged raw `point_cloud` because its preprocess wrapper adds `--keep_feature_placeholders_in_context`, while still injecting `ndf_point_cloud_A/B` through `+task.dataset.extra_obs_keys=[...]` and dynamic shape overrides. This is the exact pattern to mirror for a semantic hybrid.
+- The current semantic pointwise path still removes feature placeholders from the main `point_cloud`:
+  - offline preprocessing in `process_data_semantic_pointwise.py` sets `context_placeholders = placeholders - feature_placeholders`
+  - runtime `deploy_policy.py` only keeps feature placeholders in the main `point_cloud` when `use_ndf_pointwise_hybrid=True`
+  - there is no `use_semantic_pointwise_hybrid` branch yet
+- The minimum semantic-hybrid delta is therefore:
+  - allow semantic preprocessing to accept `--keep_feature_placeholders_in_context`
+  - add a thin wrapper `process_data_semantic_pointwise_hybrid.py`
+  - add matching `train/eval/process` shell entrypoints and Hydra config/task-config names
+  - extend runtime `deploy_policy.py` with a `use_semantic_pointwise_hybrid` mode that reuses the same context-building helper as NDF hybrid
+- The requested `semantic_pointwise_hybrid` path has now been implemented with the same observation structure as the NDF hybrid:
+  - main `point_cloud` keeps the baseline merged raw ObjPC
+  - `semantic_point_cloud_A/B` remain extra point-cloud branches
+  - low-dim `agent_pos` is unchanged
+- Important encoder clarification:
+  - DP3 does not concatenate raw point cloud, semantic pointwise cloud, and agent state at the point level
+  - instead, [DP3Encoder](/home/zheng/github/RoboTwin_geo/policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/model/vision/pointnet_extractor.py#L194) encodes each point-cloud key with its own PointNet extractor, encodes low-dim state with a separate MLP, then concatenates the branch-level features
+  - therefore `semantic_pointwise_hybrid` means `f_raw_objpc || f_semantic_pointwise || f_agent_pos`, not `[xyz|rgb|semantic|state]` inside one shared PointNet
+- New semantic hybrid entrypoints now exist:
+  - `policy/DP3/scripts/process_data_semantic_pointwise_hybrid.py`
+  - `policy/DP3/process_data_semantic_pointwise_hybrid.sh`
+  - `policy/DP3/train_semantic_pointwise_hybrid.sh`
+  - `policy/DP3/eval_semantic_pointwise_hybrid.sh`
+  - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/robot_dp3_semantic_pointwise_hybrid.yaml`
+  - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/task/demo_task_semantic_pointwise_hybrid.yaml`
+- Fresh verification evidence for the semantic hybrid work:
+  - `python policy/DP3/scripts/test_semantic_pointwise_hybrid.py` passed with `3` tests
+  - `python policy/DP3/scripts/test_ndf_pointwise_hybrid.py` still passed with `3` tests
+  - `python -m py_compile policy/DP3/deploy_policy.py policy/DP3/scripts/process_data_semantic_pointwise.py policy/DP3/scripts/process_data_semantic_pointwise_hybrid.py policy/DP3/scripts/test_semantic_pointwise_hybrid.py` passed
+  - `bash -n policy/DP3/process_data_semantic_pointwise_hybrid.sh` passed
+  - `bash -n policy/DP3/train_semantic_pointwise_hybrid.sh` passed
+  - `bash -n policy/DP3/eval_semantic_pointwise_hybrid.sh` passed
 - Follow-up bug found during first real user run: `process_data_ndf_pointwise_hybrid.py` originally forwarded `--output_suffix` as two argv items, and the value `-objpc-ndf-pointwise-hybrid` was parsed as a new option because it starts with `-`.
 - Root-cause fix: `policy/DP3/scripts/process_data_ndf_pointwise_hybrid.py` now builds argv through `build_hybrid_argv(...)` and passes `--output_suffix=-objpc-ndf-pointwise-hybrid` as an attached option.
 - The regression test `policy/DP3/scripts/test_ndf_pointwise_hybrid.py` now includes a dedicated wrapper-argv check for this case and passes with `3` tests.
