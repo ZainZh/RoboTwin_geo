@@ -263,6 +263,50 @@
   - `task_plan.md` (updated)
   - `findings.md` (updated)
   - `progress.md` (updated)
+
+## Session: 2026-04-14 (NDF Hybrid Eval CLI Debug)
+
+### Phase 1: Root Cause Isolation
+- **Status:** complete
+- Actions taken:
+  - Inspected the user's failing `eval_ndf_pointwise_hybrid.sh` invocation against the script's positional argument contract.
+  - Confirmed the eval command omitted the explicit empty `ndf_dgcnn_placeholders` argument, shifting `object_placeholders` to `3000`.
+  - Confirmed this explains the log line `point cloud keys: ['point_cloud']` and the downstream checkpoint mismatch (`ndf_point_cloud_A` missing at eval model construction time).
+  - Confirmed the checkpoint itself is structurally healthy for hybrid training because its state dict contains `obs_encoder.extractors.ndf_point_cloud_A.*`.
+- Files created/modified:
+  - `findings.md` (updated)
+  - `progress.md` (updated)
+
+### Phase 2: Compatibility Fix
+- **Status:** complete
+- Actions taken:
+  - Added `policy/DP3/ndf_pointwise_arg_utils.sh` to normalize both explicit and legacy NDF pointwise CLI forms.
+  - Patched these scripts to use the shared parser and emit a concise compatibility warning when auto-shifting arguments:
+    - `policy/DP3/train_ndf_pointwise.sh`
+    - `policy/DP3/eval_ndf_pointwise.sh`
+    - `policy/DP3/train_ndf_pointwise_hybrid.sh`
+    - `policy/DP3/eval_ndf_pointwise_hybrid.sh`
+  - Added regression coverage in `policy/DP3/scripts/test_ndf_pointwise_arg_utils.sh` for the exact omitted-empty-argument form that caused this bug.
+- Files created/modified:
+  - `policy/DP3/ndf_pointwise_arg_utils.sh` (created)
+  - `policy/DP3/train_ndf_pointwise.sh` (modified)
+  - `policy/DP3/eval_ndf_pointwise.sh` (modified)
+  - `policy/DP3/train_ndf_pointwise_hybrid.sh` (modified)
+  - `policy/DP3/eval_ndf_pointwise_hybrid.sh` (modified)
+  - `policy/DP3/scripts/test_ndf_pointwise_arg_utils.sh` (created)
+  - `findings.md` (updated)
+  - `progress.md` (updated)
+
+### Phase 3: Verification
+- **Status:** complete
+- Actions taken:
+  - Ran `bash policy/DP3/scripts/test_ndf_pointwise_arg_utils.sh`
+  - Ran `bash -n policy/DP3/eval_ndf_pointwise_hybrid.sh`
+  - Ran `bash -n policy/DP3/train_ndf_pointwise_hybrid.sh`
+  - Ran `bash -n policy/DP3/eval_ndf_pointwise.sh`
+  - Ran `bash -n policy/DP3/train_ndf_pointwise.sh`
+- Files created/modified:
+  - `progress.md` (updated)
 - **Status:** complete
 - Actions taken:
   - Read the saved Hydra overrides for the existing local `objpc`, `ndf_pointwise`, and `semantic_pointwise` training runs.

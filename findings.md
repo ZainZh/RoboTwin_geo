@@ -226,6 +226,20 @@
   - `bash -n policy/DP3/process_data_semantic_pointwise_hybrid.sh` passed
   - `bash -n policy/DP3/train_semantic_pointwise_hybrid.sh` passed
   - `bash -n policy/DP3/eval_semantic_pointwise_hybrid.sh` passed
+- New debugging result on 2026-04-14 for `eval_ndf_pointwise_hybrid.sh`:
+  - The checkpoint mismatch was not caused by a changed model definition in training.
+  - The user invocation omitted the explicit empty `ndf_dgcnn_placeholders` argument:
+    - intended order: `... ndf_device ndf_dgcnn_placeholders object_placeholders checkpoint_num`
+    - actual call placed `"{A},{B}"` into `ndf_dgcnn_placeholders` and `3000` into `object_placeholders`
+  - Evidence:
+    - eval log showed `[DP3Encoder] point cloud keys: ['point_cloud']`, which means `ndf_point_cloud_A` was never injected into the eval model shape meta
+    - the checkpoint state dict *does* contain `obs_encoder.extractors.ndf_point_cloud_A.*`, which proves the training run that produced it had the NDF hybrid branch enabled
+  - Therefore the checkpoint is structurally consistent with hybrid training; the eval-time CLI parsing was wrong.
+  - Fix implemented: `policy/DP3/ndf_pointwise_arg_utils.sh` now normalizes both the explicit and legacy call forms, and the following scripts now auto-correct the omitted-empty-argument form:
+    - `policy/DP3/eval_ndf_pointwise_hybrid.sh`
+    - `policy/DP3/train_ndf_pointwise_hybrid.sh`
+    - `policy/DP3/eval_ndf_pointwise.sh`
+    - `policy/DP3/train_ndf_pointwise.sh`
 - Follow-up bug found during first real user run: `process_data_ndf_pointwise_hybrid.py` originally forwarded `--output_suffix` as two argv items, and the value `-objpc-ndf-pointwise-hybrid` was parsed as a new option because it starts with `-`.
 - Root-cause fix: `policy/DP3/scripts/process_data_ndf_pointwise_hybrid.py` now builds argv through `build_hybrid_argv(...)` and passes `--output_suffix=-objpc-ndf-pointwise-hybrid` as an attached option.
 - The regression test `policy/DP3/scripts/test_ndf_pointwise_hybrid.py` now includes a dedicated wrapper-argv check for this case and passes with `3` tests.

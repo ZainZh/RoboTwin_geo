@@ -1,19 +1,12 @@
 #!/bin/bash
 
-policy_name=DP3
-task_name=${1}
-task_config=${2}
-ckpt_setting=${3}-objpc-ndf-pointwise
-expert_data_num=${4}
-seed=${5}
-gpu_id=${6}
-ndf_ckpt_A=${7:-none}
-ndf_ckpt_B=${8:-none}
-ndf_device=${9:-cuda:0}
-ndf_dgcnn_placeholders=${10:-}
-object_placeholders=${11:-\{A\},\{B\}}
-checkpoint_num=${12:-3000}
-ndf_point_num=${13:-128}
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${script_dir}/ndf_pointwise_arg_utils.sh"
+normalize_ndf_eval_args "$@"
+
+if [ "${ndf_legacy_shifted}" = true ]; then
+    echo "[eval_ndf_pointwise.sh] detected legacy invocation without explicit ndf_dgcnn_placeholders; treating '${object_placeholders}' as object_placeholders." >&2
+fi
 
 #ckpt_setting=${task_config}-objpc-ndf-pointwise
 

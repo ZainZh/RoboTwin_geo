@@ -12,6 +12,10 @@ TASK_OBJECT_POINTCLOUD_TARGETS = {
         "{A}": "hammer",
         "{B}": "block",
     },
+    "pick_diverse_bottles": {
+        "{A}": "bottle1",
+        "{B}": "bottle2",
+    },
 }
 
 
