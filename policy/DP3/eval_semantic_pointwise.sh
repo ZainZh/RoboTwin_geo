@@ -3,17 +3,17 @@
 policy_name=DP3
 task_name=${1}
 task_config=${2}
-expert_data_num=${3}
-seed=${4}
-gpu_id=${5}
-semantic_ckpt_A=${6:-none}
-semantic_ckpt_B=${7:-none}
-semantic_device=${8:-cuda:0}
-object_placeholders=${9:-\{A\},\{B\}}
-checkpoint_num=${10:-3000}
-semantic_point_num=${11:-128}
+ckpt_setting=${3}
+expert_data_num=${4}
+seed=${5}
+gpu_id=${6}
+semantic_ckpt_A=${7:-none}
+semantic_ckpt_B=${8:-none}
+semantic_device=${9:-cuda:0}
+object_placeholders=${10:-\{A\},\{B\}}
+checkpoint_num=${11:-3000}
+semantic_point_num=${12:-128}
 
-ckpt_setting=${task_config}-objpc-semantic-pointwise
 meta_path="./data/${task_name}-${task_config}-${expert_data_num}-objpc-semantic-pointwise_meta.json"
 
 if [ -f "${meta_path}" ]; then

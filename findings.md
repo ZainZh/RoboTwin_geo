@@ -218,6 +218,73 @@
   - `policy/DP3/process_data_semantic_pointwise_hybrid.sh`
   - `policy/DP3/train_semantic_pointwise_hybrid.sh`
   - `policy/DP3/eval_semantic_pointwise_hybrid.sh`
+- New task on 2026-04-14 (later): add a richer actor-segmentation data collection config so actorseg extraction can use per-camera raw geometry instead of the already-downsampled scene pointcloud, and verify how close the upgraded actorseg clouds are to `object_pointcloud`.
+- Current actorseg offline training data in `data/hanging_mug/demo_clean_3d_actorseg/data/episode0.hdf5` contains:
+  - `observation/*/actor_segmentation`
+  - `observation/*/intrinsic_cv`
+  - `observation/*/extrinsic_cv`
+  - `observation/*/cam2world_gl`
+  - RGB
+  - a precomputed whole-scene `pointcloud (T, 1024, 6)`
+- The same file does **not** contain per-camera raw `Position` buffers or depth maps, so current actorseg training cannot be losslessly upgraded to `objpc`-quality extraction without recollecting data.
+- The current actorseg collection configs also confirm this limitation:
+  - `task_config/demo_clean_3d_actorseg.yml` has `depth: false`
+  - `task_config/demo_randomized_3d_actorseg.yml` has `depth: false`
+  - both keep `actor_segmentation: true` and `pointcloud: true`
+- The current `objpc` path and current actorseg path are structurally different:
+  - `objpc` in `envs/camera/camera.py` directly filters raw per-camera `Position` pixels by actor ids from `Segmentation[..., 1]`, merges per-camera object points, then downsamples per object
+  - actorseg in `policy/DP3/scripts/actorseg_pointcloud_utils.py` starts from an already-downsampled whole-scene `pointcloud` and projects those sparse points back into actor-segmentation images to recover A/B
+- Because the whole-scene `pointcloud` is already downsampled to `1024` points in `envs/camera/camera.py` before actorseg extraction sees it, current actorseg can differ substantially from `objpc`, especially for fine structures like mug handles and rack hooks.
+- If actorseg extraction is changed to use the same per-camera raw `Position` buffer as `objpc`, together with the same actor-segmentation truth mask and the same cameras, then actorseg and `objpc` should become very close in practice. The major current gap is implementation order, not label quality.
+- New task on 2026-04-14 (later): raise the `object_pointcloud` path to 5000 points without breaking existing 1024-point checkpoints.
+- Current `object_pc` training and evaluation cannot be switched to 5000 points by changing only the collection config:
+  - collection-side `object_pointcloud.point_num` controls how many real object points are saved into HDF5
+  - preprocessing `process_data_objpc.py` still defaults to `--target_num_points 1024`
+  - DP3 task config `demo_task_objpc.yaml` still declares `point_cloud.shape: [1024, 6]`
+- Existing collected `demo_clean_3d_object_pc` data is already stored as `object_pointcloud/{A,B}: (T, 1024, 6)`, so it cannot be losslessly upgraded to real 5000-point object clouds without recollection.
+- To avoid breaking existing 1024-point checkpoints, a separate 5000-point path is safer than mutating the current default path in place.
+- The new isolated 5000-point ObjPC path now exists:
+  - collection configs:
+    - `task_config/demo_clean_3d_object_pc_5000.yml`
+    - `task_config/demo_randomized_3d_object_pc_5000.yml`
+  - DP3 configs:
+    - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/task/demo_task_objpc_5000.yaml`
+    - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/robot_dp3_objpc_5000.yaml`
+  - scripts:
+    - `policy/DP3/train_objpc_5000.sh`
+    - `policy/DP3/eval_objpc_5000.sh`
+- `policy/DP3/process_data_objpc.sh` now accepts an explicit fifth positional argument `target_num_points`, so the 5000-point training path can preprocess to 5000 without changing the old 1024-point path.
+- Training impact expectation for `1024 -> 5000`:
+  - point count grows by about `4.88x`
+  - PointNet/point-cloud encoding cost and memory usually increase substantially, often near-linearly in practice
+  - training speed should be expected to drop noticeably and GPU memory usage to rise materially
+- New task on 2026-04-14 (later): keep the hybrid main raw `point_cloud` branch at `1024`, but raise only the NDF / semantic feature point-cloud branches to `5000`.
+- Current DP3 hybrid structure makes this feasible:
+  - `point_cloud` and `ndf_point_cloud_*` / `semantic_point_cloud_*` are encoded as separate branches
+  - they are concatenated after branch-level encoding
+  - there is no requirement that the raw branch and feature branch use the same point count or per-point alignment
+- Important limitation:
+  - if the underlying object point cloud source is still only `1024` real points, requesting `5000` feature points only causes repeated resampling / padding, not new geometry information
+  - therefore the new `feature5000` path only makes sense together with recollected `5000`-point `object_pc` data
+- A new isolated `feature5000` hybrid path now exists for both NDF and semantic:
+  - NDF:
+    - `policy/DP3/process_data_ndf_pointwise_hybrid_feat5000.sh`
+    - `policy/DP3/train_ndf_pointwise_hybrid_feat5000.sh`
+    - `policy/DP3/eval_ndf_pointwise_hybrid_feat5000.sh`
+    - `policy/DP3/scripts/process_data_ndf_pointwise_hybrid_feat5000.py`
+    - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/task/demo_task_ndf_pointwise_hybrid_feat5000.yaml`
+    - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/robot_dp3_ndf_pointwise_hybrid_feat5000.yaml`
+  - Semantic:
+    - `policy/DP3/process_data_semantic_pointwise_hybrid_feat5000.sh`
+    - `policy/DP3/train_semantic_pointwise_hybrid_feat5000.sh`
+    - `policy/DP3/eval_semantic_pointwise_hybrid_feat5000.sh`
+    - `policy/DP3/scripts/process_data_semantic_pointwise_hybrid_feat5000.py`
+    - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/task/demo_task_semantic_pointwise_hybrid_feat5000.yaml`
+    - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/robot_dp3_semantic_pointwise_hybrid_feat5000.yaml`
+- The new `feature5000` paths keep:
+  - main raw `point_cloud.shape = [1024, 6]`
+  - `ndf_point_cloud_*` / `semantic_point_cloud_*` default point count = `5000`
+  - distinct train/eval/checkpoint naming via the suffix `-feat5000`
   - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/robot_dp3_semantic_pointwise_hybrid.yaml`
   - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/task/demo_task_semantic_pointwise_hybrid.yaml`
 - Fresh verification evidence for the semantic hybrid work:
@@ -348,6 +415,10 @@
 - `policy/DP3/ndf_pointwise_arg_utils.sh` had a bash-specific default-value bug: inside quoted parameter expansion, the escaped placeholder default `\{A\},\{B\}` was preserved literally and reached Python as `["\\{A}", "\\{B}"]`.
 - That bug only surfaced when users omitted `object_placeholders`, which is why earlier explicit-placeholder invocations worked while the actorseg hybrid default path failed at `require_actor_id_targets(...)`.
 - The direct semantic actorseg hybrid shell scripts were not failing for the same reason, but aligning them to the same plain `DEFAULT_OBJECT_PLACEHOLDERS="{A},{B}"` convention removes ambiguity and future-proofs the interface.
+- The user explicitly does not want compatibility branches for eval invocation. For the pointwise eval family, the desired contract is the same as `eval_semantic_pointwise_hybrid.sh`: the third positional argument is already the full `ckpt_setting`, and scripts should forward it unchanged instead of deriving suffixes from `task_config`.
+- The new shell regression test captures the final argv sent to `script/eval_policy.py`, which is the right verification layer for these wrappers because it checks the observable interface rather than shell internals.
+- `objpc` and `actorseg` are not equivalent in the current implementation. `objpc` filters raw per-camera `Position` buffers by actor id first and only then downsamples per object, while `actorseg` starts from the already-downsampled combined scene `observation["pointcloud"]` and then projects that sparse cloud back into segmentation masks.
+- Because of that ordering difference, `actorseg` currently loses object detail much earlier than `objpc`, especially for small structures like mug handles and rack hooks. This explains why `objpc` can outperform `actorseg` even when both use simulator truth labels.
 
 ---
 *Update this file after every 2 view/browser/search operations.*

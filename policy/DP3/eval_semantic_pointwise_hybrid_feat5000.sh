@@ -3,7 +3,7 @@
 policy_name=DP3
 task_name=${1}
 task_config=${2}
-ckpt_setting=${3}-objpc-semantic-pointwise-hybrid
+ckpt_setting=${3}-objpc-semantic-pointwise-hybrid-feat5000
 expert_data_num=${4}
 seed=${5}
 gpu_id=${6}
@@ -12,9 +12,9 @@ semantic_ckpt_B=${8:-none}
 semantic_device=${9:-cuda:0}
 object_placeholders=${10:-\{A\},\{B\}}
 checkpoint_num=${11:-3000}
-semantic_point_num=${12:-128}
+semantic_point_num=${12:-5000}
 
-meta_path="./data/${task_name}-${task_config}-${expert_data_num}-objpc-semantic-pointwise-hybrid_meta.json"
+meta_path="./data/${task_name}-${task_config}-${expert_data_num}-objpc-semantic-pointwise-hybrid-feat5000_meta.json"
 
 if [ -f "${meta_path}" ]; then
     mapfile -t semantic_meta < <(python -c 'import json,sys; m=json.load(open(sys.argv[1], "r", encoding="utf-8")); print(int(m["semantic_num_points"]))' "${meta_path}")
@@ -49,7 +49,7 @@ python script/eval_policy.py --config policy/${policy_name}/deploy_policy.yml \
     --ckpt_setting ${ckpt_setting} \
     --expert_data_num ${expert_data_num} \
     --seed ${seed} \
-    --config_name robot_dp3_semantic_pointwise_hybrid \
+    --config_name robot_dp3_semantic_pointwise_hybrid_feat5000 \
     --object_placeholders "${object_placeholders}" \
     --checkpoint_num ${checkpoint_num} \
     --semantic_point_num ${semantic_point_num} \

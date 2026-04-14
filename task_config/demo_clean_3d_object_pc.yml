@@ -33,7 +33,7 @@ data_type:
   actor_segmentation: false
 object_pointcloud:
   combine: true
-  point_num: 1024
+  point_num: 5000
   # Optional. If omitted, RoboTwin will fall back to:
   # 1. task override method `get_object_pointcloud_targets()`
   # 2. task registry in `envs/object_pointcloud_targets.py`
@@ -42,7 +42,7 @@ object_pointcloud:
   #   "{A}": mug
   #   "{B}": rack
   #   "{C}": bread[1]
-pcd_down_sample_num: 1024
+pcd_down_sample_num: 5000
 pcd_crop: true
 save_path: ./data
 clear_cache_freq: 5

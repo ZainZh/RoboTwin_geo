@@ -3,7 +3,7 @@
 policy_name=DP3
 task_name=${1}
 task_config=${2}
-ckpt_setting=${3}
+ckpt_setting=${3}-objpc-ndf-pointwise-hybrid-feat5000
 expert_data_num=${4}
 seed=${5}
 gpu_id=${6}
@@ -13,8 +13,7 @@ ndf_device=${9:-cuda:0}
 ndf_dgcnn_placeholders=${10:-}
 object_placeholders=${11:-\{A\},\{B\}}
 checkpoint_num=${12:-3000}
-ndf_point_num=${13:-128}
-actorseg_camera_names=${14:-head_camera,front_camera}
+ndf_point_num=${13:-5000}
 
 extra_overrides=()
 if [ "${ndf_ckpt_A}" != "none" ] && [ -n "${ndf_ckpt_A}" ]; then
@@ -45,9 +44,8 @@ python script/eval_policy.py --config policy/${policy_name}/deploy_policy.yml \
     --ckpt_setting ${ckpt_setting} \
     --expert_data_num ${expert_data_num} \
     --seed ${seed} \
-    --config_name robot_dp3_objpc_actorseg_ndf_pointwise_hybrid \
+    --config_name robot_dp3_ndf_pointwise_hybrid_feat5000 \
     --object_placeholders "${object_placeholders}" \
     --checkpoint_num ${checkpoint_num} \
     --ndf_point_num ${ndf_point_num} \
-    --actorseg_camera_names "${actorseg_camera_names}" \
     "${extra_overrides[@]}"

@@ -217,6 +217,111 @@
   - `findings.md` (updated)
   - `progress.md` (updated)
 
+## Session: 2026-04-14 (ActorSeg Raw Geometry Audit)
+
+### Phase 1: Current Data Capability Check
+- **Status:** complete
+- Actions taken:
+  - Re-read the current project planning files to recover active context and prior actorseg-hybrid work.
+  - Inspected `task_config/demo_clean_3d_actorseg.yml` and `task_config/demo_randomized_3d_actorseg.yml`.
+  - Confirmed both actorseg configs collect RGB, actor segmentation, and a whole-scene pointcloud, but not depth or raw per-camera position buffers.
+  - Inspected an actual collected file `data/hanging_mug/demo_clean_3d_actorseg/data/episode0.hdf5`.
+  - Confirmed the dataset stores `actor_segmentation`, camera intrinsics/extrinsics, and `pointcloud (T, 1024, 6)`, but does not store raw per-camera `Position` or depth.
+  - Traced the current `objpc` extraction path in `envs/camera/camera.py` and the current actorseg extraction path in `policy/DP3/scripts/actorseg_pointcloud_utils.py`.
+  - Confirmed the core structural gap: `objpc` filters raw per-camera position pixels before downsampling, while actorseg filters an already-downsampled scene cloud after projection.
+  - Recorded the conclusion that online eval can be upgraded immediately, but offline training requires a new richer collection config and recollection.
+- Files created/modified:
+  - `findings.md` (updated)
+  - `progress.md` (updated)
+
+## Session: 2026-04-14 (ObjPC 5000-Point Path)
+
+### Phase 1: Scope & Consistency Audit
+- **Status:** complete
+- Actions taken:
+  - Traced the full `object_pc` chain from collection config to HDF5, zarr preprocessing, DP3 task shape, and train/eval scripts.
+  - Confirmed that changing only task config point counts would not be sufficient because preprocessing still defaulted to `1024` and DP3 task shape still expected `[1024, 6]`.
+  - Confirmed existing collected `demo_clean_3d_object_pc` data is already stored as `(T, 1024, 6)` per object, so real 5000-point data requires recollection.
+  - Chose an isolated 5000-point path to avoid breaking existing 1024-point checkpoints and scripts.
+- Files created/modified:
+  - `findings.md` (updated)
+  - `progress.md` (updated)
+
+### Phase 2: TDD & Implementation
+- **Status:** complete
+- Actions taken:
+  - Added a failing regression test `policy/DP3/scripts/test_objpc_5000_path.py` covering collection config, preprocess wiring, and DP3 config shape consistency.
+  - Added `task_config/demo_clean_3d_object_pc_5000.yml`.
+  - Added `task_config/demo_randomized_3d_object_pc_5000.yml`.
+  - Added `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/task/demo_task_objpc_5000.yaml`.
+  - Added `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/robot_dp3_objpc_5000.yaml`.
+  - Added `policy/DP3/train_objpc_5000.sh` and `policy/DP3/eval_objpc_5000.sh`.
+  - Extended `policy/DP3/process_data_objpc.sh` with an explicit `target_num_points` argument so the new 5000-point path preprocesses correctly.
+- Files created/modified:
+  - `policy/DP3/scripts/test_objpc_5000_path.py` (created)
+  - `task_config/demo_clean_3d_object_pc_5000.yml` (created)
+  - `task_config/demo_randomized_3d_object_pc_5000.yml` (created)
+  - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/task/demo_task_objpc_5000.yaml` (created)
+  - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/robot_dp3_objpc_5000.yaml` (created)
+  - `policy/DP3/train_objpc_5000.sh` (created)
+  - `policy/DP3/eval_objpc_5000.sh` (created)
+  - `policy/DP3/process_data_objpc.sh` (modified)
+
+### Phase 3: Verification
+- **Status:** complete
+- Actions taken:
+  - Ran `python policy/DP3/scripts/test_objpc_5000_path.py`.
+  - Ran `bash -n policy/DP3/process_data_objpc.sh policy/DP3/train_objpc_5000.sh policy/DP3/eval_objpc_5000.sh`.
+  - Ran `python -m py_compile policy/DP3/scripts/process_data_objpc.py policy/DP3/scripts/test_objpc_5000_path.py`.
+- Files created/modified:
+  - `findings.md` (updated)
+  - `progress.md` (updated)
+
+## Session: 2026-04-14 (Hybrid Feature5000 Paths)
+
+### Phase 1: Design Audit
+- **Status:** complete
+- Actions taken:
+  - Confirmed from `deploy_policy.py` that hybrid raw `point_cloud` and NDF/semantic pointwise branches are encoded independently and concatenated only after branch encoding.
+  - Confirmed there is no per-point alignment requirement between the 1024-point raw branch and a denser feature branch.
+  - Confirmed that requesting 5000 feature points from an underlying 1024-point object cloud would only repeat / pad points, so the new path only makes sense together with recollected 5000-point object-PCD data.
+- Files created/modified:
+  - `findings.md` (updated)
+  - `progress.md` (updated)
+
+### Phase 2: TDD & Implementation
+- **Status:** complete
+- Actions taken:
+  - Added failing regression test `policy/DP3/scripts/test_hybrid_feature5000_path.py`.
+  - Added isolated NDF feature5000 wrapper/config/script path.
+  - Added isolated semantic feature5000 wrapper/config/script path.
+  - Kept the raw hybrid `point_cloud` shape at `[1024, 6]`.
+  - Set feature branch defaults to `5000` points and used a distinct `-feat5000` suffix to isolate checkpoint naming.
+- Files created/modified:
+  - `policy/DP3/scripts/test_hybrid_feature5000_path.py` (created)
+  - `policy/DP3/scripts/process_data_ndf_pointwise_hybrid_feat5000.py` (created)
+  - `policy/DP3/scripts/process_data_semantic_pointwise_hybrid_feat5000.py` (created)
+  - `policy/DP3/process_data_ndf_pointwise_hybrid_feat5000.sh` (created)
+  - `policy/DP3/process_data_semantic_pointwise_hybrid_feat5000.sh` (created)
+  - `policy/DP3/train_ndf_pointwise_hybrid_feat5000.sh` (created)
+  - `policy/DP3/train_semantic_pointwise_hybrid_feat5000.sh` (created)
+  - `policy/DP3/eval_ndf_pointwise_hybrid_feat5000.sh` (created)
+  - `policy/DP3/eval_semantic_pointwise_hybrid_feat5000.sh` (created)
+  - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/task/demo_task_ndf_pointwise_hybrid_feat5000.yaml` (created)
+  - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/task/demo_task_semantic_pointwise_hybrid_feat5000.yaml` (created)
+  - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/robot_dp3_ndf_pointwise_hybrid_feat5000.yaml` (created)
+  - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/robot_dp3_semantic_pointwise_hybrid_feat5000.yaml` (created)
+
+### Phase 3: Verification
+- **Status:** complete
+- Actions taken:
+  - Ran `python policy/DP3/scripts/test_hybrid_feature5000_path.py`.
+  - Ran `bash -n` on all new feature5000 shell scripts.
+  - Ran `python -m py_compile` on the new Python wrappers and the new regression test.
+- Files created/modified:
+  - `findings.md` (updated)
+  - `progress.md` (updated)
+
 ### Phase 3: Evidence Gathering
 
 ## Session: 2026-04-13 (Semantic Hybrid Follow-Up)
@@ -494,5 +599,36 @@
   - `policy/DP3/train_semantic_pointwise_actorseg_hybrid.sh` (modified)
   - `policy/DP3/process_data_semantic_pointwise_actorseg_hybrid.sh` (modified)
   - `policy/DP3/eval_semantic_pointwise_actorseg_hybrid.sh` (modified)
+  - `findings.md` (updated)
+  - `progress.md` (updated)
+
+### Phase 8: Pointwise Eval Interface Unification
+- **Status:** complete
+- Actions taken:
+  - Added a dedicated regression test `policy/DP3/scripts/test_eval_pointwise_script_interfaces.sh` to capture the final `python script/eval_policy.py` argv emitted by the pointwise eval scripts.
+  - Verified the new test failed against the old mixed interface, specifically because some scripts still auto-derived `ckpt_setting` instead of accepting it as the third positional argument.
+  - Rewrote the pointwise eval scripts to use the fixed positional layout requested by the user: `task_name task_config ckpt_setting expert_data_num seed gpu_id ...`.
+  - Removed old dual-signature/legacy compatibility branches from the touched eval scripts.
+  - Updated the regression test to assert that the third argument is forwarded unchanged as `--ckpt_setting`.
+  - Re-ran the regression test and shell syntax checks.
+- Files created/modified:
+  - `policy/DP3/eval_ndf_pointwise.sh` (modified)
+  - `policy/DP3/eval_ndf_pointwise_hybrid.sh` (modified)
+  - `policy/DP3/eval_ndf_pointwise_actorseg_hybrid.sh` (modified)
+  - `policy/DP3/eval_semantic_pointwise.sh` (modified)
+  - `policy/DP3/eval_semantic_pointwise_actorseg_hybrid.sh` (modified)
+  - `policy/DP3/scripts/test_eval_pointwise_script_interfaces.sh` (new)
+  - `findings.md` (updated)
+  - `progress.md` (updated)
+
+### Phase 9: ObjPC vs ActorSeg Comparison
+- **Status:** complete
+- Actions taken:
+  - Compared `demo_clean_3d_object_pc.yml` and `demo_randomized_3d_object_pc.yml` to isolate which randomized factors change beyond textures and lighting.
+  - Traced DP3 observation assembly in `policy/DP3/deploy_policy.py` to confirm that `agent_pos` is always present and `point_cloud` comes from either `object_pointcloud` or actorseg extraction depending on the path.
+  - Verified in `envs/camera/camera.py` that `object_pointcloud` is built from raw per-camera `Position` buffers filtered by actor-id segmentation before per-object FPS/downsampling.
+  - Verified in `policy/DP3/scripts/actorseg_pointcloud_utils.py` that actorseg extraction instead starts from the already-downsampled combined scene `episode["pointcloud"]` / `observation["pointcloud"]`, then projects that sparse cloud into actor-segmentation masks.
+  - Concluded that the current actorseg path is structurally weaker than objpc, so they are not expected to match even with simulator truth masks.
+- Files created/modified:
   - `findings.md` (updated)
   - `progress.md` (updated)
