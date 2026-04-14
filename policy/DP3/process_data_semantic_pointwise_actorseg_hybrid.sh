@@ -5,13 +5,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${SCRIPT_DIR}"
 
+DEFAULT_OBJECT_PLACEHOLDERS="{A},{B}"
+
 task_name=${1}
 task_config=${2}
 expert_data_num=${3}
 semantic_ckpt_A=${4:-none}
 semantic_ckpt_B=${5:-none}
 semantic_device=${6:-cuda:0}
-object_placeholders=${7:-\{A\},\{B\}}
+object_placeholders=${7:-${DEFAULT_OBJECT_PLACEHOLDERS}}
 semantic_point_num=${8:-128}
 actorseg_camera_names=${9:-head_camera,front_camera}
 

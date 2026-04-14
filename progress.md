@@ -479,3 +479,20 @@
 - Files created/modified:
   - `findings.md` (updated)
   - `progress.md` (updated)
+
+### Phase 7: ActorSeg Hybrid Placeholder Default Fix
+- **Status:** complete
+- Actions taken:
+  - Reproduced the user's actorseg hybrid preprocessing failure and confirmed that `policy/DP3/ndf_pointwise_arg_utils.sh` emitted the default placeholder string as `\{A\},\{B\}` when `object_placeholders` was omitted.
+  - Added regression coverage to `policy/DP3/scripts/test_ndf_pointwise_arg_utils.sh` for omitted-placeholder defaults across train, eval, eval-hybrid, and actorseg-process parsing.
+  - Fixed the shared NDF arg helper by replacing the escaped inline default with a plain `DEFAULT_OBJECT_PLACEHOLDERS="{A},{B}"` constant.
+  - Aligned `semantic_pointwise_actorseg_hybrid` train/process/eval scripts to the same plain default placeholder constant style.
+  - Re-ran the shell regression test and `bash -n` on all touched actorseg hybrid scripts.
+- Files created/modified:
+  - `policy/DP3/ndf_pointwise_arg_utils.sh` (modified)
+  - `policy/DP3/scripts/test_ndf_pointwise_arg_utils.sh` (modified)
+  - `policy/DP3/train_semantic_pointwise_actorseg_hybrid.sh` (modified)
+  - `policy/DP3/process_data_semantic_pointwise_actorseg_hybrid.sh` (modified)
+  - `policy/DP3/eval_semantic_pointwise_actorseg_hybrid.sh` (modified)
+  - `findings.md` (updated)
+  - `progress.md` (updated)

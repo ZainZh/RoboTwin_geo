@@ -5,6 +5,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${SCRIPT_DIR}"
 
+DEFAULT_OBJECT_PLACEHOLDERS="{A},{B}"
+
 task_name=${1}
 task_config=${2}
 expert_data_num=${3}
@@ -13,7 +15,7 @@ gpu_id=${5}
 semantic_ckpt_A=${6:-none}
 semantic_ckpt_B=${7:-none}
 semantic_device=${8:-cuda:0}
-object_placeholders=${9:-\{A\},\{B\}}
+object_placeholders=${9:-${DEFAULT_OBJECT_PLACEHOLDERS}}
 semantic_point_num=${10:-128}
 semantic_feat_dim=${11:-128}
 batch_size=${12:-256}

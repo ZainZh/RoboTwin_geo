@@ -4,6 +4,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+DEFAULT_OBJECT_PLACEHOLDERS="{A},{B}"
+
 policy_name=DP3
 task_name=${1}
 task_config=${2}
@@ -16,7 +18,7 @@ if [[ ${3:-} =~ ^[0-9]+$ ]]; then
     semantic_ckpt_A=${6:-none}
     semantic_ckpt_B=${7:-none}
     semantic_device=${8:-cuda:0}
-    object_placeholders=${9:-\{A\},\{B\}}
+    object_placeholders=${9:-${DEFAULT_OBJECT_PLACEHOLDERS}}
     checkpoint_num=${10:-3000}
     semantic_point_num=${11:-128}
     actorseg_camera_names=${12:-head_camera,front_camera}
@@ -28,7 +30,7 @@ else
     semantic_ckpt_A=${7:-none}
     semantic_ckpt_B=${8:-none}
     semantic_device=${9:-cuda:0}
-    object_placeholders=${10:-\{A\},\{B\}}
+    object_placeholders=${10:-${DEFAULT_OBJECT_PLACEHOLDERS}}
     checkpoint_num=${11:-3000}
     semantic_point_num=${12:-128}
     actorseg_camera_names=${13:-head_camera,front_camera}

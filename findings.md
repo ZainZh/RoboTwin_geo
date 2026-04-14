@@ -344,5 +344,10 @@
 ## Visual/Browser Findings
 - None yet.
 
+## New Findings
+- `policy/DP3/ndf_pointwise_arg_utils.sh` had a bash-specific default-value bug: inside quoted parameter expansion, the escaped placeholder default `\{A\},\{B\}` was preserved literally and reached Python as `["\\{A}", "\\{B}"]`.
+- That bug only surfaced when users omitted `object_placeholders`, which is why earlier explicit-placeholder invocations worked while the actorseg hybrid default path failed at `require_actor_id_targets(...)`.
+- The direct semantic actorseg hybrid shell scripts were not failing for the same reason, but aligning them to the same plain `DEFAULT_OBJECT_PLACEHOLDERS="{A},{B}"` convention removes ambiguity and future-proofs the interface.
+
 ---
 *Update this file after every 2 view/browser/search operations.*

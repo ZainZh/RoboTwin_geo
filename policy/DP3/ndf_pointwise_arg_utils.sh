@@ -1,5 +1,7 @@
 #!/bin/bash
 
+DEFAULT_OBJECT_PLACEHOLDERS="{A},{B}"
+
 looks_like_placeholder_arg() {
     local value="${1:-}"
     [[ "${value}" == *"{"*"}"* ]]
@@ -21,7 +23,7 @@ normalize_ndf_train_args() {
     ndf_ckpt_B="${args[6]:-none}"
     ndf_device="${args[7]:-cuda:0}"
     ndf_dgcnn_placeholders="${args[8]:-}"
-    object_placeholders="${args[9]:-\{A\},\{B\}}"
+    object_placeholders="${args[9]:-${DEFAULT_OBJECT_PLACEHOLDERS}}"
     ndf_point_num="${args[10]:-128}"
     ndf_legacy_shifted=false
 
@@ -46,7 +48,7 @@ normalize_ndf_eval_args() {
     ndf_ckpt_B="${args[7]:-none}"
     ndf_device="${args[8]:-cuda:0}"
     ndf_dgcnn_placeholders="${args[9]:-}"
-    object_placeholders="${args[10]:-\{A\},\{B\}}"
+    object_placeholders="${args[10]:-${DEFAULT_OBJECT_PLACEHOLDERS}}"
     checkpoint_num="${args[11]:-3000}"
     ndf_point_num="${args[12]:-128}"
     ndf_legacy_shifted=false
@@ -72,7 +74,7 @@ normalize_ndf_eval_hybrid_args() {
     ndf_ckpt_B="${args[6]:-none}"
     ndf_device="${args[7]:-cuda:0}"
     ndf_dgcnn_placeholders="${args[8]:-}"
-    object_placeholders="${args[9]:-\{A\},\{B\}}"
+    object_placeholders="${args[9]:-${DEFAULT_OBJECT_PLACEHOLDERS}}"
     checkpoint_num="${args[10]:-3000}"
     ndf_point_num="${args[11]:-128}"
     ndf_legacy_shifted=false
@@ -95,7 +97,7 @@ normalize_ndf_process_actorseg_args() {
     ndf_ckpt_B="${args[4]:-none}"
     ndf_device="${args[5]:-cuda:0}"
     ndf_dgcnn_placeholders="${args[6]:-}"
-    object_placeholders="${args[7]:-\{A\},\{B\}}"
+    object_placeholders="${args[7]:-${DEFAULT_OBJECT_PLACEHOLDERS}}"
     ndf_point_num="${args[8]:-128}"
     actorseg_camera_names="${args[9]:-head_camera,front_camera}"
     ndf_legacy_shifted=false

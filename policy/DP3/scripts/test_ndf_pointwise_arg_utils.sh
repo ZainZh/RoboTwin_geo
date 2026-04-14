@@ -21,6 +21,16 @@ test "${ndf_dgcnn_placeholders}" = ""
 test "${object_placeholders}" = "{A},{B}"
 test "${ndf_point_num}" = "128"
 
+normalize_ndf_train_args \
+    beat_block_hammer \
+    demo_clean_3d_object_pc \
+    50 \
+    0 \
+    0 \
+    /tmp/hammer.pth
+
+test "${object_placeholders}" = "{A},{B}"
+
 normalize_ndf_eval_hybrid_args \
     beat_block_hammer \
     demo_clean_3d_object_pc \
@@ -36,6 +46,26 @@ normalize_ndf_eval_hybrid_args \
 test "${ndf_dgcnn_placeholders}" = ""
 test "${object_placeholders}" = "{A},{B}"
 test "${checkpoint_num}" = "3000"
+
+normalize_ndf_eval_args \
+    beat_block_hammer \
+    demo_clean_3d_object_pc \
+    50 \
+    0 \
+    0 \
+    /tmp/hammer.pth
+
+test "${object_placeholders}" = "{A},{B}"
+
+normalize_ndf_eval_hybrid_args \
+    beat_block_hammer \
+    demo_clean_3d_object_pc \
+    50 \
+    0 \
+    0 \
+    /tmp/hammer.pth
+
+test "${object_placeholders}" = "{A},{B}"
 
 normalize_ndf_process_actorseg_args \
     hanging_mug \
@@ -57,4 +87,13 @@ test "${ndf_device}" = "cuda:0"
 test "${ndf_dgcnn_placeholders}" = ""
 test "${object_placeholders}" = "{A},{B}"
 test "${ndf_point_num}" = "128"
+test "${actorseg_camera_names}" = "head_camera,front_camera"
+
+normalize_ndf_process_actorseg_args \
+    hanging_mug \
+    demo_clean_3d_actorseg \
+    50 \
+    /tmp/mug.pth
+
+test "${object_placeholders}" = "{A},{B}"
 test "${actorseg_camera_names}" = "head_camera,front_camera"
