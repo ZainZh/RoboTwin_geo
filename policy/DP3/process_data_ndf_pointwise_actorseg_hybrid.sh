@@ -4,11 +4,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/ndf_pointwise_arg_utils.sh"
-normalize_ndf_train_args "$@"
-actorseg_camera_names=${12:-head_camera,front_camera}
+normalize_ndf_process_actorseg_args "$@"
 
 if [ "${ndf_legacy_shifted}" = true ]; then
-    actorseg_camera_names=${11:-head_camera,front_camera}
     echo "[process_data_ndf_pointwise_actorseg_hybrid.sh] detected legacy invocation without explicit ndf_dgcnn_placeholders; treating '${object_placeholders}' as object_placeholders." >&2
 fi
 
