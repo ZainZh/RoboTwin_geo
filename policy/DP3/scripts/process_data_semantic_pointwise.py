@@ -1,14 +1,13 @@
 import argparse
 import json
 import os
-import shutil
 from collections import Counter
 from pathlib import Path
 
 import numpy as np
 import torch
-import zarr
 
+from incremental_objpc_zarr import append_episode_to_buffer, open_or_reset_replay_buffer
 from ndf_feature_utils import summarize_modes
 from object_pointcloud_utils import (
     default_placeholder_order,
@@ -21,6 +20,7 @@ from object_pointcloud_utils import (
     valid_xyz_centroid,
 )
 from pointwise_context_utils import build_context_point_cloud, resolve_context_placeholders
+from pointwise_preprocess_meta import load_or_init_meta, reconcile_episode_stats, write_meta
 from semantic_feature_utils import compute_semantic_pointwise_cloud, load_semantic_model
 
 
@@ -112,9 +112,6 @@ def main(argv=None):
     save_dir = f"./data/{task_name}-{task_config}-{num}{args.output_suffix}.zarr"
     meta_path = f"./data/{task_name}-{task_config}-{num}{args.output_suffix}_meta.json"
 
-    if os.path.exists(save_dir):
-        shutil.rmtree(save_dir)
-
     scene_info = load_scene_info(os.path.join(load_dir, "scene_info.json"))
     first_episode = load_hdf5(os.path.join(load_dir, "data/episode0.hdf5"))
     placeholders = parse_placeholder_list(args.object_placeholders)
@@ -154,20 +151,31 @@ def main(argv=None):
     if len(feature_placeholders) == 0:
         raise RuntimeError("None of the requested object placeholders has a semantic model configured.")
 
-    zarr_root = zarr.group(save_dir)
-    zarr_data = zarr_root.create_group("data")
-    zarr_meta = zarr_root.create_group("meta")
+    replay_buffer, start_episode = open_or_reset_replay_buffer(save_dir)
+    meta = load_or_init_meta(
+        meta_path,
+        task_name=task_name,
+        task_config=task_config,
+        expert_data_num=num,
+    )
+    meta.update(
+        {
+            "output_zarr": str(Path(save_dir).resolve()),
+            "object_placeholders": placeholders,
+            "context_placeholders": context_placeholders,
+            "feature_placeholders": feature_placeholders,
+            "semantic_models": model_paths,
+            "semantic_num_points": int(args.semantic_num_points),
+            "semantic_feat_dim": semantic_feat_dim,
+            "semantic_feat_dims": semantic_feat_dims,
+            "keep_feature_placeholders_in_context": bool(args.keep_feature_placeholders_in_context),
+        }
+    )
+    episode_stats = reconcile_episode_stats(meta.get("episodes", []), start_episode=start_episode)
 
-    point_cloud_arrays = []
-    semantic_arrays = {placeholder: [] for placeholder in feature_placeholders}
-    placeholder_point_cloud_arrays = {placeholder: [] for placeholder in placeholders}
-    state_arrays = []
-    joint_action_arrays = []
-    episode_ends_arrays = []
-    total_count = 0
-    episode_stats = []
+    print(f"Resuming semantic pointwise preprocessing from episode {start_episode + 1} / {num}")
 
-    for current_ep in range(num):
+    for current_ep in range(start_episode, num):
         print(f"processing episode: {current_ep + 1} / {num}", end="\r")
         load_path = os.path.join(load_dir, f"data/episode{current_ep}.hdf5")
         episode = load_hdf5(load_path)
@@ -181,6 +189,12 @@ def main(argv=None):
             _, asset_spec = parse_target_extents(scene_info, current_ep, placeholder)
             asset_specs[placeholder] = asset_spec
             has_exact[placeholder] = placeholder in episode["object_pointcloud"]
+
+        episode_point_cloud_arrays = []
+        episode_semantic_arrays = {placeholder: [] for placeholder in feature_placeholders}
+        episode_placeholder_point_cloud_arrays = {placeholder: [] for placeholder in placeholders}
+        episode_state_arrays = []
+        episode_joint_action_arrays = []
 
         for frame_idx in range(vector_all.shape[0]):
             per_placeholder_point_clouds = {}
@@ -212,16 +226,16 @@ def main(argv=None):
                     target_num_points=int(args.target_num_points),
                     keep_feature_placeholders_in_context=bool(args.keep_feature_placeholders_in_context),
                 )
-                point_cloud_arrays.append(context_point_cloud.astype(np.float32))
-                state_arrays.append(vector_all[frame_idx])
+                episode_point_cloud_arrays.append(context_point_cloud.astype(np.float32))
+                episode_state_arrays.append(vector_all[frame_idx])
 
                 for placeholder in placeholders:
                     object_pc = per_placeholder_point_clouds[placeholder]
                     if args.save_placeholder_point_clouds:
-                        placeholder_point_cloud_arrays[placeholder].append(object_pc.astype(np.float32))
+                        episode_placeholder_point_cloud_arrays[placeholder].append(object_pc.astype(np.float32))
 
                 for placeholder in feature_placeholders:
-                    semantic_arrays[placeholder].append(
+                    episode_semantic_arrays[placeholder].append(
                         compute_semantic_pointwise_cloud(
                             artifacts=model_by_placeholder[placeholder],
                             object_point_cloud=per_placeholder_point_clouds[placeholder],
@@ -230,109 +244,51 @@ def main(argv=None):
                     )
 
             if frame_idx != 0:
-                joint_action_arrays.append(vector_all[frame_idx])
+                episode_joint_action_arrays.append(vector_all[frame_idx])
 
-        total_count += vector_all.shape[0] - 1
-        episode_ends_arrays.append(total_count)
-        episode_stats.append(
-            {
-                "episode": current_ep,
-                "placeholders": placeholders,
-                "context_placeholders": context_placeholders,
-                "feature_placeholders": feature_placeholders,
-                "target_assets": asset_specs,
-                "has_exact_object_pointcloud": has_exact,
-                "has_semantic_model": {
-                    placeholder: placeholder in model_by_placeholder
-                    for placeholder in placeholders
-                },
-                "modes": {
-                    placeholder: summarize_modes(local_modes[placeholder])
-                    for placeholder in placeholders
-                },
-            }
-        )
+        episode_data = {
+            "point_cloud": np.asarray(episode_point_cloud_arrays, dtype=np.float32),
+            "state": np.asarray(episode_state_arrays, dtype=np.float32),
+            "action": np.asarray(episode_joint_action_arrays, dtype=np.float32),
+        }
+        for placeholder in feature_placeholders:
+            point_cloud_key = placeholder_pointcloud_key(placeholder)
+            episode_data[point_cloud_key] = np.asarray(episode_semantic_arrays[placeholder], dtype=np.float32)
+        if args.save_placeholder_point_clouds:
+            for placeholder in placeholders:
+                point_cloud_key = f"object_point_cloud_{placeholder.strip('{}')}"
+                episode_data[point_cloud_key] = np.asarray(
+                    episode_placeholder_point_cloud_arrays[placeholder],
+                    dtype=np.float32,
+                )
+
+        append_episode_to_buffer(replay_buffer, episode_data)
+
+        episode_record = {
+            "episode": current_ep,
+            "placeholders": placeholders,
+            "context_placeholders": context_placeholders,
+            "feature_placeholders": feature_placeholders,
+            "target_assets": asset_specs,
+            "has_exact_object_pointcloud": has_exact,
+            "has_semantic_model": {
+                placeholder: placeholder in model_by_placeholder
+                for placeholder in placeholders
+            },
+            "modes": {
+                placeholder: summarize_modes(local_modes[placeholder])
+                for placeholder in placeholders
+            },
+        }
+        if len(episode_stats) == current_ep:
+            episode_stats.append(episode_record)
+        else:
+            episode_stats[current_ep] = episode_record
+        meta["episodes"] = episode_stats
+        write_meta(meta_path, meta)
 
     print()
-    episode_ends_arrays = np.asarray(episode_ends_arrays, dtype=np.int64)
-    point_cloud_arrays = np.asarray(point_cloud_arrays, dtype=np.float32)
-    state_arrays = np.asarray(state_arrays, dtype=np.float32)
-    joint_action_arrays = np.asarray(joint_action_arrays, dtype=np.float32)
-
-    compressor = zarr.Blosc(cname="zstd", clevel=3, shuffle=1)
-    zarr_data.create_dataset(
-        "point_cloud",
-        data=point_cloud_arrays,
-        chunks=(100, point_cloud_arrays.shape[1], point_cloud_arrays.shape[2]),
-        overwrite=True,
-        compressor=compressor,
-    )
-    zarr_data.create_dataset(
-        "state",
-        data=state_arrays,
-        chunks=(100, state_arrays.shape[1]),
-        dtype="float32",
-        overwrite=True,
-        compressor=compressor,
-    )
-    zarr_data.create_dataset(
-        "action",
-        data=joint_action_arrays,
-        chunks=(100, joint_action_arrays.shape[1]),
-        dtype="float32",
-        overwrite=True,
-        compressor=compressor,
-    )
-
-    for placeholder in feature_placeholders:
-        point_cloud_key = placeholder_pointcloud_key(placeholder)
-        point_cloud_arr = np.asarray(semantic_arrays[placeholder], dtype=np.float32)
-        zarr_data.create_dataset(
-            point_cloud_key,
-            data=point_cloud_arr,
-            chunks=(100, point_cloud_arr.shape[1], point_cloud_arr.shape[2]),
-            dtype="float32",
-            overwrite=True,
-            compressor=compressor,
-        )
-
-    if args.save_placeholder_point_clouds:
-        for placeholder in placeholders:
-            point_cloud_key = f"object_point_cloud_{placeholder.strip('{}')}"
-            zarr_data.create_dataset(
-                point_cloud_key,
-                data=np.asarray(placeholder_point_cloud_arrays[placeholder], dtype=np.float32),
-                chunks=(100, int(args.target_num_points), 6),
-                dtype="float32",
-                overwrite=True,
-                compressor=compressor,
-            )
-
-    zarr_meta.create_dataset(
-        "episode_ends",
-        data=episode_ends_arrays,
-        dtype="int64",
-        overwrite=True,
-        compressor=compressor,
-    )
-
-    meta = {
-        "task_name": task_name,
-        "task_config": task_config,
-        "expert_data_num": num,
-        "output_zarr": str(Path(save_dir).resolve()),
-        "object_placeholders": placeholders,
-        "context_placeholders": context_placeholders,
-        "feature_placeholders": feature_placeholders,
-        "semantic_models": model_paths,
-        "semantic_num_points": int(args.semantic_num_points),
-        "semantic_feat_dim": semantic_feat_dim,
-        "semantic_feat_dims": semantic_feat_dims,
-        "keep_feature_placeholders_in_context": bool(args.keep_feature_placeholders_in_context),
-        "episodes": episode_stats,
-    }
-    with open(meta_path, "w", encoding="utf-8") as f:
-        json.dump(meta, f, ensure_ascii=False, indent=2)
+    write_meta(meta_path, meta)
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@
 policy_name=DP3
 task_name=${1}
 task_config=${2}
-ckpt_setting=${3}-objpc-semantic-pointwise-hybrid-feat5000
+ckpt_setting_base=${3}
 expert_data_num=${4}
 seed=${5}
 gpu_id=${6}
@@ -13,8 +13,10 @@ semantic_device=${9:-cuda:0}
 object_placeholders=${10:-\{A\},\{B\}}
 checkpoint_num=${11:-3000}
 semantic_point_num=${12:-5000}
+output_suffix="-objpc-semantic-pointwise-hybrid-feat${semantic_point_num}"
+ckpt_setting="${ckpt_setting_base}${output_suffix}"
 
-meta_path="./data/${task_name}-${task_config}-${expert_data_num}-objpc-semantic-pointwise-hybrid-feat5000_meta.json"
+meta_path="./data/${task_name}-${task_config}-${expert_data_num}${output_suffix}_meta.json"
 
 if [ -f "${meta_path}" ]; then
     mapfile -t semantic_meta < <(python -c 'import json,sys; m=json.load(open(sys.argv[1], "r", encoding="utf-8")); print(int(m["semantic_num_points"]))' "${meta_path}")

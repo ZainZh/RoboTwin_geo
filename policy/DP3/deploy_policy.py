@@ -31,7 +31,12 @@ sys.path.append(os.path.join(parent_directory, '3D-Diffusion-Policy'))
 sys.path.append(os.path.join(parent_directory, 'scripts'))
 
 from dp3_policy import *
-from ndf_feature_utils import compute_ndf_feature, compute_ndf_pointwise_cloud, load_ndf_model
+from ndf_feature_utils import (
+    compute_ndf_feature,
+    compute_ndf_interact_pointwise_cloud,
+    compute_ndf_pointwise_cloud,
+    load_ndf_model,
+)
 from object_pointcloud_utils import merge_object_point_clouds, parse_placeholder_list
 from pointwise_context_utils import build_context_point_cloud
 
@@ -42,6 +47,12 @@ def placeholder_feature_key(placeholder: str) -> str:
 
 def placeholder_pointcloud_key(placeholder: str) -> str:
     return f"ndf_point_cloud_{placeholder.strip('{}')}"
+
+
+def placeholder_interact_pointcloud_key(query_placeholder: str, support_placeholder: str) -> str:
+    return (
+        f"ndf_interact_point_cloud_{query_placeholder.strip('{}')}_from_{support_placeholder.strip('{}')}"
+    )
 
 
 def placeholder_semantic_pointcloud_key(placeholder: str) -> str:
@@ -172,6 +183,7 @@ def encode_obs(observation, model):  # Post-Process Observation
     use_sam3_objpc = bool(getattr(model, "use_sam3_objpc", False))
     use_ndf_pointwise = bool(getattr(model, "use_ndf_pointwise", False))
     use_ndf_pointwise_hybrid = bool(getattr(model, "use_ndf_pointwise_hybrid", False))
+    use_ndf_pointwise_interact = bool(getattr(model, "use_ndf_pointwise_interact", False))
     use_semantic_pointwise = bool(getattr(model, "use_semantic_pointwise", False))
     use_semantic_pointwise_hybrid = bool(getattr(model, "use_semantic_pointwise_hybrid", False))
 
@@ -261,6 +273,30 @@ def encode_obs(observation, model):  # Post-Process Observation
                 device=getattr(model, "ndf_device", torch.device("cpu")),
                 target_num_points=point_num,
             ).astype(np.float32)
+        if use_ndf_pointwise_interact:
+            for support_placeholder, ndf_model in getattr(model, "ndf_models", {}).items():
+                support_object_pc = object_pointcloud.get(support_placeholder)
+                for query_placeholder in getattr(model, "object_placeholders", []):
+                    if query_placeholder == support_placeholder:
+                        continue
+                    pointcloud_key = placeholder_interact_pointcloud_key(query_placeholder, support_placeholder)
+                    point_num = int(
+                        getattr(model, "ndf_interact_point_num_by_pair", {}).get(
+                            (query_placeholder, support_placeholder),
+                            int(getattr(model, "ndf_point_num_by_placeholder", {}).get(support_placeholder, 128)),
+                        )
+                    )
+                    query_object_pc = object_pointcloud.get(query_placeholder)
+                    if support_object_pc is None or query_object_pc is None:
+                        obs[pointcloud_key] = np.zeros((point_num, 3 + feat_dim), dtype=np.float32)
+                        continue
+                    obs[pointcloud_key] = compute_ndf_interact_pointwise_cloud(
+                        model=ndf_model,
+                        support_object_point_cloud=support_object_pc,
+                        query_object_point_cloud=query_object_pc,
+                        device=getattr(model, "ndf_device", torch.device("cpu")),
+                        target_num_points=point_num,
+                    ).astype(np.float32)
 
     if use_semantic_pointwise:
         compute_semantic_pointwise_cloud, _ = get_semantic_utils()
@@ -395,6 +431,7 @@ def get_model(usr_args):
     use_sam3_objpc = "objpc_sam3" in usr_args["config_name"]
     use_ndf_pointwise = "ndf_pointwise" in usr_args["config_name"]
     use_ndf_pointwise_hybrid = "ndf_pointwise_hybrid" in usr_args["config_name"]
+    use_ndf_pointwise_interact = "ndf_pointwise_hybrid_interact" in usr_args["config_name"]
     use_semantic_pointwise = "semantic_pointwise" in usr_args["config_name"]
     use_semantic_pointwise_hybrid = "semantic_pointwise_hybrid" in usr_args["config_name"]
     use_object_pointcloud = (
@@ -479,6 +516,22 @@ def get_model(usr_args):
                 "shape": [ndf_point_num, 3 + ndf_feat_dim],
                 "type": "point_cloud",
             }
+        if use_ndf_pointwise_interact:
+            for support_placeholder in object_placeholders:
+                checkpoint = ndf_model_specs.get(support_placeholder)
+                if checkpoint in {None, "", "none"}:
+                    continue
+                for query_placeholder in object_placeholders:
+                    if query_placeholder == support_placeholder:
+                        continue
+                    pointcloud_key = placeholder_interact_pointcloud_key(
+                        query_placeholder,
+                        support_placeholder,
+                    )
+                    cfg.task.shape_meta.obs[pointcloud_key] = {
+                        "shape": [ndf_point_num, 3 + ndf_feat_dim],
+                        "type": "point_cloud",
+                    }
     elif "ndf" in usr_args["config_name"]:
         for placeholder in object_placeholders:
             checkpoint = ndf_model_specs.get(placeholder)
@@ -507,6 +560,7 @@ def get_model(usr_args):
     DP3_Model.use_object_pointcloud = use_object_pointcloud
     DP3_Model.use_ndf_pointwise = use_ndf_pointwise
     DP3_Model.use_ndf_pointwise_hybrid = use_ndf_pointwise_hybrid
+    DP3_Model.use_ndf_pointwise_interact = use_ndf_pointwise_interact
     DP3_Model.use_semantic_pointwise = use_semantic_pointwise
     DP3_Model.use_semantic_pointwise_hybrid = use_semantic_pointwise_hybrid
     DP3_Model.object_placeholders = object_placeholders
@@ -534,6 +588,13 @@ def get_model(usr_args):
         placeholder: ndf_point_num
         for placeholder in object_placeholders
         if placeholder in ndf_model_specs
+    }
+    DP3_Model.ndf_interact_point_num_by_pair = {
+        (query_placeholder, support_placeholder): ndf_point_num
+        for support_placeholder in object_placeholders
+        if support_placeholder in ndf_model_specs
+        for query_placeholder in object_placeholders
+        if query_placeholder != support_placeholder
     }
     DP3_Model.ndf_device = ndf_device
     DP3_Model.ndf_models = {}

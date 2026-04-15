@@ -3,7 +3,7 @@
 policy_name=DP3
 task_name=${1}
 task_config=${2}
-ckpt_setting_base=${3}
+ckpt_setting=${3}-objpc-ndf-pointwise-hybrid-interact
 expert_data_num=${4}
 seed=${5}
 gpu_id=${6}
@@ -13,9 +13,7 @@ ndf_device=${9:-cuda:0}
 ndf_dgcnn_placeholders=${10:-}
 object_placeholders=${11:-\{A\},\{B\}}
 checkpoint_num=${12:-3000}
-ndf_point_num=${13:-5000}
-output_suffix="-objpc-ndf-pointwise-hybrid-feat${ndf_point_num}"
-ckpt_setting="${ckpt_setting_base}${output_suffix}"
+ndf_point_num=${13:-128}
 
 extra_overrides=()
 if [ "${ndf_ckpt_A}" != "none" ] && [ -n "${ndf_ckpt_A}" ]; then
@@ -46,7 +44,7 @@ python script/eval_policy.py --config policy/${policy_name}/deploy_policy.yml \
     --ckpt_setting ${ckpt_setting} \
     --expert_data_num ${expert_data_num} \
     --seed ${seed} \
-    --config_name robot_dp3_ndf_pointwise_hybrid_feat5000 \
+    --config_name robot_dp3_ndf_pointwise_hybrid_interact \
     --object_placeholders "${object_placeholders}" \
     --checkpoint_num ${checkpoint_num} \
     --ndf_point_num ${ndf_point_num} \

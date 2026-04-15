@@ -12,12 +12,12 @@ ndf_ckpt_B=${7:-none}
 ndf_device=${8:-cuda:0}
 ndf_dgcnn_placeholders=${9:-}
 object_placeholders=${10:-${DEFAULT_OBJECT_PLACEHOLDERS}}
-ndf_point_num=${11:-512}
-output_suffix="-objpc-ndf-pointwise-hybrid-feat${ndf_point_num}"
+ndf_point_num=${11:-128}
+output_suffix="-objpc-ndf-pointwise-hybrid-interact"
 zarr_dir="./data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
 
 if [ ! -d "${zarr_dir}" ]; then
-    bash process_data_ndf_pointwise_hybrid_feat5000.sh \
+    bash process_data_ndf_pointwise_hybrid_interact.sh \
         "${task_name}" \
         "${task_config}" \
         "${expert_data_num}" \
@@ -33,7 +33,7 @@ DEBUG=False
 save_ckpt=True
 wandb_mode=online
 train_setting="${task_config}${output_suffix}"
-exp_name="${task_name}-robot_dp3_ndf_pointwise_hybrid_feat${ndf_point_num}-train_ndf"
+exp_name="${task_name}-robot_dp3_ndf_pointwise_hybrid_interact-train_ndf"
 run_dir="data/outputs/${exp_name}_seed${seed}"
 zarr_path="../../../data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
 
@@ -41,13 +41,19 @@ dataset_extra_keys=()
 shape_overrides=()
 if [ "${ndf_ckpt_A}" != "none" ] && [ -n "${ndf_ckpt_A}" ]; then
     dataset_extra_keys+=(ndf_point_cloud_A)
+    dataset_extra_keys+=(ndf_interact_point_cloud_B_from_A)
     shape_overrides+=("+task.shape_meta.obs.ndf_point_cloud_A.shape=[${ndf_point_num},259]")
     shape_overrides+=("+task.shape_meta.obs.ndf_point_cloud_A.type=point_cloud")
+    shape_overrides+=("+task.shape_meta.obs.ndf_interact_point_cloud_B_from_A.shape=[${ndf_point_num},259]")
+    shape_overrides+=("+task.shape_meta.obs.ndf_interact_point_cloud_B_from_A.type=point_cloud")
 fi
 if [ "${ndf_ckpt_B}" != "none" ] && [ -n "${ndf_ckpt_B}" ]; then
     dataset_extra_keys+=(ndf_point_cloud_B)
+    dataset_extra_keys+=(ndf_interact_point_cloud_A_from_B)
     shape_overrides+=("+task.shape_meta.obs.ndf_point_cloud_B.shape=[${ndf_point_num},259]")
     shape_overrides+=("+task.shape_meta.obs.ndf_point_cloud_B.type=point_cloud")
+    shape_overrides+=("+task.shape_meta.obs.ndf_interact_point_cloud_A_from_B.shape=[${ndf_point_num},259]")
+    shape_overrides+=("+task.shape_meta.obs.ndf_interact_point_cloud_A_from_B.type=point_cloud")
 fi
 
 dataset_override=()
@@ -60,7 +66,7 @@ cd 3D-Diffusion-Policy
 
 export HYDRA_FULL_ERROR=1
 export CUDA_VISIBLE_DEVICES=${gpu_id}
-python train_dp3.py --config-name=robot_dp3_ndf_pointwise_hybrid_feat5000.yaml \
+python train_dp3.py --config-name=robot_dp3_ndf_pointwise_hybrid_interact.yaml \
     task_name=${task_name} \
     hydra.run.dir=${run_dir} \
     training.debug=${DEBUG} \

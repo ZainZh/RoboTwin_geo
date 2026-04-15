@@ -277,6 +277,47 @@
   - `findings.md` (updated)
   - `progress.md` (updated)
 
+## Session: 2026-04-15 (Pointwise Preprocess OOM Fix)
+
+### Phase 1: Root-Cause Investigation
+- **Status:** complete
+- Actions taken:
+  - Inspected the failing wrapper `policy/DP3/process_data_semantic_pointwise_hybrid_feat5000.sh` and traced the actual work into `policy/DP3/scripts/process_data_semantic_pointwise.py`.
+  - Confirmed the shell-side `Killed` happened at Python process launch rather than as a Python exception.
+  - Computed the approximate memory footprint of `5000 x (3+128)` semantic pointwise arrays across a 50-demo run and confirmed it is on the order of `40+ GB` before extra overhead.
+  - Identified the root cause as the base pointwise preprocessors buffering all frames in memory before writing zarr.
+- Files created/modified:
+  - `findings.md` (updated)
+  - `progress.md` (updated)
+
+### Phase 2: TDD & Implementation
+- **Status:** complete
+- Actions taken:
+  - Added a failing regression test `policy/DP3/scripts/test_pointwise_preprocess_meta.py`.
+  - Added `policy/DP3/scripts/pointwise_preprocess_meta.py` for shared incremental metadata handling.
+  - Refactored `policy/DP3/scripts/process_data_semantic_pointwise.py` to incremental episode-at-a-time zarr appends via `ReplayBuffer`.
+  - Refactored `policy/DP3/scripts/process_data_ndf_pointwise.py` to the same incremental append pattern so the NDF feat5000 path does not hit the same OOM next.
+  - Preserved per-episode metadata and resumability semantics in both scripts.
+- Files created/modified:
+  - `policy/DP3/scripts/test_pointwise_preprocess_meta.py` (created)
+  - `policy/DP3/scripts/pointwise_preprocess_meta.py` (created)
+  - `policy/DP3/scripts/process_data_semantic_pointwise.py` (modified)
+  - `policy/DP3/scripts/process_data_ndf_pointwise.py` (modified)
+
+### Phase 3: Verification
+- **Status:** complete
+- Actions taken:
+  - Ran `python policy/DP3/scripts/test_pointwise_preprocess_meta.py`.
+  - Re-ran `python policy/DP3/scripts/test_ndf_pointwise_hybrid.py`.
+  - Re-ran `python policy/DP3/scripts/test_semantic_pointwise_hybrid.py`.
+  - Ran `python -m py_compile policy/DP3/scripts/pointwise_preprocess_meta.py policy/DP3/scripts/process_data_ndf_pointwise.py policy/DP3/scripts/process_data_semantic_pointwise.py`.
+  - Ran `bash -n` on the relevant feat5000 wrapper scripts to ensure shell entrypoints remain valid.
+  - Hardened the `feat5000` train wrappers so they only skip preprocessing when the target zarr contains the required replay-buffer datasets.
+  - Re-ran `bash -n policy/DP3/train_semantic_pointwise_hybrid_feat5000.sh policy/DP3/train_ndf_pointwise_hybrid_feat5000.sh`.
+- Files created/modified:
+  - `findings.md` (updated)
+  - `progress.md` (updated)
+
 ## Session: 2026-04-14 (Hybrid Feature5000 Paths)
 
 ### Phase 1: Design Audit

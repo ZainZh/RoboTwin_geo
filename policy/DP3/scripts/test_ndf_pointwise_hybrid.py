@@ -16,6 +16,7 @@ if str(POLICY_ROOT) not in sys.path:
 import deploy_policy
 import process_data_ndf_pointwise
 import process_data_ndf_pointwise_hybrid
+import process_data_ndf_pointwise_hybrid_interact
 
 
 def make_point_cloud(x_value: float) -> np.ndarray:
@@ -28,20 +29,23 @@ def make_point_cloud(x_value: float) -> np.ndarray:
     )
 
 
-def make_model(*, hybrid: bool) -> SimpleNamespace:
+def make_model(*, hybrid: bool, interact: bool = False, ndf_models=None) -> SimpleNamespace:
+    if ndf_models is None:
+        ndf_models = {"{A}": object()}
     return SimpleNamespace(
         use_object_pointcloud=True,
         use_actorseg_objpc=False,
         use_sam3_objpc=False,
         use_ndf_pointwise=True,
         use_ndf_pointwise_hybrid=hybrid,
+        use_ndf_pointwise_interact=interact,
         use_semantic_pointwise=False,
         object_placeholders=["{A}", "{B}"],
-        ndf_models={"{A}": object()},
+        ndf_models=ndf_models,
         semantic_models={},
         target_num_points=4,
         ndf_feat_dim=256,
-        ndf_point_num_by_placeholder={"{A}": 2},
+        ndf_point_num_by_placeholder={placeholder: 2 for placeholder in ndf_models.keys()},
         ndf_device=torch.device("cpu"),
     )
 
@@ -62,6 +66,7 @@ def make_observation() -> dict:
 class TestNDFPointwiseHybrid(unittest.TestCase):
     def setUp(self):
         self.fake_ndf_cloud = np.ones((2, 259), dtype=np.float32)
+        self.fake_interact_cloud = np.full((2, 259), 2.0, dtype=np.float32)
 
     def test_ndf_pointwise_excludes_feature_placeholder_from_main_context(self):
         with patch.object(deploy_policy, "compute_ndf_pointwise_cloud", return_value=self.fake_ndf_cloud):
@@ -96,6 +101,51 @@ class TestNDFPointwiseHybrid(unittest.TestCase):
         self.assertIn("--output_suffix=-objpc-ndf-pointwise-hybrid", forwarded)
         self.assertEqual(args.output_suffix, "-objpc-ndf-pointwise-hybrid")
         self.assertTrue(args.keep_feature_placeholders_in_context)
+
+    def test_ndf_interact_hybrid_adds_bidirectional_cross_object_branches(self):
+        with patch.object(deploy_policy, "compute_ndf_pointwise_cloud", return_value=self.fake_ndf_cloud), \
+                patch.object(deploy_policy, "compute_ndf_interact_pointwise_cloud", return_value=self.fake_interact_cloud):
+            obs = deploy_policy.encode_obs(
+                make_observation(),
+                make_model(hybrid=True, interact=True, ndf_models={"{A}": object(), "{B}": object()}),
+            )
+
+        self.assertEqual(obs["ndf_point_cloud_A"].shape, (2, 259))
+        self.assertEqual(obs["ndf_point_cloud_B"].shape, (2, 259))
+        self.assertEqual(obs["ndf_interact_point_cloud_A_from_B"].shape, (2, 259))
+        self.assertEqual(obs["ndf_interact_point_cloud_B_from_A"].shape, (2, 259))
+
+    def test_ndf_interact_hybrid_adds_only_supported_single_direction_branch(self):
+        with patch.object(deploy_policy, "compute_ndf_pointwise_cloud", return_value=self.fake_ndf_cloud), \
+                patch.object(deploy_policy, "compute_ndf_interact_pointwise_cloud", return_value=self.fake_interact_cloud):
+            obs = deploy_policy.encode_obs(
+                make_observation(),
+                make_model(hybrid=True, interact=True, ndf_models={"{A}": object()}),
+            )
+
+        self.assertEqual(obs["ndf_point_cloud_A"].shape, (2, 259))
+        self.assertNotIn("ndf_point_cloud_B", obs)
+        self.assertEqual(obs["ndf_interact_point_cloud_B_from_A"].shape, (2, 259))
+        self.assertNotIn("ndf_interact_point_cloud_A_from_B", obs)
+
+    def test_interact_wrapper_builds_attached_output_suffix_argument(self):
+        argv = [
+            "hanging_mug",
+            "demo_clean_3d_object_pc",
+            "50",
+            "--object_placeholders",
+            "{A},{B}",
+            "--ndf_model",
+            "{A}=/tmp/fake.pth",
+        ]
+        forwarded = process_data_ndf_pointwise_hybrid_interact.build_hybrid_argv(argv)
+        parser = process_data_ndf_pointwise.build_parser()
+        args = parser.parse_args(forwarded)
+
+        self.assertIn("--output_suffix=-objpc-ndf-pointwise-hybrid-interact", forwarded)
+        self.assertEqual(args.output_suffix, "-objpc-ndf-pointwise-hybrid-interact")
+        self.assertTrue(args.keep_feature_placeholders_in_context)
+        self.assertTrue(args.save_interact_point_clouds)
 
 
 if __name__ == "__main__":

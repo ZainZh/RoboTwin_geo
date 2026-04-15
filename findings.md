@@ -285,6 +285,30 @@
   - main raw `point_cloud.shape = [1024, 6]`
   - `ndf_point_cloud_*` / `semantic_point_cloud_*` default point count = `5000`
   - distinct train/eval/checkpoint naming via the suffix `-feat5000`
+- New task on 2026-04-15: fix `process_data_semantic_pointwise_hybrid_feat5000.sh` being killed during preprocessing.
+- Root cause of the `Killed` failure:
+  - `process_data_semantic_pointwise.py` and `process_data_ndf_pointwise.py` originally accumulated every frame of `point_cloud`, feature point clouds, `state`, and `action` in Python lists and only wrote zarr at the very end.
+  - With `semantic_num_points=5000`, a single semantic frame is about `5000 x (3+128) x 4 bytes ~= 2.5 MB`.
+  - For roughly `16750` training frames in a 50-demo `hanging_mug` run, semantic pointwise arrays alone are about `40.9 GB` before accounting for raw point clouds, actions/states, and Python container overhead.
+  - Therefore the shell-side `Killed` is consistent with the Linux OOM killer, not with a Python exception or checkpoint incompatibility.
+- The fix was applied at the shared base preprocess layer, not just the feat5000 wrappers:
+  - `policy/DP3/scripts/process_data_semantic_pointwise.py`
+  - `policy/DP3/scripts/process_data_ndf_pointwise.py`
+- Both preprocessors now:
+  - open or resume a replay buffer with `open_or_reset_replay_buffer(...)`
+  - build arrays only for one episode at a time
+  - append that episode immediately with `append_episode_to_buffer(...)`
+  - update metadata JSON after each episode
+- New shared metadata helper:
+  - `policy/DP3/scripts/pointwise_preprocess_meta.py`
+- Because the fix is in the base preprocess scripts, all wrapper paths that call them inherit the improvement automatically:
+  - regular pointwise
+  - hybrid
+  - feat5000 wrappers
+- The new `feat5000` training wrappers were also hardened against stale partial preprocess directories:
+  - `policy/DP3/train_semantic_pointwise_hybrid_feat5000.sh`
+  - `policy/DP3/train_ndf_pointwise_hybrid_feat5000.sh`
+- They now validate that the target zarr contains at least `data/point_cloud`, `data/state`, `data/action`, and `meta/episode_ends` before skipping preprocessing. This avoids the old “directory exists but preprocess died halfway” failure mode after an OOM kill.
   - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/robot_dp3_semantic_pointwise_hybrid.yaml`
   - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/task/demo_task_semantic_pointwise_hybrid.yaml`
 - Fresh verification evidence for the semantic hybrid work:

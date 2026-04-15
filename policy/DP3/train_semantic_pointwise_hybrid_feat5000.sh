@@ -9,14 +9,14 @@ semantic_ckpt_A=${6:-none}
 semantic_ckpt_B=${7:-none}
 semantic_device=${8:-cuda:0}
 object_placeholders=${9:-\{A\},\{B\}}
-semantic_point_num=${10:-5000}
+semantic_point_num=${10:-1024}
 semantic_feat_dim=${11:-128}
 batch_size=${12:-256}
 val_batch_size=${13:-${batch_size}}
 use_ema=${14:-true}
 gradient_accumulate_every=${15:-1}
 encoder_output_dim=${16:-128}
-output_suffix="-objpc-semantic-pointwise-hybrid-feat5000"
+output_suffix="-objpc-semantic-pointwise-hybrid-feat${semantic_point_num}"
 zarr_dir="./data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
 meta_path="./data/${task_name}-${task_config}-${expert_data_num}${output_suffix}_meta.json"
 
@@ -35,8 +35,8 @@ fi
 DEBUG=False
 save_ckpt=True
 wandb_mode=online
-train_setting="${task_config}-objpc-semantic-pointwise-hybrid-feat5000"
-exp_name="${task_name}-robot_dp3_semantic_pointwise_hybrid_feat5000-train"
+train_setting="${task_config}${output_suffix}"
+exp_name="${task_name}-robot_dp3_semantic_pointwise_hybrid_feat${semantic_point_num}-train"
 run_dir="data/outputs/${exp_name}_seed${seed}"
 zarr_path="../../../data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
 

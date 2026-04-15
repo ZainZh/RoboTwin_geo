@@ -474,5 +474,48 @@ def compute_ndf_pointwise_cloud(
     return np.concatenate([sampled_world_xyz.astype(np.float32), local_features], axis=1)
 
 
+@torch.no_grad()
+def compute_ndf_interact_pointwise_cloud(
+    model: torch.nn.Module,
+    support_object_point_cloud: np.ndarray,
+    query_object_point_cloud: np.ndarray,
+    device: torch.device,
+    target_num_points: int,
+) -> np.ndarray:
+    support_point_cloud = np.asarray(support_object_point_cloud, dtype=np.float32)
+    query_point_cloud = np.asarray(query_object_point_cloud, dtype=np.float32)
+    if support_point_cloud.ndim != 2 or support_point_cloud.shape[1] < 3:
+        raise ValueError(
+            f"Expected support point cloud with shape (N, C>=3), got {support_point_cloud.shape}"
+        )
+    if query_point_cloud.ndim != 2 or query_point_cloud.shape[1] < 3:
+        raise ValueError(
+            f"Expected query point cloud with shape (N, C>=3), got {query_point_cloud.shape}"
+        )
+
+    support_xyz = support_point_cloud[:, :3]
+    query_xyz = query_point_cloud[:, :3]
+    support_xyz = support_xyz[~np.isclose(support_xyz, 0.0).all(axis=1)]
+    query_xyz = query_xyz[~np.isclose(query_xyz, 0.0).all(axis=1)]
+    feature_dim = int(getattr(model, "latent_dim", 256))
+    if len(support_xyz) == 0 or len(query_xyz) == 0:
+        return np.zeros((int(target_num_points), 3 + feature_dim), dtype=np.float32)
+
+    sampled_query_world_xyz = farthest_point_sample(query_xyz, int(target_num_points))
+    normalized_support_xyz, center, scale = normalize_object_point_cloud_with_transform(support_xyz)
+    normalized_query_xyz = (sampled_query_world_xyz - center[None, :]) / max(float(scale), 1e-6)
+
+    support_t = torch.from_numpy(normalized_support_xyz[None, ...]).float().to(device)
+    query_t = torch.from_numpy(normalized_query_xyz[None, ...]).float().to(device)
+    z = model.extract_latent({"point_cloud": support_t})
+    local_features = model.forward_latent(z, query_t)
+    if local_features.ndim != 3:
+        raise RuntimeError(
+            f"Expected local NDF features with shape [B, N, F], got {tuple(local_features.shape)}"
+        )
+    local_features = local_features.squeeze(0).detach().cpu().numpy().astype(np.float32)
+    return np.concatenate([sampled_query_world_xyz.astype(np.float32), local_features], axis=1)
+
+
 def summarize_modes(mode_counter: Counter) -> Dict[str, int]:
     return {str(k): int(v) for k, v in sorted(mode_counter.items(), key=lambda kv: kv[0])}
