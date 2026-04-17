@@ -1,5 +1,68 @@
 # Progress Log
 
+## Session: 2026-04-16 (`pour_kettle_mug`)
+
+### Phase 1: Planning & Test Scope
+- **Status:** complete
+- Actions taken:
+  - Confirmed the `pour_kettle_mug` design with the user and wrote the approved spec to `docs/superpowers/specs/2026-04-16-pour-kettle-mug-design.md`.
+  - Committed the design spec separately as `a05c88a`.
+  - Switched `task_plan.md` from an unrelated DP3 task to a task-specific implementation plan for `pour_kettle_mug`.
+  - Reviewed existing lightweight test patterns under `script/` to choose a realistic test-first path.
+  - Confirmed from asset metadata that `009_kettle` exposes a handle grasp point and a spout proxy point, and that `039_mug` exposes a bottom functional point suitable for deriving a mug-opening approximation.
+- Files created/modified:
+  - `docs/superpowers/specs/2026-04-16-pour-kettle-mug-design.md` (created earlier this session)
+  - `task_plan.md` (replaced)
+  - `findings.md` (updated)
+  - `progress.md` (updated)
+
+### Phase 2: Red Test
+- **Status:** complete
+- Actions taken:
+  - Added `script/test_pour_kettle_mug_task_integration.py` as a lightweight source/config integration test.
+  - Ran `python script/test_pour_kettle_mug_task_integration.py`.
+  - Confirmed the test fails for the expected reasons:
+    - missing `envs/pour_kettle_mug.py`
+    - missing `description/task_instruction/pour_kettle_mug.json`
+    - missing `pour_kettle_mug` mapping in `envs/object_pointcloud_targets.py`
+    - missing `pour_kettle_mug` entry in `task_config/_eval_step_limit.yml`
+- Files created/modified:
+  - `script/test_pour_kettle_mug_task_integration.py` (created)
+  - `task_plan.md` (updated)
+  - `progress.md` (updated)
+
+### Phase 3: Implementation
+- **Status:** complete
+- Actions taken:
+  - Added `envs/pour_kettle_mug.py`.
+  - Implemented the task as a left-arm-only geometry pouring task.
+  - Randomized `009_kettle` across the three available URDF instances and `039_mug` across the available mug instances.
+  - Added helper logic to:
+    - approximate the mug opening center from the mug bottom point and scaled mug height
+    - compute the current spout-to-end-effector transform after grasping
+    - build pre-pour and final pour end-effector poses that keep the spout proxy above the mug
+    - rotate the end effector about a world-axis derived from the spout offset to create a fixed pouring tilt
+  - Added the language instruction template `description/task_instruction/pour_kettle_mug.json`.
+  - Registered placeholder pointcloud mapping for `pour_kettle_mug` in `envs/object_pointcloud_targets.py`.
+  - Added an eval step-limit entry in `task_config/_eval_step_limit.yml`.
+- Files created/modified:
+  - `envs/pour_kettle_mug.py` (created)
+  - `description/task_instruction/pour_kettle_mug.json` (created)
+  - `envs/object_pointcloud_targets.py` (modified)
+  - `task_config/_eval_step_limit.yml` (modified)
+
+### Phase 4: Verification
+- **Status:** complete
+- Actions taken:
+  - Re-ran `python script/test_pour_kettle_mug_task_integration.py` and confirmed it passes with 5 tests.
+  - Re-ran `python -m py_compile envs/pour_kettle_mug.py script/test_pour_kettle_mug_task_integration.py envs/object_pointcloud_targets.py` and confirmed clean compilation.
+  - Checked direct module import and confirmed that both the new task and an existing task fail at the same `ModuleNotFoundError: sapien`, which shows the current shell environment cannot perform runtime env imports.
+- Files created/modified:
+  - `envs/pour_kettle_mug.py` (modified)
+  - `task_plan.md` (updated)
+  - `findings.md` (updated)
+  - `progress.md` (updated)
+
 ## Session: 2026-04-09
 
 ### Phase 1: Requirements & Discovery

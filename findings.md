@@ -1,5 +1,45 @@
 # Findings & Decisions
 
+## New Task: `pour_kettle_mug` (2026-04-16)
+
+### Requirements
+- Implement a new environment task named `pour_kettle_mug`.
+- Use only the left arm.
+- Grasp `009_kettle`, keep `039_mug` untouched on the table, and move the spout above the mug before tilting into a pouring pose.
+- Use geometry-only success criteria; no liquid simulation is required.
+- Randomize the mug position within a small region.
+- Integrate the task with:
+  - dynamic task import from `envs.{task_name}`
+  - language instruction generation via `description/task_instruction/{task}.json`
+  - object-pointcloud placeholder mapping
+  - eval step limit configuration
+
+### Research Findings
+- `script/collect_data.py` and related entrypoints dynamically import tasks by `envs.{task_name}` and instantiate a same-named class.
+- `Base_Task._init_task_env_()` initializes the scene, robot, camera, and calls `load_actors()` before running `play_once()`.
+- `009_kettle` is a URDF articulation asset with:
+  - contact point `0` on `link_1` usable as a handle grasp point
+  - functional point `0` on `link_2` usable as a spout proxy
+- `039_mug` is a standard actor asset with:
+  - multiple contact points for generic grasping
+  - functional point `1` at the mug bottom, suitable as a base reference for approximating the mug opening center
+- Existing object descriptions already exist for both `009_kettle` and `039_mug`, so no new object-description JSON files are needed.
+- Existing lightweight tests in `script/` prefer parsing source files or checking config/text integration rather than requiring a full simulator rollout.
+
+### Implementation Direction
+- Favor a source-level integration test first, not a heavy simulator test.
+- Use a minimal new test to verify:
+  - the task source exists
+  - the class name matches the module name
+  - the source includes the expected info placeholders and pointcloud-target wiring assumptions where possible
+- Then implement the environment file and task metadata changes.
+
+### Verification Findings
+- The new source-level integration test `python script/test_pour_kettle_mug_task_integration.py` now passes with `5` tests.
+- `python -m py_compile envs/pour_kettle_mug.py script/test_pour_kettle_mug_task_integration.py envs/object_pointcloud_targets.py` passes.
+- Direct runtime module import for any `envs.*` task currently fails in this shell environment because `sapien` is not installed here; the same failure occurs for an existing task (`envs.place_object_basket`), so this is an environment limitation rather than a `pour_kettle_mug`-specific regression.
+- Remaining risk: the final pouring quaternion and spawn ranges have not been validated in a live simulator rollout inside this session.
+
 ## Requirements
 - User explicitly invoked `planning-with-files`.
 - Initialize persistent planning files in the project root for this repository.
