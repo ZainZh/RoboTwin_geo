@@ -13,6 +13,9 @@ ndf_device=${8:-cuda:0}
 ndf_dgcnn_placeholders=${9:-}
 object_placeholders=${10:-${DEFAULT_OBJECT_PLACEHOLDERS}}
 ndf_point_num=${11:-512}
+batch_size=${12:-256}
+val_batch_size=${13:-${batch_size}}
+gradient_accumulate_every=${14:-1}
 output_suffix="-objpc-ndf-pointwise-hybrid-feat${ndf_point_num}"
 zarr_dir="./data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
 
@@ -66,11 +69,14 @@ python train_dp3.py --config-name=robot_dp3_ndf_pointwise_hybrid_feat5000.yaml \
     training.debug=${DEBUG} \
     training.seed=${seed} \
     training.device="cuda:0" \
+    training.gradient_accumulate_every=${gradient_accumulate_every} \
     exp_name=${exp_name} \
     logging.mode=${wandb_mode} \
     checkpoint.save_ckpt=${save_ckpt} \
     expert_data_num=${expert_data_num} \
     setting=${train_setting} \
+    dataloader.batch_size=${batch_size} \
+    val_dataloader.batch_size=${val_batch_size} \
     task.dataset.zarr_path=${zarr_path} \
     "${dataset_override[@]}" \
     "${shape_overrides[@]}"

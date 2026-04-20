@@ -25,12 +25,18 @@ normalize_ndf_train_args() {
     ndf_dgcnn_placeholders="${args[8]:-}"
     object_placeholders="${args[9]:-${DEFAULT_OBJECT_PLACEHOLDERS}}"
     ndf_point_num="${args[10]:-128}"
+    batch_size="${args[11]:-256}"
+    val_batch_size="${args[12]:-${batch_size}}"
+    gradient_accumulate_every="${args[13]:-1}"
     ndf_legacy_shifted=false
 
     if looks_like_placeholder_arg "${args[8]:-}" && looks_like_integer_arg "${args[9]:-}"; then
         ndf_dgcnn_placeholders=""
         object_placeholders="${args[8]}"
         ndf_point_num="${args[9]}"
+        batch_size="${args[10]:-256}"
+        val_batch_size="${args[11]:-${batch_size}}"
+        gradient_accumulate_every="${args[12]:-1}"
         ndf_legacy_shifted=true
     fi
 }

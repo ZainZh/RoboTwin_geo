@@ -23,6 +23,7 @@ TASK_OBJECT_POINTCLOUD_TARGETS = {
     "place_dual_shoes": {
         "{A}": "left_shoe",
         "{B}": "right_shoe",
+        "{C}": "shoe_box"
     },
 }
 

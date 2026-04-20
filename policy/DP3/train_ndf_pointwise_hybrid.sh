@@ -49,11 +49,14 @@ python train_dp3.py --config-name=robot_dp3_ndf_pointwise_hybrid.yaml \
     training.debug=${DEBUG} \
     training.seed=${seed} \
     training.device="cuda:0" \
+    training.gradient_accumulate_every=${gradient_accumulate_every} \
     exp_name=${exp_name} \
     logging.mode=${wandb_mode} \
     checkpoint.save_ckpt=${save_ckpt} \
     expert_data_num=${expert_data_num} \
     setting=${train_setting} \
+    dataloader.batch_size=${batch_size} \
+    val_dataloader.batch_size=${val_batch_size} \
     task.dataset.zarr_path=${zarr_path} \
     "${dataset_override[@]}" \
     "${shape_overrides[@]}"
