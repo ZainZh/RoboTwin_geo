@@ -25,6 +25,9 @@ TASK_OBJECT_POINTCLOUD_TARGETS = {
         "{B}": "right_shoe",
         "{C}": "shoe_box"
     },
+    "open_microwave": {
+        "{A}": "microwave",
+    }
 }
 
 

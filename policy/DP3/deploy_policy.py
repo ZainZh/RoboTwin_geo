@@ -59,11 +59,21 @@ def placeholder_semantic_pointcloud_key(placeholder: str) -> str:
     return f"semantic_point_cloud_{placeholder.strip('{}')}"
 
 
+def placeholder_utonia_pointcloud_key(placeholder: str) -> str:
+    return f"utonia_point_cloud_{placeholder.strip('{}')}"
+
+
 def get_semantic_utils():
     # Import lazily so baseline / NDF eval does not depend on semantic-field runtime deps.
     from semantic_feature_utils import compute_semantic_pointwise_cloud, load_semantic_model
 
     return compute_semantic_pointwise_cloud, load_semantic_model
+
+
+def get_utonia_utils():
+    from utonia_feature_utils import compute_utonia_pointwise_cloud, load_utonia_model
+
+    return compute_utonia_pointwise_cloud, load_utonia_model
 
 
 def get_sam3_utils():
@@ -186,6 +196,8 @@ def encode_obs(observation, model):  # Post-Process Observation
     use_ndf_pointwise_interact = bool(getattr(model, "use_ndf_pointwise_interact", False))
     use_semantic_pointwise = bool(getattr(model, "use_semantic_pointwise", False))
     use_semantic_pointwise_hybrid = bool(getattr(model, "use_semantic_pointwise_hybrid", False))
+    use_utonia_pointwise = bool(getattr(model, "use_utonia_pointwise", False))
+    use_utonia_pointwise_hybrid = bool(getattr(model, "use_utonia_pointwise_hybrid", False))
 
     if use_actorseg_objpc:
         per_placeholder_clouds = []
@@ -234,17 +246,17 @@ def encode_obs(observation, model):  # Post-Process Observation
 
     elif getattr(model, "use_object_pointcloud", False) and len(object_pointcloud) > 0:
         placeholders = getattr(model, "object_placeholders", [])
-        if use_ndf_pointwise or use_semantic_pointwise:
+        if use_ndf_pointwise or use_semantic_pointwise or use_utonia_pointwise:
             feature_placeholders = set(getattr(model, "ndf_models", {}).keys()) | set(
                 getattr(model, "semantic_models", {}).keys()
-            )
+            ) | set(getattr(model, "utonia_models", {}).keys())
             point_cloud, _ = build_context_point_cloud(
                 object_pointcloud,
                 placeholders=placeholders,
                 feature_placeholders=sorted(feature_placeholders),
                 target_num_points=int(getattr(model, "target_num_points", 1024)),
                 keep_feature_placeholders_in_context=(
-                    use_ndf_pointwise_hybrid or use_semantic_pointwise_hybrid
+                    use_ndf_pointwise_hybrid or use_semantic_pointwise_hybrid or use_utonia_pointwise_hybrid
                 ),
             )
         else:
@@ -315,7 +327,24 @@ def encode_obs(observation, model):  # Post-Process Observation
                 target_num_points=point_num,
             ).astype(np.float32)
 
-    if use_ndf_pointwise or use_semantic_pointwise:
+    if use_utonia_pointwise:
+        compute_utonia_pointwise_cloud, _ = get_utonia_utils()
+        default_utonia_dim = int(getattr(model, "utonia_feat_dim", 96))
+        for placeholder, utonia_artifacts in getattr(model, "utonia_models", {}).items():
+            pointcloud_key = placeholder_utonia_pointcloud_key(placeholder)
+            point_num = int(getattr(model, "utonia_point_num_by_placeholder", {}).get(placeholder, 128))
+            feat_dim = int(getattr(model, "utonia_feat_dim_by_placeholder", {}).get(placeholder, default_utonia_dim))
+            object_pc = object_pointcloud.get(placeholder)
+            if object_pc is None:
+                obs[pointcloud_key] = np.zeros((point_num, 3 + feat_dim), dtype=np.float32)
+                continue
+            obs[pointcloud_key] = compute_utonia_pointwise_cloud(
+                artifacts=utonia_artifacts,
+                object_point_cloud=object_pc,
+                target_num_points=point_num,
+            ).astype(np.float32)
+
+    if use_ndf_pointwise or use_semantic_pointwise or use_utonia_pointwise:
         return obs
 
     for placeholder, ndf_model in getattr(model, "ndf_models", {}).items():
@@ -353,6 +382,22 @@ def resolve_semantic_models(usr_args):
     if ckpt_b not in {None, "", "none"}:
         model_specs["{B}"] = ckpt_b
     return model_specs
+
+
+def resolve_utonia_spec(usr_args):
+    return {
+        "checkpoint": usr_args.get("utonia_checkpoint", "auto"),
+        "repo_id": usr_args.get("utonia_repo_id", "Pointcept/Utonia"),
+        "upcast_levels": int(usr_args.get("utonia_upcast_levels", 0)),
+    }
+
+
+def resolve_utonia_feature_placeholders(usr_args, object_placeholders):
+    selected = parse_placeholder_list(usr_args.get("utonia_feature_placeholders", ""))
+    if len(selected) == 0:
+        return list(object_placeholders)
+    selected_set = set(selected)
+    return [placeholder for placeholder in object_placeholders if placeholder in selected_set]
 
 
 def resolve_checkpoint_path(usr_args, use_rgb: bool) -> pathlib.Path:
@@ -434,10 +479,13 @@ def get_model(usr_args):
     use_ndf_pointwise_interact = "ndf_pointwise_hybrid_interact" in usr_args["config_name"]
     use_semantic_pointwise = "semantic_pointwise" in usr_args["config_name"]
     use_semantic_pointwise_hybrid = "semantic_pointwise_hybrid" in usr_args["config_name"]
+    use_utonia_pointwise = "utonia_pointwise" in usr_args["config_name"]
+    use_utonia_pointwise_hybrid = "utonia_pointwise_hybrid" in usr_args["config_name"]
     use_object_pointcloud = (
         (("objpc" in usr_args["config_name"]) and not use_sam3_objpc and not use_actorseg_objpc)
         or use_ndf_pointwise
         or use_semantic_pointwise
+        or use_utonia_pointwise
     )
     object_placeholders = parse_placeholder_list(usr_args.get("object_placeholders", "{A},{B}"))
     target_num_points = int(cfg.task.shape_meta.obs.point_cloud.shape[0])
@@ -450,6 +498,11 @@ def get_model(usr_args):
     semantic_device = torch.device(usr_args.get("semantic_device", "cuda:0") if torch.cuda.is_available() else "cpu")
     semantic_model_specs = resolve_semantic_models(usr_args)
     semantic_feat_dim_by_placeholder = {}
+    utonia_point_num = int(usr_args.get("utonia_point_num", 128))
+    utonia_device = torch.device(usr_args.get("utonia_device", "cuda:0") if torch.cuda.is_available() else "cpu")
+    utonia_spec = resolve_utonia_spec(usr_args)
+    utonia_feature_placeholders = resolve_utonia_feature_placeholders(usr_args, object_placeholders)
+    utonia_feat_dim_by_placeholder = {}
     ckpt_file = resolve_checkpoint_path(usr_args, use_rgb=bool(usr_args.get("use_rgb", False)))
     checkpoint_use_ema = infer_checkpoint_use_ema(ckpt_file)
     if checkpoint_use_ema is not None:
@@ -506,6 +559,25 @@ def get_model(usr_args):
     else:
         semantic_models = {}
 
+    if use_utonia_pointwise:
+        _, load_utonia_model = get_utonia_utils()
+        utonia_artifacts = load_utonia_model(
+            device=utonia_device,
+            checkpoint=str(utonia_spec["checkpoint"]),
+            repo_id=str(utonia_spec["repo_id"]),
+            upcast_levels=int(utonia_spec["upcast_levels"]),
+        )
+        utonia_models = {
+            placeholder: utonia_artifacts
+            for placeholder in utonia_feature_placeholders
+        }
+        utonia_feat_dim_by_placeholder = {
+            placeholder: int(utonia_artifacts["feature_dim"])
+            for placeholder in utonia_feature_placeholders
+        }
+    else:
+        utonia_models = {}
+
     if use_ndf_pointwise:
         for placeholder in object_placeholders:
             checkpoint = ndf_model_specs.get(placeholder)
@@ -552,6 +624,16 @@ def get_model(usr_args):
                 "shape": [semantic_point_num, 3 + int(artifacts["sem_embedding_dim"])],
                 "type": "point_cloud",
             }
+    if use_utonia_pointwise:
+        for placeholder in object_placeholders:
+            artifacts = utonia_models.get(placeholder)
+            if artifacts is None:
+                continue
+            pointcloud_key = placeholder_utonia_pointcloud_key(placeholder)
+            cfg.task.shape_meta.obs[pointcloud_key] = {
+                "shape": [utonia_point_num, 3 + int(artifacts["feature_dim"])],
+                "type": "point_cloud",
+            }
     OmegaConf.set_struct(cfg, True)
 
     DP3_Model = DP3(cfg, usr_args)
@@ -563,6 +645,8 @@ def get_model(usr_args):
     DP3_Model.use_ndf_pointwise_interact = use_ndf_pointwise_interact
     DP3_Model.use_semantic_pointwise = use_semantic_pointwise
     DP3_Model.use_semantic_pointwise_hybrid = use_semantic_pointwise_hybrid
+    DP3_Model.use_utonia_pointwise = use_utonia_pointwise
+    DP3_Model.use_utonia_pointwise_hybrid = use_utonia_pointwise_hybrid
     DP3_Model.object_placeholders = object_placeholders
     DP3_Model.target_num_points = target_num_points
     DP3_Model.actorseg_extract_fn = actorseg_extract_fn
@@ -614,6 +698,15 @@ def get_model(usr_args):
     DP3_Model.semantic_feat_dim_by_placeholder = semantic_feat_dim_by_placeholder
     DP3_Model.semantic_feat_dim = max(semantic_feat_dim_by_placeholder.values(), default=128)
     DP3_Model.semantic_models = semantic_models
+    DP3_Model.utonia_device = utonia_device
+    DP3_Model.utonia_point_num_by_placeholder = {
+        placeholder: utonia_point_num
+        for placeholder in object_placeholders
+        if placeholder in utonia_models
+    }
+    DP3_Model.utonia_feat_dim_by_placeholder = utonia_feat_dim_by_placeholder
+    DP3_Model.utonia_feat_dim = max(utonia_feat_dim_by_placeholder.values(), default=96)
+    DP3_Model.utonia_models = utonia_models
     return DP3_Model
 
 
