@@ -63,7 +63,14 @@ def _load_mask(mask_root: Path, placeholder: str, camera_label: str, frame_index
                 raw = raw[:, :, 0]
             mask = np.asarray(raw) > 0
             if mask.shape != shape:
-                raise ValueError(f"Mask shape mismatch at {path}: mask={mask.shape}, expected={shape}")
+                if cv2 is None:
+                    from imageio.v2 import imread
+
+                    mask = np.asarray(imread(path)) > 0
+                    if mask.ndim == 3:
+                        mask = mask[:, :, 0]
+                else:
+                    mask = cv2.resize(mask.astype(np.uint8), (shape[1], shape[0]), interpolation=cv2.INTER_NEAREST) > 0
             return mask
     return np.zeros(shape, dtype=bool)
 
@@ -92,6 +99,10 @@ def _camera_frame_to_world_pc(
         depth_m = np.asarray(camera_frame["depth_mm"], dtype=np.float32) / 1000.0
     else:
         raise KeyError("Camera frame must contain depth_m or depth_mm.")
+    if rgb.shape[:2] != depth_m.shape:
+        if cv2 is None:
+            raise ValueError(f"rgb/depth shape mismatch without cv2 available: rgb={rgb.shape[:2]}, depth={depth_m.shape}")
+        rgb = cv2.resize(rgb, (depth_m.shape[1], depth_m.shape[0]), interpolation=cv2.INTER_LINEAR)
     pc_cam = depth_rgb_to_point_cloud(
         depth_m=depth_m,
         rgb=rgb,
@@ -138,6 +149,7 @@ def postprocess_episode(
     joint_vectors = []
     scene_point_clouds = []
     object_point_clouds = {placeholder: [] for placeholder in placeholders}
+    intrinsic_by_camera: dict[str, np.ndarray] = {}
     observation_by_camera: dict[str, dict[str, list[np.ndarray]]] = {
         label: {"rgb": [], "depth": []}
         for label in labels
@@ -165,13 +177,19 @@ def postprocess_episode(
                 if "depth_m" in camera_frame
                 else np.asarray(camera_frame["depth_mm"], dtype=np.float32) / 1000.0
             )
+            camera_matrix = (
+                np.asarray(camera_frame["camera_matrix"], dtype=np.float32).reshape(3, 3)
+                if "camera_matrix" in camera_frame
+                else calib[label].camera_matrix.astype(np.float32)
+            )
+            intrinsic_by_camera[label] = camera_matrix.astype(np.float32)
             observation_by_camera[label]["rgb"].append(rgb.astype(np.uint8))
             observation_by_camera[label]["depth"].append(depth_m.astype(np.float32))
 
             scene_chunks.append(
                 _camera_frame_to_world_pc(
                     camera_frame=camera_frame,
-                    camera_matrix=calib[label].camera_matrix,
+                    camera_matrix=camera_matrix,
                     t_world_from_cam=calib[label].t_world_from_cam,
                     mask=None,
                     min_depth_m=min_depth_m,
@@ -187,7 +205,7 @@ def postprocess_episode(
                 object_chunks_by_placeholder[placeholder].append(
                     _camera_frame_to_world_pc(
                         camera_frame=camera_frame,
-                        camera_matrix=calib[label].camera_matrix,
+                        camera_matrix=camera_matrix,
                         t_world_from_cam=calib[label].t_world_from_cam,
                         mask=mask,
                         min_depth_m=min_depth_m,
@@ -221,7 +239,10 @@ def postprocess_episode(
             cam_group = obs_group.create_group(label)
             cam_group.create_dataset("rgb", data=np.asarray(observation_by_camera[label]["rgb"], dtype=np.uint8))
             cam_group.create_dataset("depth", data=np.asarray(observation_by_camera[label]["depth"], dtype=np.float32))
-            cam_group.create_dataset("intrinsic_cv", data=calib[label].camera_matrix.astype(np.float32))
+            cam_group.create_dataset(
+                "intrinsic_cv",
+                data=np.asarray(intrinsic_by_camera.get(label, calib[label].camera_matrix), dtype=np.float32),
+            )
             cam_group.create_dataset("extrinsic_cv", data=calib[label].t_world_from_cam.astype(np.float32))
             cam_group.create_dataset("cam2world_gl", data=calib[label].t_world_from_cam.astype(np.float32))
 

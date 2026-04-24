@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import os
+from queue import Empty, Full, Queue
 import sys
 import threading
 import time
@@ -36,9 +37,15 @@ class Args:
     calibration_path: str = ""
     camera_labels: str = "global,left,right"
     zed_serials: list[int] = field(default_factory=list)
-    zed_resolution: str = "HD720"
+    zed_resolution: str = "HD1080"
     zed_fps: int = 15
     zed_depth_mode: str = "NEURAL"
+    save_rgb_width: int = 640
+    save_rgb_height: int = 360
+    save_frequency_hz: float = 5.0
+    writer_queue_size: int = 8
+    manifest_flush_interval: int = 10
+    compress_camera_frames: bool = False
     show_img: bool = False
     save_zed_xyzrgba: bool = False
     max_frames: int = -1
@@ -156,6 +163,102 @@ class SharedZedFrame:
             if self.frame is None:
                 raise RuntimeError("ZED frame is not ready yet.")
             return {key: np.copy(value) if isinstance(value, np.ndarray) else value for key, value in self.frame.items()}
+
+
+@dataclass
+class WriteTask:
+    kind: str
+    episode_dir: Path
+    metadata: dict[str, Any] | None = None
+    frame_idx: int = -1
+    obs: dict[str, Any] | None = None
+    action: np.ndarray | None = None
+    camera_frames: dict[str, dict[str, Any]] | None = None
+
+
+def _camera_matrix_from_zed_info(info) -> np.ndarray:
+    calib = info.camera_configuration.calibration_parameters
+    left = calib.left_cam
+    return np.array(
+        [[left.fx, 0.0, left.cx], [0.0, left.fy, left.cy], [0.0, 0.0, 1.0]],
+        dtype=np.float64,
+    )
+
+
+def _resize_rgb_for_storage(
+    rgb: np.ndarray,
+    target_width: int,
+    target_height: int,
+) -> np.ndarray:
+    src_h, src_w = rgb.shape[:2]
+    if target_width <= 0 or target_height <= 0 or (src_w == target_width and src_h == target_height):
+        return rgb.astype(np.uint8)
+    return cv2.resize(rgb, (int(target_width), int(target_height)), interpolation=cv2.INTER_AREA).astype(np.uint8)
+
+
+def _build_robot_snapshot(obs: dict[str, Any], action: np.ndarray) -> dict[str, np.ndarray]:
+    joint_positions = np.asarray(obs.get("joint_positions", action), dtype=np.float32).reshape(-1).copy()
+    joint_velocities = np.asarray(obs.get("joint_velocities", np.zeros_like(joint_positions)), dtype=np.float32).reshape(-1).copy()
+    return {
+        "joint_positions": joint_positions,
+        "joint_velocities": joint_velocities,
+    }
+
+
+def _write_task_queue_loop(task_queue: Queue, manifest_flush_interval: int, compress_camera_frames: bool) -> None:
+    manifests: dict[Path, dict[str, Any]] = {}
+    flush_interval = max(1, int(manifest_flush_interval))
+    pending_since_flush: dict[Path, int] = {}
+
+    while True:
+        task = task_queue.get()
+        try:
+            if task is None:
+                break
+            if not isinstance(task, WriteTask):
+                continue
+
+            if task.kind == "start_episode":
+                metadata = dict(task.metadata or {})
+                metadata.setdefault("frames", [])
+                manifests[task.episode_dir] = metadata
+                pending_since_flush[task.episode_dir] = 0
+                _write_manifest(task.episode_dir, metadata)
+                continue
+
+            if task.kind == "frame":
+                manifest = manifests.get(task.episode_dir)
+                if manifest is None or task.obs is None or task.action is None or task.camera_frames is None:
+                    continue
+                frame_record = _save_raw_frame(
+                    episode_dir=task.episode_dir,
+                    frame_idx=int(task.frame_idx),
+                    obs=task.obs,
+                    action=np.asarray(task.action, dtype=np.float32),
+                    camera_frames=task.camera_frames,
+                    compress_camera_frames=bool(compress_camera_frames),
+                )
+                manifest["frames"].append(frame_record)
+                pending_since_flush[task.episode_dir] = pending_since_flush.get(task.episode_dir, 0) + 1
+                if pending_since_flush[task.episode_dir] >= flush_interval:
+                    _write_manifest(task.episode_dir, manifest)
+                    pending_since_flush[task.episode_dir] = 0
+                continue
+
+            if task.kind == "end_episode":
+                manifest = manifests.get(task.episode_dir)
+                if manifest is None:
+                    continue
+                if task.metadata:
+                    manifest.update(task.metadata)
+                _write_manifest(task.episode_dir, manifest)
+                manifests.pop(task.episode_dir, None)
+                pending_since_flush.pop(task.episode_dir, None)
+        finally:
+            task_queue.task_done()
+
+    for episode_dir, manifest in manifests.items():
+        _write_manifest(episode_dir, manifest)
 
 
 def dh_transformation_matrix(theta, d, a, alpha):
@@ -290,6 +393,8 @@ def zed_capture_loop(
     resolution: str,
     fps: int,
     depth_mode: str,
+    save_rgb_width: int,
+    save_rgb_height: int,
     save_xyzrgba: bool,
     shared: SharedZedFrame,
     stop_event: threading.Event,
@@ -312,6 +417,7 @@ def zed_capture_loop(
         shared.set_error(f"Failed to open ZED label={label}, serial={serial}: {status}")
         return
 
+    camera_matrix = _camera_matrix_from_zed_info(zed.get_camera_information())
     runtime = sl.RuntimeParameters()
     image_mat = sl.Mat()
     depth_mat = sl.Mat()
@@ -329,19 +435,27 @@ def zed_capture_loop(
                 continue
             bgr = image_raw[:, :, :3] if image_raw.ndim == 3 and image_raw.shape[2] >= 3 else image_raw
             rgb = cv2.cvtColor(np.ascontiguousarray(bgr), cv2.COLOR_BGR2RGB)
+            depth_m = np.asarray(depth_raw, dtype=np.float32)
+            rgb_save = _resize_rgb_for_storage(
+                rgb=rgb,
+                target_width=int(save_rgb_width),
+                target_height=int(save_rgb_height),
+            )
             frame = {
                 "label": label,
                 "serial": int(serial),
                 "frame_index": int(frame_idx),
                 "timestamp_unix_sec": time.time(),
-                "rgb": rgb.astype(np.uint8),
-                "depth_m": np.asarray(depth_raw, dtype=np.float32),
+                "rgb": rgb_save,
+                "depth_m": depth_m.astype(np.float32),
+                "camera_matrix": np.asarray(camera_matrix, dtype=np.float32),
             }
             if save_xyzrgba:
                 zed.retrieve_measure(xyzrgba_mat, sl.MEASURE.XYZRGBA)
                 xyzrgba = xyzrgba_mat.get_data()
                 if xyzrgba is not None:
-                    frame["xyzrgba"] = np.asarray(xyzrgba, dtype=np.float32)
+                    xyzrgba_arr = np.asarray(xyzrgba, dtype=np.float32)
+                    frame["xyzrgba"] = xyzrgba_arr.astype(np.float32)
             shared.update(frame)
             frame_idx += 1
     finally:
@@ -372,6 +486,7 @@ def _save_raw_frame(
     obs: dict[str, Any],
     action: np.ndarray,
     camera_frames: dict[str, dict[str, Any]],
+    compress_camera_frames: bool,
 ) -> dict[str, Any]:
     robot_path = episode_dir / f"robot_{frame_idx:06d}.npz"
     joint_positions = np.asarray(obs.get("joint_positions", action), dtype=np.float32).reshape(-1)
@@ -394,10 +509,14 @@ def _save_raw_frame(
             "camera_frame_index": np.asarray(frame["frame_index"], dtype=np.int64),
             "rgb": np.asarray(frame["rgb"], dtype=np.uint8),
             "depth_m": np.asarray(frame["depth_m"], dtype=np.float32),
+            "camera_matrix": np.asarray(frame["camera_matrix"], dtype=np.float32),
         }
         if "xyzrgba" in frame:
             payload["xyzrgba"] = np.asarray(frame["xyzrgba"], dtype=np.float32)
-        np.savez_compressed(camera_path, **payload)
+        if compress_camera_frames:
+            np.savez_compressed(camera_path, **payload)
+        else:
+            np.savez(camera_path, **payload)
         camera_rel_paths[label] = camera_path.name
 
     return {
@@ -429,9 +548,21 @@ def main(args: Args) -> None:
 
     labels, serials = _resolve_cameras(args)
     save_root = ensure_dir(Path(args.save_data_path) / args.project_name / "real_zed_raw")
+    record_period_sec = 0.0 if float(args.save_frequency_hz) <= 0.0 else 1.0 / float(args.save_frequency_hz)
 
     stop_event = threading.Event()
     shared_by_label = {label: SharedZedFrame() for label in labels}
+    writer_queue: Queue = Queue(maxsize=max(1, int(args.writer_queue_size)))
+    writer_thread = threading.Thread(
+        target=_write_task_queue_loop,
+        kwargs={
+            "task_queue": writer_queue,
+            "manifest_flush_interval": int(args.manifest_flush_interval),
+            "compress_camera_frames": bool(args.compress_camera_frames),
+        },
+        daemon=False,
+    )
+    writer_thread.start()
     camera_threads = []
     for label, serial in zip(labels, serials):
         thread = threading.Thread(
@@ -442,6 +573,8 @@ def main(args: Args) -> None:
                 "resolution": args.zed_resolution,
                 "fps": int(args.zed_fps),
                 "depth_mode": args.zed_depth_mode,
+                "save_rgb_width": int(args.save_rgb_width),
+                "save_rgb_height": int(args.save_rgb_height),
                 "save_xyzrgba": bool(args.save_zed_xyzrgba),
                 "shared": shared_by_label[label],
                 "stop_event": stop_event,
@@ -477,7 +610,10 @@ def main(args: Args) -> None:
     safe_limit = 0
     frame_count = 0
     active_episode_dir: Path | None = None
-    manifest: dict[str, Any] | None = None
+    record_frame_index = 0
+    dropped_frame_count = 0
+    last_drop_warn_sec = 0.0
+    next_record_time = 0.0
 
     try:
         while True:
@@ -535,36 +671,68 @@ def main(args: Args) -> None:
 
                 if dev_what_to_do[0, 2] == 1:
                     curr_light = set_light(env, "green", 1)
+                    active_episode_dir = ensure_dir(save_root / f"episode_{int(dt_time[0])}")
+                    writer_queue.put(
+                        WriteTask(
+                            kind="start_episode",
+                            episode_dir=active_episode_dir,
+                            metadata={
+                                "format": "robotwin_real_zed_raw_v1",
+                                "created_at_unix_sec": time.time(),
+                                "camera_labels": labels,
+                                "camera_serials": dict(zip(labels, serials)),
+                                "calibration_path": str(Path(args.calibration_path).expanduser().resolve()) if args.calibration_path else "",
+                                "save_rgb_width": int(args.save_rgb_width),
+                                "save_rgb_height": int(args.save_rgb_height),
+                                "save_frequency_hz": float(args.save_frequency_hz),
+                                "compress_camera_frames": bool(args.compress_camera_frames),
+                                "dropped_frames_due_to_backpressure": 0,
+                            },
+                        )
+                    )
+                    record_frame_index = 0
+                    dropped_frame_count = 0
+                    next_record_time = 0.0
                 elif dev_what_to_do[0, 2] == -1:
                     curr_light = set_light(env, "yellow", 1)
-                    if active_episode_dir is not None and manifest is not None:
-                        _write_manifest(active_episode_dir, manifest)
+                    if active_episode_dir is not None:
+                        writer_queue.put(
+                            WriteTask(
+                                kind="end_episode",
+                                episode_dir=active_episode_dir,
+                                metadata={"dropped_frames_due_to_backpressure": int(dropped_frame_count)},
+                            )
+                        )
                     active_episode_dir = None
-                    manifest = None
 
                 if what_to_do[0, 2] == 1:
-                    if active_episode_dir is None:
-                        active_episode_dir = ensure_dir(save_root / f"episode_{int(dt_time[0])}")
-                        manifest = {
-                            "format": "robotwin_real_zed_raw_v1",
-                            "created_at_unix_sec": time.time(),
-                            "camera_labels": labels,
-                            "camera_serials": dict(zip(labels, serials)),
-                            "calibration_path": str(Path(args.calibration_path).expanduser().resolve()) if args.calibration_path else "",
-                            "frames": [],
-                        }
-                    camera_frames = {label: shared_by_label[label].snapshot() for label in labels}
-                    frame_record = _save_raw_frame(
-                        episode_dir=active_episode_dir,
-                        frame_idx=len(manifest["frames"]),
-                        obs=obs,
-                        action=np.asarray(action, dtype=np.float32),
-                        camera_frames=camera_frames,
-                    )
-                    manifest["frames"].append(frame_record)
-                    _write_manifest(active_episode_dir, manifest)
-                    frame_count += 1
-                    print(f"saved raw frame {frame_count} -> {active_episode_dir}", end="\r")
+                    now_sec = time.time()
+                    if active_episode_dir is not None and now_sec >= next_record_time:
+                        camera_frames = {label: shared_by_label[label].snapshot() for label in labels}
+                        try:
+                            writer_queue.put_nowait(
+                                WriteTask(
+                                    kind="frame",
+                                    episode_dir=active_episode_dir,
+                                    frame_idx=int(record_frame_index),
+                                    obs=_build_robot_snapshot(obs, action),
+                                    action=np.asarray(action, dtype=np.float32).copy(),
+                                    camera_frames=camera_frames,
+                                )
+                            )
+                            frame_count += 1
+                            record_frame_index += 1
+                            next_record_time = now_sec + record_period_sec
+                            print(f"queued raw frame {frame_count} -> {active_episode_dir}", end="\r")
+                        except Full:
+                            dropped_frame_count += 1
+                            if now_sec - last_drop_warn_sec > 1.0:
+                                print(
+                                    f"[WARN] Writer queue full, dropping recorded frames to protect control loop. "
+                                    f"dropped={dropped_frame_count}"
+                                )
+                                last_drop_warn_sec = now_sec
+                            next_record_time = now_sec + record_period_sec
                     if args.max_frames > 0 and frame_count >= int(args.max_frames):
                         break
 
@@ -588,8 +756,16 @@ def main(args: Args) -> None:
             total_time = time.time() - tic
     finally:
         stop_event.set()
-        if active_episode_dir is not None and manifest is not None:
-            _write_manifest(active_episode_dir, manifest)
+        if active_episode_dir is not None:
+            writer_queue.put(
+                WriteTask(
+                    kind="end_episode",
+                    episode_dir=active_episode_dir,
+                    metadata={"dropped_frames_due_to_backpressure": int(dropped_frame_count)},
+                )
+            )
+        writer_queue.put(None)
+        writer_thread.join()
         try:
             cv2.destroyAllWindows()
         except Exception:
