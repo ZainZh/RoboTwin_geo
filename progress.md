@@ -1,5 +1,25 @@
 # Progress Log
 
+## 2026-04-24: Real Three-ZED Collection Design
+- Read `include/xtrainer_clover/experiments/run_control.py` and identified the robot-control loop, button semantics, DP frame save path, and current RGB-only RealSense camera handling.
+- Read `include/xtrainer_clover/scripts/format_obs.py` and confirmed the original DP save path writes per-frame pkl files with `obs["control"]` and activation flags.
+- Read `include/xtrainer_clover/scripts/4_collect2train_data.py` and confirmed the existing xtrainer train conversion targets ACT/DP image datasets, not RoboTwin point-cloud HDF5.
+- Read DP3 preprocessing utilities and confirmed canonical compatibility requires `/joint_action/vector`, `/pointcloud`, and optional `/object_pointcloud/{placeholder}` HDF5 datasets.
+- Replaced the stale local planning files with the current real-data collection design task.
+- Read `calibrate_three_zed_charuco_extrinsics.py` and confirmed it provides relative three-camera extrinsics to a reference camera, not a complete robot-base/world calibration.
+- Read the generated `three_camera_charuco_extrinsics.yaml` and confirmed it includes `relative_to_reference` transforms plus residuals for all camera labels.
+- Read `detect_charuco_to_robot_point.py` and `world_frame.yaml` to identify existing robot/base and board/world calibration pieces that could be wrapped by the new real collection folder.
+- Added regression test `script/test_real_zed_collection_pipeline.py`.
+- Added `script/real_zed_collection/real_zed_utils.py`.
+- Added `script/real_zed_collection/postprocess_raw_to_robotwin_hdf5.py`.
+- Added `script/real_zed_collection/collect_zed_robotwin_raw.py`.
+- Added `script/real_zed_collection/segment_objects_sam.py`.
+- Added `script/real_zed_collection/calibrate_three_zed_extrinsics.py` wrapper, config templates, and README.
+- Verified `python -m unittest script/test_real_zed_collection_pipeline.py`.
+- Verified `python -m py_compile` on all new real-ZED scripts and the test.
+- Replaced `script/real_zed_collection/calibrate_three_zed_extrinsics.py` wrapper with an inline implementation of three-ZED Charuco calibration.
+- Verified `python -m py_compile script/real_zed_collection/calibrate_three_zed_extrinsics.py` and re-ran `python -m unittest script/test_real_zed_collection_pipeline.py`.
+
 ## Session: 2026-04-16 (`pour_kettle_mug`)
 
 ### Phase 1: Planning & Test Scope

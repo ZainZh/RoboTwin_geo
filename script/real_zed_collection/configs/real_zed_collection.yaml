@@ -1,0 +1,15 @@
+save_data_path: ./real_data
+project_name: robotwin_real_zed
+
+# Produced by script/real_zed_collection/calibrate_three_zed_extrinsics.py.
+calibration_path: /home/zheng/github/geometry_awareness_manipulation/config/device/three_camera_charuco_extrinsics.yaml
+
+camera_labels: global,ego,side
+zed_serials: []
+zed_resolution: HD720
+zed_fps: 15
+zed_depth_mode: NEURAL
+
+show_img: false
+save_zed_xyzrgba: false
+

@@ -1,5 +1,40 @@
 # Findings & Decisions
 
+## Real Three-ZED Collection Pipeline (2026-04-24)
+
+### Existing xtrainer control path
+- `include/xtrainer_clover/experiments/run_control.py` uses three RealSense RGB camera threads, `BimanualAgent`, two `DobotAgent`s, `RobotEnv`, and `ZMQClientRobot`.
+- The main loop preserves button-driven lock/servo/recording semantics through the shared `what_to_do` state.
+- During DP recording, the script saves one pkl per frame through `scripts.format_obs.save_dp_frame(...)`.
+- The saved DP frame currently contains robot `obs`, `control`, activation flags, and RGB images named `base_rgb`, `left_wrist_rgb`, and `right_wrist_rgb`.
+- The current xtrainer collection path does not record depth, camera intrinsics/extrinsics, per-camera point clouds, fused scene point clouds, or object point clouds.
+
+### Existing DP3 training data expectations
+- `policy/DP3/scripts/process_data.py` expects RoboTwin-style HDF5 episodes under `data/<task>/<task_config>/data/episode{i}.hdf5`.
+- The minimum baseline DP3 fields are `/joint_action/vector` and `/pointcloud`.
+- Object-pointcloud and pointwise feature branches read optional `/object_pointcloud/{placeholder}` datasets.
+- `policy/DP3/scripts/object_pointcloud_utils.py` loads `/observation/head_camera/intrinsic_cv`, `extrinsic_cv`, `cam2world_gl`, and `mesh_segmentation` as simulator fallback metadata, but if `/object_pointcloud/{A}` exists the preprocessors use it directly.
+- Existing NDF, semantic, Utonia, and interaction branches can all reuse canonical object point clouds and generate their own feature zarr outputs later.
+
+### Design implication
+- Real-world collection should not try to mimic simulator actor segmentation online. It should record calibrated RGB-D/pointcloud data once, then derive `/pointcloud` and `/object_pointcloud/{A,B,...}` in a postprocess step using real segmentation masks.
+- A model-agnostic canonical HDF5 episode is the correct compatibility boundary. Model-specific zarr preprocessing should remain separate and reuse the existing DP3 scripts.
+
+### Calibration findings
+- `/home/zheng/github/geometry_awareness_manipulation/scripts/tools/calibrate_three_zed_charuco_extrinsics.py` opens three ZED cameras, detects one shared Charuco board across multiple poses, and writes `three_camera_charuco_extrinsics.yaml`.
+- Its output contains per-camera serial numbers, camera intrinsics, residual statistics, and `relative_to_reference.<label>.t_ref_from_cam`.
+- This is sufficient for three-ZED relative fusion in the reference camera frame.
+- It is not sufficient by itself to define the canonical robot training frame. For DP3-style real data, we still need either `T_robot_base_from_ref_camera` or an explicit table/world frame transform that is fixed across collection and inference.
+- Existing scripts in `geometry_awareness_manipulation` include robot/base-related utilities such as `detect_charuco_to_robot_point.py`, but the new RoboTwin real collection path should treat reference-camera-to-robot-base calibration as a first-class config input.
+
+### First implementation
+- Added `script/real_zed_collection/` as a separate execution folder so real collection code does not mix with `policy/DP3`.
+- `collect_zed_robotwin_raw.py` keeps the original button semantics and robot joint-space recording path while replacing RealSense RGB capture with three ZED RGB-D capture threads.
+- Raw data is saved as one manifest plus per-frame `robot_*.npz` and `<camera>_*.npz` files.
+- `segment_objects_sam.py` is separate from collection and writes masks under `<mask_root>/<placeholder>/<camera>/mask_XXXXXX.png`.
+- `postprocess_raw_to_robotwin_hdf5.py` converts one raw episode plus masks into RoboTwin-compatible HDF5 with `/joint_action/vector`, `/pointcloud`, `/object_pointcloud/{placeholder}`, and per-camera observation groups.
+- First version uses `frame_mode=reference_camera`; robot-base/table-frame support remains an explicit extension.
+
 ## New Task: `pour_kettle_mug` (2026-04-16)
 
 ### Requirements

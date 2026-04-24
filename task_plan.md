@@ -1,64 +1,67 @@
-# Task Plan: Implement `pour_kettle_mug`
+# Task Plan: Real Three-ZED Data Collection For DP3
 
 ## Goal
 
-Implement a new RoboTwin task `pour_kettle_mug` that uses only the left arm to grasp `009_kettle`, move its spout above a randomly placed `039_mug`, and tilt into a geometry-only pouring pose. The task should integrate with the existing environment loader, language generation pipeline, object-pointcloud placeholder mapping, and eval step-limit config.
+Design a real-robot data collection pipeline that keeps the robot-control behavior consistent with `include/xtrainer_clover/experiments/run_control.py`, records synchronized data from three ZED cameras, and postprocesses each demonstration once into simulator-compatible RoboTwin/DP3 training data that can feed objpc, NDF, semantic, Utonia, and future feature branches.
 
 ## Current Phase
 
-Complete
+Implemented first version
 
 ## Phases
 
-### Phase 1: Planning & Test Scope
-- [x] Write and approve a task design spec
-- [x] Switch planning files to the new task
-- [x] Identify the smallest meaningful failing test for the new task integration
+### Phase 1: Context Discovery
+- [x] Read the existing real-robot control and save loop.
+- [x] Read existing xtrainer frame serialization.
+- [x] Read DP3 HDF5/zarr preprocessing expectations.
 - **Status:** complete
 
-### Phase 2: Red Test
-- [x] Add a failing test that proves the new task is not yet fully integrated
-- [x] Run the test and confirm it fails for the expected reason
+### Phase 2: Pipeline Design
+- [x] Separate raw recording from canonical postprocessing.
+- [x] Define the canonical HDF5 fields needed by current DP3 preprocessors.
+- [x] Identify where real data must differ from simulator actor/object point clouds.
+- **Status:** in_progress
+
+### Phase 3: User Review
+- [x] Present architecture and trade-offs.
+- [x] Get approval before writing collection/postprocess scripts.
 - **Status:** complete
 
-### Phase 3: Implementation
-- [x] Add `envs/pour_kettle_mug.py`
-- [x] Add `description/task_instruction/pour_kettle_mug.json`
-- [x] Register default object-pointcloud placeholder mappings
-- [x] Add eval step-limit entry
+### Phase 4: Implementation
+- [x] Add the real ZED collection script.
+- [x] Add the raw-to-RoboTwin-HDF5 postprocess script.
+- [x] Add SAM-mask generation script.
+- [x] Add validation utilities for point cloud alignment and field compatibility.
 - **Status:** complete
 
-### Phase 4: Verification
-- [x] Re-run the new targeted test and confirm it passes
-- [x] Run syntax / import verification on modified Python files
-- [x] Summarize residual risks if full simulator rollout is not executed
-- **Status:** complete
+### Phase 5: Verification
+- [x] Add and run unit coverage for raw-to-HDF5 conversion.
+- [x] Run Python syntax checks on new scripts.
+- [ ] Run on real ZED/robot hardware.
+- **Status:** complete with hardware run pending
 
 ## Decisions Made
 
 | Decision | Rationale |
 |----------|-----------|
-| Keep the task single-arm | The user explicitly reverted from dual-arm flow to a left-arm-only pouring task |
-| Keep the mug static and untouched | The user explicitly asked to operate only the kettle |
-| Use geometry-only pouring success criteria | The user explicitly rejected liquid simulation |
-| Keep mug position randomized within a small region | Preserves some generalization without turning the task into a search-heavy benchmark |
-| Start with a fixed pour orientation | More stable than solving a fully general spout-to-cup orientation in the first version |
+| Keep robot teleoperation/control logic aligned with `run_control.py` | Avoid changing safety, button, servo, and action semantics while adding perception recording |
+| Do not compute model features during collection | NDF, semantic, and Utonia variants should all reuse the same raw/canonical data |
+| Use canonical HDF5 as the compatibility boundary | Existing DP3 preprocess scripts already consume HDF5 episode files and then emit zarr |
+| Use reference-camera frame in v1 | Current policy is joint-space; robot-base hand-eye calibration is useful but not required for a fixed camera setting |
 
 ## Key Questions
 
-1. What is the smallest realistic test that proves the new task is wired into the repo correctly?
-2. Is the kettle functional point reliable enough as a spout proxy for success checking across all 3 kettle instances?
-3. Can the left-arm fixed pour pose remain stable across the chosen kettle and mug spawn ranges?
+1. What ZED SDK wrapper is available in the target robot environment?
+2. How should object masks be supplied in real data: manual annotation, live SAM/grounding, saved masks, or a first-frame interactive workflow?
+3. Which world frame should be canonical: robot base frame or a calibrated table/world frame?
 
 ## Errors Encountered
 
 | Error | Attempt | Resolution |
 |-------|---------|------------|
-| Existing planning files were still scoped to an unrelated DP3 workstream | 1 | Replaced `task_plan.md` with a task-specific plan for `pour_kettle_mug` |
-| New integration test failed before implementation | 1 | Expected; missing env file, instruction template, pointcloud mapping, and eval step limit are the intended red state |
 
 ## Notes
 
-- Re-read this file before major edits.
+- Re-read this file before implementation.
 - Log discoveries in `findings.md`.
 - Log commands and verification in `progress.md`.
