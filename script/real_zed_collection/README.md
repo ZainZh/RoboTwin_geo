@@ -28,6 +28,7 @@ python script/real_zed_collection/collect_zed_robotwin_raw.py \
 ```
 
 By default, the collection script reads `script/real_zed_collection/configs/real_zed_collection.yaml`. Use `--config <path>` to point to another YAML, and any CLI flags you pass will override the YAML values.
+The default collection config keeps depth at camera resolution, stores RGB at `640x360`, samples at `5 Hz`, and writes frames asynchronously to protect the robot control loop.
 
 The control loop follows the original `include/xtrainer_clover/experiments/run_control.py` button semantics:
 

@@ -9,6 +9,12 @@ zed_serials: [38968158,31021548,37856216]
 zed_resolution: HD1080
 zed_fps: 15
 zed_depth_mode: NEURAL
+save_rgb_width: 640
+save_rgb_height: 360
+save_frequency_hz: 5.0
+writer_queue_size: 8
+manifest_flush_interval: 10
+compress_camera_frames: false
 
 show_img: false
 save_zed_xyzrgba: false
