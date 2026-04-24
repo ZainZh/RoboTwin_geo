@@ -7,14 +7,18 @@ import os
 import sys
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
 import cv2
 import numpy as np
+import yaml
 
 from script.real_zed_collection.real_zed_utils import ensure_dir, load_three_zed_calibration, write_json
+
+
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "configs" / "real_zed_collection.yaml"
 
 
 def parse_camera_labels(value: str | list[str] | tuple[str, ...]) -> list[str]:
@@ -30,7 +34,7 @@ class Args:
     save_data_path: str = "./real_data"
     project_name: str = "robotwin_real_zed"
     calibration_path: str = ""
-    camera_labels: str = "global,ego,side"
+    camera_labels: str = "global,left,right"
     zed_serials: list[int] = field(default_factory=list)
     zed_resolution: str = "HD720"
     zed_fps: int = 15
@@ -38,6 +42,47 @@ class Args:
     show_img: bool = False
     save_zed_xyzrgba: bool = False
     max_frames: int = -1
+
+
+def _extract_config_path(argv: list[str]) -> tuple[Path | None, list[str]]:
+    config_path = DEFAULT_CONFIG_PATH if DEFAULT_CONFIG_PATH.exists() else None
+    remaining_args: list[str] = []
+    idx = 0
+    while idx < len(argv):
+        arg = argv[idx]
+        if arg == "--config":
+            if idx + 1 >= len(argv):
+                raise SystemExit("--config requires a path.")
+            config_path = Path(argv[idx + 1]).expanduser().resolve()
+            idx += 2
+            continue
+        if arg.startswith("--config="):
+            config_path = Path(arg.split("=", 1)[1]).expanduser().resolve()
+            idx += 1
+            continue
+        remaining_args.append(arg)
+        idx += 1
+    return config_path, remaining_args
+
+
+def _load_args_defaults(config_path: Path | None) -> Args:
+    if config_path is None:
+        return Args()
+    if not config_path.exists():
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+    with config_path.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"Config file must contain a YAML mapping: {config_path}")
+
+    allowed = {item.name for item in fields(Args)}
+    unknown = sorted(str(key) for key in data.keys() if str(key) not in allowed)
+    if unknown:
+        raise ValueError(f"Unknown config keys in {config_path}: {unknown}")
+
+    defaults = Args(**{name: data[name] for name in allowed if name in data})
+    print(f"[INFO] Loaded collection config: {config_path}")
+    return defaults
 
 
 # Same button-state semantics as include/xtrainer_clover/experiments/run_control.py.
@@ -316,6 +361,7 @@ def _resolve_cameras(args: Args) -> tuple[list[str], list[int]]:
         raise ValueError(f"First version expects exactly 3 camera labels, got {labels}")
     if len(serials) != 3:
         raise ValueError("Provide exactly 3 ZED serials or a calibration file with serial_number entries.")
+    print(f"[INFO] Collection camera label -> serial mapping: {dict(zip(labels, serials))}")
     return labels, serials
 
 
@@ -553,4 +599,6 @@ def main(args: Args) -> None:
 if __name__ == "__main__":
     import tyro
 
-    main(tyro.cli(Args))
+    config_path, cli_args = _extract_config_path(sys.argv[1:])
+    default_args = _load_args_defaults(config_path)
+    main(tyro.cli(Args, args=cli_args, default=default_args))

@@ -1,0 +1,6 @@
+board_name: charuco-300
+squares_x: 14
+squares_y: 9
+square_length_mm: 20
+marker_length_mm: 15
+dictionary: DICT_5*5

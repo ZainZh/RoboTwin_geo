@@ -42,7 +42,7 @@ class PositionEstimate:
 
 def parse_args() -> argparse.Namespace:
     repo_root = Path(__file__).resolve().parents[2]
-    default_output = repo_root / "real_zed_collection" / "calibration" / "three_camera_charuco_extrinsics.yaml"
+    default_output = repo_root / "script" / "real_zed_collection" / "calibration" / "three_camera_charuco_extrinsics.yaml"
     default_geometry_repo = Path.home() / "github" / "geometry_awareness_manipulation"
 
     parser = argparse.ArgumentParser(
@@ -52,9 +52,10 @@ def parse_args() -> argparse.Namespace:
         )
     )
     parser.add_argument("--serials", type=int, nargs="*", default=None, metavar="SN")
-    parser.add_argument("--labels", type=str, nargs=3, default=["global", "ego", "side"], metavar=("L0", "L1", "L2"))
+    parser.add_argument("--labels", type=str, nargs=3, default=["global", "left", "right"], metavar=("L0", "L1", "L2"))
     parser.add_argument("--reference_label", type=str, default="global")
-    parser.add_argument("--charuco_config_name", type=str, default="charuco_A4")
+    # parser.add_argument("--charuco_config_name", type=str, default="charuco_A4")
+    parser.add_argument("--charuco_config_name", type=str, default="charuco_300_9x14_20mm_15mm")
     parser.add_argument(
         "--charuco_config_path",
         type=str,
@@ -211,6 +212,12 @@ def _discover_connected_serials() -> list[int]:
     return sorted(set(serials))
 
 
+def _log_label_serial_mapping(labels: list[str], serials: list[int], serial_source: str) -> None:
+    print(f"[INFO] Camera label -> serial mapping ({serial_source}):")
+    for label, serial in zip(labels, serials):
+        print(f"  - {label}: {serial}")
+
+
 def _resolve_charuco_config_path(args: argparse.Namespace) -> Path | None:
     if str(args.charuco_config_path).strip():
         return Path(args.charuco_config_path).expanduser().resolve()
@@ -218,10 +225,46 @@ def _resolve_charuco_config_path(args: argparse.Namespace) -> Path | None:
     candidate = geometry_repo / "config" / "device" / f"{args.charuco_config_name}.yaml"
     if candidate.exists():
         return candidate.resolve()
+    local_charuco_candidate = Path(__file__).resolve().parent / "charuco_config" / f"{args.charuco_config_name}.yaml"
+    if local_charuco_candidate.exists():
+        return local_charuco_candidate.resolve()
     local_candidate = Path(__file__).resolve().parent / "configs" / f"{args.charuco_config_name}.yaml"
     if local_candidate.exists():
         return local_candidate.resolve()
     return None
+
+
+def _resolve_aruco_dictionary_name(dictionary_value: str | None, required_markers: int) -> str:
+    default_name = "DICT_5X5_100"
+    if not dictionary_value:
+        return default_name
+
+    raw = str(dictionary_value).strip().upper()
+    normalized = raw.replace("*", "X").replace("-", "_").replace(" ", "")
+    if not normalized.startswith("DICT_"):
+        normalized = f"DICT_{normalized}"
+
+    if hasattr(cv2.aruco, normalized):
+        return normalized
+
+    family_aliases = {
+        "DICT_4X4": ["DICT_4X4_50", "DICT_4X4_100", "DICT_4X4_250", "DICT_4X4_1000"],
+        "DICT_5X5": ["DICT_5X5_50", "DICT_5X5_100", "DICT_5X5_250", "DICT_5X5_1000"],
+        "DICT_6X6": ["DICT_6X6_50", "DICT_6X6_100", "DICT_6X6_250", "DICT_6X6_1000"],
+        "DICT_7X7": ["DICT_7X7_50", "DICT_7X7_100", "DICT_7X7_250", "DICT_7X7_1000"],
+    }
+    options = family_aliases.get(normalized)
+    if not options:
+        return default_name
+
+    for option in options:
+        try:
+            capacity = int(option.rsplit("_", 1)[-1])
+        except Exception:
+            continue
+        if capacity >= required_markers and hasattr(cv2.aruco, option):
+            return option
+    return next((option for option in options if hasattr(cv2.aruco, option)), default_name)
 
 
 def _charuco_board_from_config(args: argparse.Namespace) -> tuple[cv2.aruco_CharucoBoard, cv2.aruco_Dictionary, dict]:
@@ -235,14 +278,20 @@ def _charuco_board_from_config(args: argparse.Namespace) -> tuple[cv2.aruco_Char
             "squares_y": 9,
             "square_length_mm": 30,
             "marker_length_mm": 22,
+            "dictionary": "DICT_5X5_100",
         }
     squares_x = int(cfg["squares_x"])
     squares_y = int(cfg["squares_y"])
     square_len_m = float(cfg["square_length_mm"]) / 1000.0
     marker_len_m = float(cfg["marker_length_mm"]) / 1000.0
-    dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_100)
-    board = cv2.aruco.CharucoBoard((squares_x, squares_y), square_len_m, marker_len_m, dictionary)
-    return board, dictionary, {"path": None if cfg_path is None else str(cfg_path), **cfg}
+    required_markers = max(1, (squares_x * squares_y + 1) // 2)
+    dictionary_name = _resolve_aruco_dictionary_name(cfg.get("dictionary"), required_markers)
+    dictionary = cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, dictionary_name))
+    if hasattr(cv2.aruco.CharucoBoard, "create"):
+        board = cv2.aruco.CharucoBoard.create(squares_x, squares_y, square_len_m, marker_len_m, dictionary)
+    else:
+        board = cv2.aruco.CharucoBoard((squares_x, squares_y), square_len_m, marker_len_m, dictionary)
+    return board, dictionary, {"path": None if cfg_path is None else str(cfg_path), "resolved_dictionary": dictionary_name, **cfg}
 
 
 def _detect_charuco_pose(
@@ -720,9 +769,11 @@ def main() -> None:
             )
         serials = discovered_serials[: len(labels)]
         serial_source = "auto_discovery"
-        print(f"[INFO] Auto-discovered serials: {discovered_serials}; using {serials}")
+        print(f"[WARN] Auto-discovered serials: {discovered_serials}; using {serials}")
+        print("[WARN] Auto-discovery binds sorted serials to labels by position. Prefer explicit --serials.")
     if len(set(serials)) != len(serials):
         raise ValueError("serials must be unique.")
+    _log_label_serial_mapping(labels, serials, serial_source)
 
     board, dictionary, charuco_cfg = _charuco_board_from_config(args)
     show = bool(args.show)
