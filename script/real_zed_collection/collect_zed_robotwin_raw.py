@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 import os
 from queue import Empty, Full, Queue
+import shutil
 import sys
 import threading
 import time
@@ -20,6 +21,9 @@ from script.real_zed_collection.real_zed_utils import ensure_dir, load_three_zed
 
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "configs" / "real_zed_collection.yaml"
+
+ANSI_BLUE = "\033[94m"
+ANSI_RESET = "\033[0m"
 
 
 def parse_camera_labels(value: str | list[str] | tuple[str, ...]) -> list[str]:
@@ -90,6 +94,29 @@ def _load_args_defaults(config_path: Path | None) -> Args:
     defaults = Args(**{name: data[name] for name in allowed if name in data})
     print(f"[INFO] Loaded collection config: {config_path}")
     return defaults
+
+
+def _blue_text(text: str) -> str:
+    if hasattr(sys.stdout, "isatty") and sys.stdout.isatty():
+        return f"{ANSI_BLUE}{text}{ANSI_RESET}"
+    return text
+
+
+def _print_args_summary(args: Args, config_path: Path | None, save_root: Path) -> None:
+    print("[INFO] Collection configuration summary:")
+    print(f"  - config_path: {config_path if config_path is not None else 'None (Args defaults)'}")
+    print(f"  - output_root: {save_root}")
+    for item in fields(Args):
+        print(f"  - {item.name}: {getattr(args, item.name)}")
+
+
+def _snapshot_calibration_file(calibration_path: str | Path, episode_dir: Path) -> str:
+    src = Path(calibration_path).expanduser().resolve()
+    if not src.exists():
+        raise FileNotFoundError(f"Calibration file does not exist: {src}")
+    dst = episode_dir / "calibration_snapshot.yaml"
+    shutil.copy2(src, dst)
+    return dst.name
 
 
 # Same button-state semantics as include/xtrainer_clover/experiments/run_control.py.
@@ -531,7 +558,7 @@ def _write_manifest(episode_dir: Path, manifest: dict[str, Any]) -> None:
     write_json(episode_dir / "manifest.json", manifest)
 
 
-def main(args: Args) -> None:
+def main(args: Args, config_path: Path | None = None) -> None:
     include_dir = Path(__file__).resolve().parents[2] / "include" / "xtrainer_clover"
     sys.path.append(str(include_dir))
     from dobot_control.agents.agent import BimanualAgent
@@ -548,6 +575,7 @@ def main(args: Args) -> None:
 
     labels, serials = _resolve_cameras(args)
     save_root = ensure_dir(Path(args.save_data_path) / args.project_name / "real_zed_raw")
+    _print_args_summary(args, config_path, save_root)
     record_period_sec = 0.0 if float(args.save_frequency_hz) <= 0.0 else 1.0 / float(args.save_frequency_hz)
 
     stop_event = threading.Event()
@@ -672,6 +700,10 @@ def main(args: Args) -> None:
                 if dev_what_to_do[0, 2] == 1:
                     curr_light = set_light(env, "green", 1)
                     active_episode_dir = ensure_dir(save_root / f"episode_{int(dt_time[0])}")
+                    calibration_snapshot_rel = ""
+                    if args.calibration_path:
+                        calibration_snapshot_rel = _snapshot_calibration_file(args.calibration_path, active_episode_dir)
+                    print(_blue_text(f"[RECORD] START -> {active_episode_dir}"))
                     writer_queue.put(
                         WriteTask(
                             kind="start_episode",
@@ -682,6 +714,7 @@ def main(args: Args) -> None:
                                 "camera_labels": labels,
                                 "camera_serials": dict(zip(labels, serials)),
                                 "calibration_path": str(Path(args.calibration_path).expanduser().resolve()) if args.calibration_path else "",
+                                "calibration_snapshot_path": calibration_snapshot_rel,
                                 "save_rgb_width": int(args.save_rgb_width),
                                 "save_rgb_height": int(args.save_rgb_height),
                                 "save_frequency_hz": float(args.save_frequency_hz),
@@ -696,6 +729,11 @@ def main(args: Args) -> None:
                 elif dev_what_to_do[0, 2] == -1:
                     curr_light = set_light(env, "yellow", 1)
                     if active_episode_dir is not None:
+                        print(
+                            _blue_text(
+                                f"[RECORD] STOP -> {active_episode_dir} | queued_frames={record_frame_index} | dropped_frames={dropped_frame_count}"
+                            )
+                        )
                         writer_queue.put(
                             WriteTask(
                                 kind="end_episode",
@@ -757,6 +795,11 @@ def main(args: Args) -> None:
     finally:
         stop_event.set()
         if active_episode_dir is not None:
+            print(
+                _blue_text(
+                    f"[RECORD] STOP -> {active_episode_dir} | queued_frames={record_frame_index} | dropped_frames={dropped_frame_count}"
+                )
+            )
             writer_queue.put(
                 WriteTask(
                     kind="end_episode",
@@ -777,4 +820,4 @@ if __name__ == "__main__":
 
     config_path, cli_args = _extract_config_path(sys.argv[1:])
     default_args = _load_args_defaults(config_path)
-    main(tyro.cli(Args, args=cli_args, default=default_args))
+    main(tyro.cli(Args, args=cli_args, default=default_args), config_path=config_path)

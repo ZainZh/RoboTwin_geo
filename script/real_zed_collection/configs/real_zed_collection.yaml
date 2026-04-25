@@ -1,5 +1,5 @@
-save_data_path: ./real_data
-project_name: robotwin_real_zed
+save_data_path: /media/clover/Extreme SSD/geo_mani_data
+project_name: grasp_mug
 
 # Produced by script/real_zed_collection/calibrate_three_zed_extrinsics.py.
 calibration_path: /home/clover/github/RoboTwin_geo/script/real_zed_collection/calibration/three_camera_charuco_extrinsics.yaml

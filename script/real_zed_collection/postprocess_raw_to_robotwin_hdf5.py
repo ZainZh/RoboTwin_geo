@@ -83,6 +83,23 @@ def _load_frame_npz(raw_episode_dir: Path, rel_path: str) -> dict[str, np.ndarra
         return {key: data[key] for key in data.files}
 
 
+def _resolve_calibration_path(raw_episode_dir: Path, manifest: dict, override: str | Path) -> Path:
+    if str(override).strip():
+        calib_path = Path(override).expanduser().resolve()
+    else:
+        snapshot_rel = str(manifest.get("calibration_snapshot_path", "")).strip()
+        if snapshot_rel:
+            calib_path = (raw_episode_dir / snapshot_rel).resolve()
+        else:
+            source_path = str(manifest.get("calibration_path", "")).strip()
+            if not source_path:
+                raise ValueError("Missing calibration path. Pass --calibration_path or include it in manifest.json.")
+            calib_path = Path(source_path).expanduser().resolve()
+    if not calib_path.exists():
+        raise FileNotFoundError(f"Calibration file does not exist: {calib_path}")
+    return calib_path
+
+
 def _camera_frame_to_world_pc(
     *,
     camera_frame: Mapping[str, np.ndarray],
@@ -136,7 +153,8 @@ def postprocess_episode(
     if not isinstance(frames, list) or not frames:
         raise ValueError(f"Raw episode manifest has no frames: {raw_episode_dir / 'manifest.json'}")
 
-    calib = load_three_zed_calibration(calibration_path, frame_mode=frame_mode)
+    calib_path = _resolve_calibration_path(raw_episode_dir, manifest, calibration_path)
+    calib = load_three_zed_calibration(calib_path, frame_mode=frame_mode)
     labels = camera_labels or list(manifest.get("camera_labels", [])) or list(calib.keys())
     labels = [str(label) for label in labels]
     missing = [label for label in labels if label not in calib]
@@ -267,7 +285,7 @@ def postprocess_episode(
                 },
             },
             "raw_episode": str(raw_episode_dir),
-            "calibration_path": str(Path(calibration_path).expanduser().resolve()),
+            "calibration_path": str(calib_path),
             "frame_mode": str(frame_mode),
         }
     }
@@ -284,7 +302,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--raw_episode_dir", required=True)
     parser.add_argument("--output_dir", required=True)
     parser.add_argument("--episode_index", type=int, default=0)
-    parser.add_argument("--calibration_path", required=True)
+    parser.add_argument("--calibration_path", default="")
     parser.add_argument("--camera_labels", type=str, default="")
     parser.add_argument("--object_prompts", type=str, default="")
     parser.add_argument("--mask_root", type=str, default="")
