@@ -49,6 +49,9 @@
 - Live cropped collection stores cropped `rgb`, cropped `depth_m`, crop-adjusted `camera_matrix`, original shapes, ROI boxes, workspace bounds, and `t_workspace_from_camera` per camera NPZ.
 - When `frame_mode=workspace`, postprocess and point-cloud export prefer `workspace_calibration_snapshot_path` / `workspace_calibration_path` from the manifest.
 - Existing full raw episodes can be reprocessed with `postprocess_raw_to_robotwin_hdf5.py --frame_mode workspace --workspace_crop_* ...`; this crops fused scene/object point clouds in workspace coordinates and stores cropped per-camera RGB/depth observations.
+- The first workspace anchor file treated Charuco board +Z as workspace +Z. For the user's tabletop setup, board +Z points into the table, so the correct long-term convention is `workspace +Z = board -Z` with a right-handed rotation `diag(1,-1,-1)`.
+- Old raw episodes can have camera label and serial order mismatches. The observed example mapped `raw global -> calibration right`, `raw left -> calibration global`, and `raw right -> calibration left`. Serial-based remapping is now the correct default for preview/postprocess/cropped collection.
+- With cropped collection and `workspace_crop_resize_rgb=false`, RGB is saved at the crop ROI's native camera resolution. Full-frame HD1080 RGB for all three cameras would add about 18 MB/frame uncompressed before any depth data, so full-frame RGB should be kept as debug snapshots unless compressed image storage is added.
 
 ## New Task: `pour_kettle_mug` (2026-04-16)
 
@@ -533,6 +536,74 @@
 - The new shell regression test captures the final argv sent to `script/eval_policy.py`, which is the right verification layer for these wrappers because it checks the observable interface rather than shell internals.
 - `objpc` and `actorseg` are not equivalent in the current implementation. `objpc` filters raw per-camera `Position` buffers by actor id first and only then downsamples per object, while `actorseg` starts from the already-downsampled combined scene `observation["pointcloud"]` and then projects that sparse cloud back into segmentation masks.
 - Because of that ordering difference, `actorseg` currently loses object detail much earlier than `objpc`, especially for small structures like mug handles and rack hooks. This explains why `objpc` can outperform `actorseg` even when both use simulator truth labels.
+- Real ZED raw dataset discovery for `grasp_mug`:
+  - raw root: `/media/zheng/Extreme SSD/geo_mani_data/grasp_mug/real_zed_raw`
+  - episodes with manifests: 61
+  - raw camera labels: `global,left,right`
+  - old raw manifest serial mapping differs from calibration labels, so serial-based remapping must stay enabled during postprocess.
+- For real-data object masks, SAM3 is the better first implementation target on this machine:
+  - SAM3 checkpoint exists: `/home/zheng/Datasets/sam3/sam3.pt`
+  - configured SAM2 checkpoint is absent: `/home/zheng/Datasets/sam_gdino/sam_checkpoints/sam2.1_hiera_large.pt`
+  - DP3 online eval already has `SAM3ProjectiveTracker`, allowing the same text-refresh plus bbox-reuse behavior to be reused for inference.
+- Real objpc HDF5 should be compact by default:
+  - `policy/DP3/scripts/object_pointcloud_utils.py::load_hdf5` only reads `/joint_action/vector`, `/pointcloud`, and `/object_pointcloud/*` for `process_data_objpc.py`.
+  - Storing full RGB-D observations in every real training HDF5 unnecessarily duplicates raw data and can dominate disk usage, especially for old recordings where RGB is resized to match 1080p depth during postprocess.
+  - The new SAM3 objpc batch driver therefore defaults to no observation storage and exposes `--store_observations` for debugging/downstream use.
+- Local SAM3 smoke result:
+  - On this sandbox, `torch.cuda.is_available()` is false, so SAM3 falls back to CPU.
+  - A 1-frame/3-camera/2-object smoke completed and wrote non-empty masks for most camera/object pairs, but full dataset processing should be run in the normal GPU-visible environment with `--sam3_device cuda:0` or `--sam3_device auto`.
+- For training, saving processed real data directly on the SSD is feasible as long as DP3 sees a repo-side path:
+  - `train_objpc.sh` still expects `../../data/<task>/<task_config>` from `policy/DP3`.
+  - The batch postprocess script now writes the actual data to `/media/${USER}/Extreme SSD/geo_mani_data/<task>/robotwin_objpc/<task_config>` by default.
+  - It creates `data/<task>/<task_config>` as a symlink to the SSD output unless `--no_link_repo_data` is passed.
+- Debug preview mode should be sampled, not full-frame/full-episode by default:
+  - mask overlays are PNGs and can be many files across 3 cameras x 2 objects x N frames.
+  - merged `{A}/{B}` PLY previews are useful for sanity checking segmentation/projection alignment, and `--debug_stride` plus `--debug_max_frames` keeps them bounded.
+- Workspace-projected 2D ROI alone is not sufficient for the current real ZED view:
+  - With the saved workspace bbox, the projected RGB ROI spans the full 640x360 frame for all three cameras.
+  - Therefore saved SAM masks now also use per-frame depth-based gating: each mask pixel is kept only if its depth point transforms into the workspace bbox.
+  - Manual `--mask_roi_xyxy` remains useful as an extra coarse image-space restriction, but the 3D guarantee comes from depth-based workspace filtering.
+- The user prefers explicit 2D image-domain workspace masks over depth/3D workspace gating for SAM:
+  - `select_camera_workspace_masks.py` now lets the user click a polygon on each camera's first RGB frame.
+  - Passing `--camera_workspace_mask_root` makes SAM3 see only the clicked polygon image domain: the image is cropped to the polygon bbox and pixels outside the polygon are zeroed before tracker inference.
+  - Saved SAM masks and HDF5 point clouds also use only pixels inside the clicked polygon.
+  - Old cached masks from a non-polygon run are treated as incompatible and regenerated in polygon mode.
+  - In this mode, depth workspace filtering is disabled by default to avoid reintroducing the previous behavior.
+- Real SAM3 mask quality diagnosis:
+  - Existing `*_workspace_mask_sam3_smoke` outputs were not generated with polygon input-domain SAM; their metadata has `sam_input_domain=0`, so those previews can look worse than the intended polygon-input pipeline.
+  - A fresh 1-frame run with the real per-camera polygon masks confirmed `sam_input_domain=True` for all six camera/object masks.
+  - With prompt `{A}:mug`, the left-camera `{A}` mask was empty, while the same frame and polygon domain with `{A}:cup` produced a non-empty left-camera mask. This points to prompt wording / low-resolution text detection as the main failure mode, not SAM's segmentation capacity.
+  - The raw RGB frames used by the saved data are `640x360`, so SAM3 is operating on low-resolution images. This can make small/partially occluded objects much more prompt-sensitive than normal high-resolution SAM demos.
+  - SAM3 mask cache validity now includes the object prompt text, so changing `{A}:mug` to `{A}:cup` regenerates affected masks instead of silently reusing stale results.
+- SAM2 streaming replacement direction:
+  - `include/SAM2_streaming` is a symlink to `/home/zheng/github/SAM2_streaming` and provides a real-time `SAM2CameraPredictor`.
+  - The core API is `build_sam2_camera_predictor(config, checkpoint)`, then `predictor.load_first_frame(frame)`, `predictor.add_new_prompt(frame_idx=0, obj_id=id, bbox=[[x0,y0],[x1,y1]])`, and later `predictor.track(frame)`.
+  - `demo_webcam_box.py` confirms the intended manual initialization flow: user draws a bbox once, then subsequent frames use tracker memory instead of text prompts.
+  - Local SAM2 checkpoint discovery found `/home/zheng/Datasets/sam2/sam2.1_hiera_large.pt`; matching config exists at `include/SAM2_streaming/configs/sam2.1/sam2.1_hiera_l.yaml`.
+  - The active Python environment can import `sam2.build_sam.build_sam2_camera_predictor` and has Hydra/OmegaConf installed.
+  - The streaming predictor code hard-codes CUDA devices in its state initialization, so practical use should be on the GPU runtime. A wrapper should own device setup and fail clearly if CUDA/SAM2 deps are unavailable.
+  - New real-data segmentation should be bbox-initialized SAM2 tracking, not SAM3 text detection. This removes the main observed failure mode: prompt sensitivity under low-resolution RGB.
+- SAM2 streaming implementation findings:
+  - The new active real-data path uses `sam2_tracking_utils.py`, `select_sam2_bboxes.py`, `segment_objects_sam2.py`, and `postprocess/postprocess_real_zed_sam2_objpc_dataset.py`.
+  - `postprocess_real_zed_sam2_objpc_dataset.py` imports no SAM3/Ultralytics code; legacy SAM/SAM3 active scripts and DP3 entrypoints have been removed so the maintained real-data segmentation path is SAM2-only.
+  - The bbox prompt file is per camera and per placeholder, so `{A}` and `{B}` can be manually initialized independently in `global,left,right`.
+  - SAM2 receives the polygon-limited RGB input domain by default when `--camera_workspace_mask_root` is passed, matching the user's requested “only segment inside clicked workspace” behavior.
+  - The generated HDF5 boundary remains the same compact objpc format: `/joint_action/vector`, `/pointcloud`, and `/object_pointcloud/{A,B}`, so `policy/DP3/process_data_objpc.sh` and `train_objpc.sh` stay compatible.
+- SAM2 online eval implementation findings:
+  - `robot_dp3_objpc_sam2` is architecture-compatible with normal `objpc` checkpoints; the difference is only how `point_cloud` is reconstructed online in `deploy_policy.py`.
+  - `eval_objpc_sam2.sh` accepts an explicit `ckpt_setting`, so it can evaluate checkpoints trained with `train_objpc.sh` on `demo_real_zed_sam2_objpc` without requiring a separate SAM2 training suffix.
+  - The online path tracks all placeholders together per camera, then projects each SAM2 mask back into the current scene point cloud. This avoids advancing the SAM2 streaming state once per placeholder inside a single policy observation.
+  - If `--sam2_bbox_prompt_path` is provided, bbox prompts are reused; otherwise the first frame opens interactive OpenCV bbox selection windows. Interactive prompts are cleared on episode reset so stale boxes are not silently reused across episodes.
+- SAM2 SDPA runtime error finding:
+  - The traceback ending in `RuntimeError: No available kernel` came from `torch.nn.functional.scaled_dot_product_attention` inside the SAM2 mask decoder.
+  - The preceding warnings are the diagnostic signal: Q/K/V were `float`, while the available Flash/Memory Efficient attention kernels require `Half` or `BFloat16`; CUDNN SDPA was also disabled.
+  - `include/SAM2_streaming/demo_webcam_box.py` opens a global `torch.autocast(device_type="cuda", dtype=torch.bfloat16)` context before using the camera predictor, but the first wrapper implementation did not.
+  - The fix is to run `load_first_frame`, `add_new_prompt`, and `track` under CUDA autocast. The wrapper now defaults to `--sam2_autocast_dtype bfloat16`, with `float16` and `none` exposed for hardware-specific fallback.
+- SAM2 per-episode bbox finding:
+  - SAM2 tracker state must be reset and initialized per recorded episode, not per training epoch.
+  - The tracker was already recreated inside `segment_episode_sam2(...)`, but the batch driver initially loaded one global `sam2_bbox_prompts.json` and reused it for every raw episode.
+  - That global prompt reuse is only safe if every episode starts with the same image-space object pose. For randomized real data, each raw episode needs its own first-frame `{A}/{B}` bboxes.
+  - The batch driver now prefers `sam2_bbox_prompts/<raw_episode_name>/sam2_bbox_prompts.json`, then `episode<index>/sam2_bbox_prompts.json`, then `episode_<index:06d>/sam2_bbox_prompts.json`, with global `sam2_bbox_prompts.json` only as fallback unless `--require_per_episode_bboxes` is set.
 
 ---
 *Update this file after every 2 view/browser/search operations.*

@@ -70,6 +70,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--max_translation_residual_m", type=float, default=0.02)
     parser.add_argument("--max_rotation_residual_deg", type=float, default=3.0)
+    parser.add_argument(
+        "--flip_workspace_z",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Default true because Charuco board +Z often points into the table. "
+            "When enabled, workspace +Z is board -Z while preserving a right-handed frame."
+        ),
+    )
     parser.add_argument("--fail_on_bad_check", action="store_true", default=False)
     return parser.parse_args()
 
@@ -126,6 +135,14 @@ def _ref_from_cam_transforms(base_cfg: dict, labels: list[str]) -> dict[str, np.
             raise ValueError(f"Missing relative_to_reference.{label}.t_ref_from_cam")
         out[label] = _as_transform(rel[label]["t_ref_from_cam"], f"relative_to_reference.{label}.t_ref_from_cam")
     return out
+
+
+def _workspace_from_board_transform(flip_z: bool = True) -> np.ndarray:
+    """Return T_board_from_workspace for the desired workspace axis convention."""
+    transform = np.eye(4, dtype=np.float64)
+    if flip_z:
+        transform[:3, :3] = np.diag([1.0, -1.0, -1.0])
+    return transform
 
 
 def _collect_anchor_samples(
@@ -252,10 +269,12 @@ def main() -> None:
             panel_height=int(args.panel_height),
             axis_length=float(args.axis_length),
         )
-        all_ref_from_workspace = [t for transforms in samples.values() for t in transforms]
-        t_ref_from_workspace = _average_transform(all_ref_from_workspace)
+        t_board_from_workspace = _workspace_from_board_transform(flip_z=bool(args.flip_workspace_z))
+        all_ref_from_board = [t for transforms in samples.values() for t in transforms]
+        t_ref_from_board = _average_transform(all_ref_from_board)
+        t_ref_from_workspace = t_ref_from_board @ t_board_from_workspace
         t_workspace_from_ref = _invert_transform(t_ref_from_workspace)
-        per_camera, _ = _health_from_samples(samples, t_ref_from_workspace)
+        per_camera, _ = _health_from_samples(samples, t_ref_from_board)
         max_rot = max(v["max_rotation_deg"] for v in per_camera.values())
         max_trans = max(v["max_translation_m"] for v in per_camera.values())
         health_ok = max_rot <= float(args.max_rotation_residual_deg) and max_trans <= float(args.max_translation_residual_m)
@@ -275,6 +294,17 @@ def main() -> None:
             "reference_camera": str(reference_label),
             "generated_at_unix_sec": float(time.time()),
             "charuco_config": charuco_cfg,
+            "axis_convention": {
+                "source_frame": "charuco_board",
+                "flip_workspace_z": bool(args.flip_workspace_z),
+                "t_board_from_workspace": _to_float_list(t_board_from_workspace),
+                "description": (
+                    "workspace +Z is board -Z; x is preserved and y is flipped to keep a right-handed frame"
+                    if bool(args.flip_workspace_z)
+                    else "workspace axes match the Charuco board axes"
+                ),
+            },
+            "t_ref_from_board": _to_float_list(t_ref_from_board),
             "t_ref_from_workspace": _to_float_list(t_ref_from_workspace),
             "t_workspace_from_ref": _to_float_list(t_workspace_from_ref),
             "bbox_m": {

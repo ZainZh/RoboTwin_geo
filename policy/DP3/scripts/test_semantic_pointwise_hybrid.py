@@ -32,7 +32,6 @@ def make_model(*, hybrid: bool) -> SimpleNamespace:
     return SimpleNamespace(
         use_object_pointcloud=True,
         use_actorseg_objpc=False,
-        use_sam3_objpc=False,
         use_ndf_pointwise=False,
         use_ndf_pointwise_hybrid=False,
         use_semantic_pointwise=True,

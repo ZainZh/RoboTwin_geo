@@ -18,7 +18,12 @@ import cv2
 import numpy as np
 import yaml
 
-from script.real_zed_collection.real_zed_utils import ensure_dir, load_three_zed_calibration, write_json
+from script.real_zed_collection.real_zed_utils import (
+    calibration_label_map_from_manifest,
+    ensure_dir,
+    load_three_zed_calibration,
+    write_json,
+)
 from script.real_zed_collection.workspace_crop_utils import WorkspaceBounds, apply_workspace_crop_to_camera_frame
 
 
@@ -474,6 +479,7 @@ def zed_capture_loop(
     save_xyzrgba: bool,
     workspace_crop_enabled: bool,
     t_workspace_from_cam: np.ndarray | None,
+    workspace_camera_matrix: np.ndarray | None,
     workspace_bounds: WorkspaceBounds | None,
     workspace_crop_margin_px: int,
     workspace_crop_resize_rgb: bool,
@@ -523,10 +529,15 @@ def zed_capture_loop(
             if workspace_crop_enabled:
                 if t_workspace_from_cam is None or workspace_bounds is None:
                     raise RuntimeError(f"Workspace crop enabled for {label}, but transform/bounds are missing.")
+                projection_camera_matrix = (
+                    np.asarray(workspace_camera_matrix, dtype=np.float64).reshape(3, 3)
+                    if workspace_camera_matrix is not None
+                    else camera_matrix
+                )
                 cropped = apply_workspace_crop_to_camera_frame(
                     rgb=rgb,
                     depth_m=depth_m,
-                    camera_matrix=camera_matrix,
+                    camera_matrix=projection_camera_matrix,
                     t_workspace_from_cam=t_workspace_from_cam,
                     bounds=workspace_bounds,
                     margin_px=int(workspace_crop_margin_px),
@@ -537,6 +548,7 @@ def zed_capture_loop(
                 depth_m = np.asarray(cropped.pop("depth_m"), dtype=np.float32)
                 save_camera_matrix = np.asarray(cropped.pop("camera_matrix"), dtype=np.float32)
                 frame_extra.update(cropped)
+                frame_extra["zed_camera_matrix"] = np.asarray(camera_matrix, dtype=np.float32)
                 debug_interval = int(workspace_crop_debug_full_frame_interval)
                 if debug_interval > 0 and frame_idx % debug_interval == 0:
                     frame_extra["full_rgb_debug"] = _resize_rgb_for_storage(
@@ -631,6 +643,7 @@ def _save_raw_frame(
             ("original_rgb_shape_hw", np.int32),
             ("workspace_bounds_m", np.float32),
             ("t_workspace_from_camera", np.float32),
+            ("zed_camera_matrix", np.float32),
             ("full_rgb_debug", np.uint8),
             ("full_depth_m_debug", np.float32),
             ("xyzrgba", np.float32),
@@ -681,11 +694,20 @@ def main(args: Args, config_path: Path | None = None) -> None:
         workspace_bounds = _workspace_bounds_from_args(args)
         workspace_calibration_path = str(_resolve_user_path(args.workspace_calibration_path or args.calibration_path))
         workspace_calib = load_three_zed_calibration(workspace_calibration_path, frame_mode="workspace")
-        missing_workspace = [label for label in labels if label not in workspace_calib]
+        workspace_label_by_raw_label = calibration_label_map_from_manifest(
+            {"camera_labels": labels, "camera_serials": dict(zip(labels, serials))},
+            workspace_calib,
+            labels,
+        )
+        missing_workspace = [calib_label for calib_label in workspace_label_by_raw_label.values() if calib_label not in workspace_calib]
         if missing_workspace:
             raise ValueError(f"Workspace calibration missing camera labels: {missing_workspace}")
         print(f"[INFO] Workspace crop enabled with calibration: {workspace_calibration_path}")
         print(f"[INFO] Workspace bounds: {workspace_bounds.as_dict()}")
+        if workspace_label_by_raw_label != {label: label for label in labels}:
+            print(f"[WARN] Camera label/serial order differs from calibration. Using remap: {workspace_label_by_raw_label}")
+    else:
+        workspace_label_by_raw_label = {label: label for label in labels}
 
     stop_event = threading.Event()
     shared_by_label = {label: SharedZedFrame() for label in labels}
@@ -715,7 +737,12 @@ def main(args: Args, config_path: Path | None = None) -> None:
                 "save_xyzrgba": bool(args.save_zed_xyzrgba),
                 "workspace_crop_enabled": bool(args.workspace_crop_enabled),
                 "t_workspace_from_cam": (
-                    workspace_calib[label].t_world_from_cam.astype(np.float64)
+                    workspace_calib[workspace_label_by_raw_label[label]].t_world_from_cam.astype(np.float64)
+                    if bool(args.workspace_crop_enabled)
+                    else None
+                ),
+                "workspace_camera_matrix": (
+                    workspace_calib[workspace_label_by_raw_label[label]].camera_matrix.astype(np.float64)
                     if bool(args.workspace_crop_enabled)
                     else None
                 ),
@@ -850,6 +877,7 @@ def main(args: Args, config_path: Path | None = None) -> None:
                                 "workspace_crop_debug_full_frame_interval": int(
                                     args.workspace_crop_debug_full_frame_interval
                                 ),
+                                "camera_label_to_calibration_label": workspace_label_by_raw_label,
                                 "save_rgb_width": int(args.save_rgb_width),
                                 "save_rgb_height": int(args.save_rgb_height),
                                 "save_frequency_hz": float(args.save_frequency_hz),

@@ -15,6 +15,7 @@ except Exception:
     cv2 = None
 
 from script.real_zed_collection.real_zed_utils import (
+    calibration_label_map_from_manifest,
     depth_rgb_to_point_cloud,
     deterministic_resample,
     ensure_dir,
@@ -74,6 +75,36 @@ def _load_mask(mask_root: Path, placeholder: str, camera_label: str, frame_index
                     mask = cv2.resize(mask.astype(np.uint8), (shape[1], shape[0]), interpolation=cv2.INTER_NEAREST) > 0
             return mask
     return np.zeros(shape, dtype=bool)
+
+
+def _load_camera_workspace_mask(mask_root: Path | None, camera_label: str, shape: tuple[int, int]) -> np.ndarray | None:
+    if mask_root is None:
+        return None
+    candidates = [
+        mask_root / str(camera_label) / "workspace_mask.png",
+        mask_root / f"{camera_label}.png",
+        mask_root / str(camera_label) / "mask.png",
+    ]
+    for path in candidates:
+        if not path.exists():
+            continue
+        if cv2 is None:
+            from imageio.v2 import imread
+
+            raw = imread(path)
+        else:
+            raw = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+        if raw is None:
+            raise RuntimeError(f"Failed to load camera workspace mask: {path}")
+        if raw.ndim == 3:
+            raw = raw[:, :, 0]
+        mask = np.asarray(raw) > 0
+        if mask.shape != shape:
+            if cv2 is None:
+                raise RuntimeError("cv2 is required to resize camera workspace masks.")
+            mask = cv2.resize(mask.astype(np.uint8), (shape[1], shape[0]), interpolation=cv2.INTER_NEAREST) > 0
+        return mask
+    return None
 
 
 def _load_frame_npz(raw_episode_dir: Path, rel_path: str) -> dict[str, np.ndarray]:
@@ -182,6 +213,12 @@ def postprocess_episode(
     frame_mode: str = "reference_camera",
     workspace_crop_bounds: WorkspaceBounds | None = None,
     workspace_crop_margin_px: int = 0,
+    intrinsics_source: str = "calibration",
+    serial_remap: bool = True,
+    start_frame: int = 0,
+    max_frames: int = -1,
+    store_observations: bool = True,
+    camera_workspace_mask_root: str | Path | None = None,
 ) -> Path:
     raw_episode_dir = Path(raw_episode_dir).expanduser().resolve()
     output_dir = ensure_dir(output_dir)
@@ -189,16 +226,31 @@ def postprocess_episode(
     frames = manifest.get("frames", [])
     if not isinstance(frames, list) or not frames:
         raise ValueError(f"Raw episode manifest has no frames: {raw_episode_dir / 'manifest.json'}")
+    frame_start = max(0, int(start_frame))
+    frame_end = len(frames) if int(max_frames) <= 0 else min(len(frames), frame_start + int(max_frames))
+    frames = frames[frame_start:frame_end]
+    if not frames:
+        raise ValueError(f"No frames selected from raw episode: start_frame={start_frame}, max_frames={max_frames}")
 
     calib_path = _resolve_calibration_path(raw_episode_dir, manifest, calibration_path, frame_mode=frame_mode)
     calib = load_three_zed_calibration(calib_path, frame_mode=frame_mode)
     labels = camera_labels or list(manifest.get("camera_labels", [])) or list(calib.keys())
     labels = [str(label) for label in labels]
-    missing = [label for label in labels if label not in calib]
+    label_to_calib = (
+        {label: label for label in labels}
+        if not bool(serial_remap)
+        else calibration_label_map_from_manifest(manifest, calib, labels)
+    )
+    missing = [calib_label for calib_label in label_to_calib.values() if calib_label not in calib]
     if missing:
         raise ValueError(f"Camera labels missing from calibration: {missing}")
 
     mask_root_path = None if mask_root is None or str(mask_root) == "" else Path(mask_root).expanduser().resolve()
+    camera_workspace_mask_root_path = (
+        None
+        if camera_workspace_mask_root is None or str(camera_workspace_mask_root) == ""
+        else Path(camera_workspace_mask_root).expanduser().resolve()
+    )
     placeholders = list(object_prompts.keys())
 
     joint_vectors = []
@@ -225,6 +277,7 @@ def postprocess_episode(
             raise ValueError(f"Frame cameras must be a dict at frame {frame_index}")
 
         for label in labels:
+            calib_label = label_to_calib[label]
             camera_frame = _load_frame_npz(raw_episode_dir, str(cameras[label]))
             rgb = np.asarray(camera_frame["rgb"])
             depth_m = (
@@ -232,38 +285,45 @@ def postprocess_episode(
                 if "depth_m" in camera_frame
                 else np.asarray(camera_frame["depth_mm"], dtype=np.float32) / 1000.0
             )
-            camera_matrix = (
+            frame_camera_matrix = (
                 np.asarray(camera_frame["camera_matrix"], dtype=np.float32).reshape(3, 3)
                 if "camera_matrix" in camera_frame
-                else calib[label].camera_matrix.astype(np.float32)
+                else calib[calib_label].camera_matrix.astype(np.float32)
+            )
+            camera_matrix = (
+                frame_camera_matrix
+                if str(intrinsics_source) == "frame"
+                else calib[calib_label].camera_matrix.astype(np.float32)
             )
             intrinsic_by_camera[label] = camera_matrix.astype(np.float32)
-            obs_rgb = rgb.astype(np.uint8)
-            obs_depth = depth_m.astype(np.float32)
-            obs_camera_matrix = camera_matrix.astype(np.float32)
-            if workspace_crop_bounds is not None:
-                rgb_for_crop = _rgb_to_depth_shape(obs_rgb, obs_depth.shape)
-                cropped_obs = apply_workspace_crop_to_camera_frame(
-                    rgb=rgb_for_crop,
-                    depth_m=obs_depth,
-                    camera_matrix=obs_camera_matrix,
-                    t_workspace_from_cam=calib[label].t_world_from_cam,
-                    bounds=workspace_crop_bounds,
-                    margin_px=int(workspace_crop_margin_px),
-                )
-                obs_rgb = np.asarray(cropped_obs["rgb"], dtype=np.uint8)
-                obs_depth = np.asarray(cropped_obs["depth_m"], dtype=np.float32)
-                obs_camera_matrix = np.asarray(cropped_obs["camera_matrix"], dtype=np.float32)
-            intrinsic_by_camera[label] = obs_camera_matrix.astype(np.float32)
-            observation_by_camera[label]["rgb"].append(obs_rgb.astype(np.uint8))
-            observation_by_camera[label]["depth"].append(obs_depth.astype(np.float32))
+            camera_domain_mask = _load_camera_workspace_mask(camera_workspace_mask_root_path, label, depth_m.shape)
+            if bool(store_observations):
+                obs_rgb = rgb.astype(np.uint8)
+                obs_depth = depth_m.astype(np.float32)
+                obs_camera_matrix = camera_matrix.astype(np.float32)
+                if workspace_crop_bounds is not None:
+                    rgb_for_crop = _rgb_to_depth_shape(obs_rgb, obs_depth.shape)
+                    cropped_obs = apply_workspace_crop_to_camera_frame(
+                        rgb=rgb_for_crop,
+                        depth_m=obs_depth,
+                        camera_matrix=obs_camera_matrix,
+                        t_workspace_from_cam=calib[calib_label].t_world_from_cam,
+                        bounds=workspace_crop_bounds,
+                        margin_px=int(workspace_crop_margin_px),
+                    )
+                    obs_rgb = np.asarray(cropped_obs["rgb"], dtype=np.uint8)
+                    obs_depth = np.asarray(cropped_obs["depth_m"], dtype=np.float32)
+                    obs_camera_matrix = np.asarray(cropped_obs["camera_matrix"], dtype=np.float32)
+                intrinsic_by_camera[label] = obs_camera_matrix.astype(np.float32)
+                observation_by_camera[label]["rgb"].append(obs_rgb.astype(np.uint8))
+                observation_by_camera[label]["depth"].append(obs_depth.astype(np.float32))
 
             scene_chunks.append(
                 _camera_frame_to_world_pc(
                     camera_frame=camera_frame,
                     camera_matrix=camera_matrix,
-                    t_world_from_cam=calib[label].t_world_from_cam,
-                    mask=None,
+                    t_world_from_cam=calib[calib_label].t_world_from_cam,
+                    mask=camera_domain_mask,
                     min_depth_m=min_depth_m,
                     max_depth_m=max_depth_m,
                 )
@@ -274,11 +334,13 @@ def postprocess_episode(
                     mask = np.ones(depth_m.shape, dtype=bool)
                 else:
                     mask = _load_mask(mask_root_path, placeholder, label, frame_index, depth_m.shape)
+                if camera_domain_mask is not None:
+                    mask = mask & camera_domain_mask
                 object_chunks_by_placeholder[placeholder].append(
                     _camera_frame_to_world_pc(
                         camera_frame=camera_frame,
                         camera_matrix=camera_matrix,
-                        t_world_from_cam=calib[label].t_world_from_cam,
+                        t_world_from_cam=calib[calib_label].t_world_from_cam,
                         mask=mask,
                         min_depth_m=min_depth_m,
                         max_depth_m=max_depth_m,
@@ -314,17 +376,18 @@ def postprocess_episode(
         joint_group.create_dataset("right_gripper", data=vector[:, 13])
         root.create_dataset("pointcloud", data=np.asarray(scene_point_clouds, dtype=np.float32))
 
-        obs_group = root.create_group("observation")
-        for label in labels:
-            cam_group = obs_group.create_group(label)
-            cam_group.create_dataset("rgb", data=np.asarray(observation_by_camera[label]["rgb"], dtype=np.uint8))
-            cam_group.create_dataset("depth", data=np.asarray(observation_by_camera[label]["depth"], dtype=np.float32))
-            cam_group.create_dataset(
-                "intrinsic_cv",
-                data=np.asarray(intrinsic_by_camera.get(label, calib[label].camera_matrix), dtype=np.float32),
-            )
-            cam_group.create_dataset("extrinsic_cv", data=calib[label].t_world_from_cam.astype(np.float32))
-            cam_group.create_dataset("cam2world_gl", data=calib[label].t_world_from_cam.astype(np.float32))
+        if bool(store_observations):
+            obs_group = root.create_group("observation")
+            for label in labels:
+                cam_group = obs_group.create_group(label)
+                cam_group.create_dataset("rgb", data=np.asarray(observation_by_camera[label]["rgb"], dtype=np.uint8))
+                cam_group.create_dataset("depth", data=np.asarray(observation_by_camera[label]["depth"], dtype=np.float32))
+                cam_group.create_dataset(
+                    "intrinsic_cv",
+                    data=np.asarray(intrinsic_by_camera.get(label, calib[label_to_calib[label]].camera_matrix), dtype=np.float32),
+                )
+                cam_group.create_dataset("extrinsic_cv", data=calib[label_to_calib[label]].t_world_from_cam.astype(np.float32))
+                cam_group.create_dataset("cam2world_gl", data=calib[label_to_calib[label]].t_world_from_cam.astype(np.float32))
 
         if placeholders:
             obj_group = root.create_group("object_pointcloud")
@@ -350,6 +413,10 @@ def postprocess_episode(
             "calibration_path": str(calib_path),
             "frame_mode": str(frame_mode),
             "workspace_crop_bounds_m": {} if workspace_crop_bounds is None else workspace_crop_bounds.as_dict(),
+            "camera_label_to_calibration_label": label_to_calib,
+            "intrinsics_source": str(intrinsics_source),
+            "store_observations": bool(store_observations),
+            "camera_workspace_mask_root": "" if camera_workspace_mask_root_path is None else str(camera_workspace_mask_root_path),
         }
     }
     if scene_info_path.exists():
@@ -381,6 +448,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--workspace_crop_z_min", type=float, default=None)
     parser.add_argument("--workspace_crop_z_max", type=float, default=None)
     parser.add_argument("--workspace_crop_margin_px", type=int, default=0)
+    parser.add_argument("--intrinsics_source", type=str, default="calibration", choices=["calibration", "frame"])
+    parser.add_argument("--disable_serial_remap", action="store_true", default=False)
+    parser.add_argument("--start_frame", type=int, default=0)
+    parser.add_argument("--max_frames", type=int, default=-1)
+    parser.add_argument("--no_store_observations", action="store_true", default=False)
+    parser.add_argument("--camera_workspace_mask_root", default="")
     return parser.parse_args()
 
 
@@ -424,6 +497,12 @@ def main() -> None:
         frame_mode=args.frame_mode,
         workspace_crop_bounds=workspace_crop_bounds,
         workspace_crop_margin_px=args.workspace_crop_margin_px,
+        intrinsics_source=args.intrinsics_source,
+        serial_remap=not bool(args.disable_serial_remap),
+        start_frame=args.start_frame,
+        max_frames=args.max_frames,
+        store_observations=not bool(args.no_store_observations),
+        camera_workspace_mask_root=args.camera_workspace_mask_root,
     )
     print(hdf5_path)
 

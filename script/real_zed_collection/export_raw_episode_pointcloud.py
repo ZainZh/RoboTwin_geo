@@ -13,6 +13,7 @@ except Exception:
     cv2 = None
 
 from script.real_zed_collection.real_zed_utils import (
+    calibration_label_map_from_manifest,
     deterministic_resample,
     load_three_zed_calibration,
     merge_point_clouds,
@@ -27,6 +28,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--frame_index", default=0, type=int)
     parser.add_argument("--calibration_path", default="", type=str)
     parser.add_argument("--frame_mode", default="reference_camera", choices=["reference_camera", "workspace"])
+    parser.add_argument("--intrinsics_source", default="calibration", choices=["calibration", "frame"])
+    parser.add_argument("--disable_serial_remap", action="store_true", default=False)
     parser.add_argument("--output_path", default="", type=str)
     parser.add_argument("--min_depth_m", default=0.05, type=float)
     parser.add_argument("--max_depth_m", default=3.0, type=float)
@@ -189,15 +192,26 @@ def main() -> None:
 
     frame = frames[frame_index]
     labels = [str(x) for x in manifest.get("camera_labels", list(calib.keys()))]
+    label_to_calib = (
+        {label: label for label in labels}
+        if bool(args.disable_serial_remap)
+        else calibration_label_map_from_manifest(manifest, calib, labels)
+    )
     chunks: list[np.ndarray] = []
     per_camera_counts: dict[str, int] = {}
     for label in labels:
+        calib_label = label_to_calib[label]
         camera_rel = str(frame["cameras"][label])
         camera_frame = _load_frame_npz(raw_episode_dir / camera_rel)
-        camera_matrix = (
+        frame_camera_matrix = (
             np.asarray(camera_frame["camera_matrix"], dtype=np.float32).reshape(3, 3)
             if "camera_matrix" in camera_frame
-            else calib[label].camera_matrix.astype(np.float32)
+            else calib[calib_label].camera_matrix.astype(np.float32)
+        )
+        camera_matrix = (
+            frame_camera_matrix
+            if str(args.intrinsics_source) == "frame"
+            else calib[calib_label].camera_matrix.astype(np.float32)
         )
         pc_cam = _frame_to_point_cloud(
             camera_frame=camera_frame,
@@ -205,9 +219,9 @@ def main() -> None:
             min_depth_m=float(args.min_depth_m),
             max_depth_m=float(args.max_depth_m),
         )
-        pc_world = transform_point_cloud(pc_cam, calib[label].t_world_from_cam)
+        pc_world = transform_point_cloud(pc_cam, calib[calib_label].t_world_from_cam)
         chunks.append(pc_world)
-        per_camera_counts[label] = int(len(pc_world))
+        per_camera_counts[f"{label}->{calib_label}"] = int(len(pc_world))
 
     merged = merge_point_clouds(chunks)
     cropped = _apply_workspace_crop(merged, args)

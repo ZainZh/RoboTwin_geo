@@ -76,21 +76,19 @@ def get_utonia_utils():
     return compute_utonia_pointwise_cloud, load_utonia_model
 
 
-def get_sam3_utils():
-    from sam3_pointcloud_utils import (
-        SAM3ProjectiveTracker,
-        build_placeholder_prompt_map_from_targets,
-        extract_placeholder_point_cloud_sam3_online,
+def get_sam2_utils():
+    from sam2_pointcloud_utils import (
+        build_sam2_tracker_factory,
+        extract_placeholder_point_clouds_sam2_online,
+        load_sam2_bbox_prompt_file,
         parse_camera_list,
-        parse_prompt_map,
     )
 
     return (
-        SAM3ProjectiveTracker,
-        build_placeholder_prompt_map_from_targets,
-        extract_placeholder_point_cloud_sam3_online,
+        build_sam2_tracker_factory,
+        extract_placeholder_point_clouds_sam2_online,
+        load_sam2_bbox_prompt_file,
         parse_camera_list,
-        parse_prompt_map,
     )
 
 
@@ -118,6 +116,21 @@ def resolve_task_object_pointcloud_targets(task_name):
         return {}
     targets = getter(task_name)
     return targets if isinstance(targets, dict) else {}
+
+
+def parse_bool_arg(value, *, default=False):
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return bool(default)
 
 
 def resolve_task_env_actor_ids(task_env, placeholders):
@@ -190,7 +203,7 @@ def encode_obs(observation, model):  # Post-Process Observation
     point_cloud = observation['pointcloud']
     object_pointcloud = observation.get('object_pointcloud', {})
     use_actorseg_objpc = bool(getattr(model, "use_actorseg_objpc", False))
-    use_sam3_objpc = bool(getattr(model, "use_sam3_objpc", False))
+    use_sam2_objpc = bool(getattr(model, "use_sam2_objpc", False))
     use_ndf_pointwise = bool(getattr(model, "use_ndf_pointwise", False))
     use_ndf_pointwise_hybrid = bool(getattr(model, "use_ndf_pointwise_hybrid", False))
     use_ndf_pointwise_interact = bool(getattr(model, "use_ndf_pointwise_interact", False))
@@ -220,29 +233,28 @@ def encode_obs(observation, model):  # Post-Process Observation
         )
         object_pointcloud = actorseg_object_pointcloud
 
-    elif use_sam3_objpc:
-        per_placeholder_clouds = []
-        frame_idx = int(getattr(model, "sam3_frame_idx", 0))
-        for placeholder in getattr(model, "object_placeholders", []):
-            object_pc, _ = model.sam3_extract_fn(
-                observation,
-                placeholder=placeholder,
-                prompt=getattr(model, "sam3_prompt_map", {}).get(placeholder, placeholder.strip("{}")),
-                camera_names=getattr(model, "sam3_camera_names", ["head_camera", "front_camera"]),
-                tracker=getattr(model, "sam3_tracker"),
-                tracking_state_by_camera=getattr(model, "sam3_tracking_state", {}).setdefault(placeholder, {}),
-                target_num_points=int(getattr(model, "target_num_points", 1024)),
-                target_extents=None,
-                min_mask_points=int(getattr(model, "sam3_min_mask_points", 16)),
-                text_refresh_every=int(getattr(model, "sam3_text_refresh_every", 15)),
-                frame_idx=frame_idx,
-            )
-            per_placeholder_clouds.append(object_pc)
+    elif use_sam2_objpc:
+        sam2_object_pointcloud, _ = model.sam2_extract_all_fn(
+            observation,
+            placeholders=getattr(model, "object_placeholders", []),
+            camera_names=getattr(model, "sam2_camera_names", ["head_camera", "front_camera"]),
+            tracker_factory=getattr(model, "sam2_tracker_factory"),
+            tracking_state_by_camera=getattr(model, "sam2_tracking_state_by_camera", {}),
+            bbox_prompts_by_camera=getattr(model, "sam2_bbox_prompts_by_camera", {}),
+            target_num_points=int(getattr(model, "target_num_points", 1024)),
+            min_mask_points=int(getattr(model, "sam2_min_mask_points", 16)),
+            interactive_init=bool(getattr(model, "sam2_interactive_init", True)),
+        )
+        per_placeholder_clouds = [
+            sam2_object_pointcloud[placeholder]
+            for placeholder in getattr(model, "object_placeholders", [])
+            if placeholder in sam2_object_pointcloud
+        ]
         point_cloud = merge_object_point_clouds(
             per_placeholder_clouds,
             target_num_points=int(getattr(model, "target_num_points", 1024)),
         )
-        model.sam3_frame_idx = frame_idx + 1
+        object_pointcloud = sam2_object_pointcloud
 
     elif getattr(model, "use_object_pointcloud", False) and len(object_pointcloud) > 0:
         placeholders = getattr(model, "object_placeholders", [])
@@ -473,7 +485,7 @@ def get_model(usr_args):
     cfg.policy.use_pc_color = usr_args['use_rgb']
 
     use_actorseg_objpc = "objpc_actorseg" in usr_args["config_name"]
-    use_sam3_objpc = "objpc_sam3" in usr_args["config_name"]
+    use_sam2_objpc = "objpc_sam2" in usr_args["config_name"]
     use_ndf_pointwise = "ndf_pointwise" in usr_args["config_name"]
     use_ndf_pointwise_hybrid = "ndf_pointwise_hybrid" in usr_args["config_name"]
     use_ndf_pointwise_interact = "ndf_pointwise_hybrid_interact" in usr_args["config_name"]
@@ -482,7 +494,7 @@ def get_model(usr_args):
     use_utonia_pointwise = "utonia_pointwise" in usr_args["config_name"]
     use_utonia_pointwise_hybrid = "utonia_pointwise_hybrid" in usr_args["config_name"]
     use_object_pointcloud = (
-        (("objpc" in usr_args["config_name"]) and not use_sam3_objpc and not use_actorseg_objpc)
+        (("objpc" in usr_args["config_name"]) and not use_sam2_objpc and not use_actorseg_objpc)
         or use_ndf_pointwise
         or use_semantic_pointwise
         or use_utonia_pointwise
@@ -510,12 +522,13 @@ def get_model(usr_args):
     actorseg_extract_fn = None
     actorseg_camera_names = []
     actorseg_segmentation_key = "actor_segmentation"
-    sam3_tracker = None
-    sam3_extract_fn = None
-    sam3_camera_names = []
-    sam3_prompt_map = {}
-    sam3_text_refresh_every = int(usr_args.get("sam3_text_refresh_every", 15))
-    sam3_min_mask_points = int(usr_args.get("sam3_min_mask_points", 16))
+    sam2_tracker_factory = None
+    sam2_extract_all_fn = None
+    sam2_camera_names = []
+    sam2_bbox_prompts_by_camera = {}
+    sam2_bbox_prompts_persistent = False
+    sam2_interactive_init = parse_bool_arg(usr_args.get("sam2_interactive_init", True), default=True)
+    sam2_min_mask_points = int(usr_args.get("sam2_min_mask_points", 16))
 
     if use_actorseg_objpc:
         extract_placeholder_point_cloud_actorseg_online, parse_actorseg_camera_list = get_actorseg_utils()
@@ -524,28 +537,33 @@ def get_model(usr_args):
             usr_args.get("actorseg_camera_names", "head_camera,front_camera")
         )
 
-    if use_sam3_objpc:
+    if use_sam2_objpc:
         (
-            SAM3ProjectiveTracker,
-            build_placeholder_prompt_map_from_targets,
-            extract_placeholder_point_cloud_sam3_online,
-            parse_sam3_camera_list,
-            parse_sam3_prompt_map,
-        ) = get_sam3_utils()
-        sam3_tracker = SAM3ProjectiveTracker(
-            model_path=str(usr_args.get("sam3_model", "/home/zheng/Datasets/sam3/sam3.pt")),
-            conf=float(usr_args.get("sam3_conf", 0.50)),
-            verbose=False,
+            build_sam2_tracker_factory,
+            extract_placeholder_point_clouds_sam2_online,
+            load_sam2_bbox_prompt_file,
+            parse_sam2_camera_list,
+        ) = get_sam2_utils()
+        sam2_extract_all_fn = extract_placeholder_point_clouds_sam2_online
+        sam2_camera_names = parse_sam2_camera_list(usr_args.get("sam2_camera_names", "head_camera,front_camera"))
+        repo_root = pathlib.Path(parent_directory).parents[1]
+        sam2_tracker_factory = build_sam2_tracker_factory(
+            placeholders=object_placeholders,
+            sam2_root=str(usr_args.get("sam2_root", repo_root / "include" / "SAM2_streaming")),
+            config=str(usr_args.get("sam2_config", "sam2.1/sam2.1_hiera_l.yaml")),
+            checkpoint=str(usr_args.get("sam2_checkpoint", "/home/zheng/Datasets/sam2/sam2.1_hiera_large.pt")),
+            device=str(usr_args.get("sam2_device", "cuda:0")),
+            autocast_dtype=str(usr_args.get("sam2_autocast_dtype", "bfloat16")),
         )
-        sam3_extract_fn = extract_placeholder_point_cloud_sam3_online
-        sam3_camera_names = parse_sam3_camera_list(usr_args.get("sam3_camera_names", "head_camera,front_camera"))
-        prompt_overrides = parse_sam3_prompt_map(usr_args.get("sam3_prompt_map", ""))
-        target_specs = resolve_task_object_pointcloud_targets(usr_args["task_name"])
-        sam3_prompt_map = build_placeholder_prompt_map_from_targets(
-            object_placeholders,
-            target_specs,
-            prompt_overrides=prompt_overrides,
-        )
+        sam2_bbox_prompt_path = str(usr_args.get("sam2_bbox_prompt_path", "") or "").strip()
+        if sam2_bbox_prompt_path:
+            sam2_bbox_prompts_by_camera = load_sam2_bbox_prompt_file(
+                sam2_bbox_prompt_path,
+                camera_names=sam2_camera_names,
+                placeholders=object_placeholders,
+            )
+            sam2_bbox_prompts_persistent = True
+            sam2_interactive_init = False if "sam2_interactive_init" not in usr_args else sam2_interactive_init
 
     if use_semantic_pointwise:
         _, load_semantic_model = get_semantic_utils()
@@ -638,7 +656,7 @@ def get_model(usr_args):
 
     DP3_Model = DP3(cfg, usr_args)
     DP3_Model.use_actorseg_objpc = use_actorseg_objpc
-    DP3_Model.use_sam3_objpc = use_sam3_objpc
+    DP3_Model.use_sam2_objpc = use_sam2_objpc
     DP3_Model.use_object_pointcloud = use_object_pointcloud
     DP3_Model.use_ndf_pointwise = use_ndf_pointwise
     DP3_Model.use_ndf_pointwise_hybrid = use_ndf_pointwise_hybrid
@@ -656,17 +674,14 @@ def get_model(usr_args):
         placeholder: []
         for placeholder in object_placeholders
     }
-    DP3_Model.sam3_tracker = sam3_tracker
-    DP3_Model.sam3_extract_fn = sam3_extract_fn
-    DP3_Model.sam3_camera_names = sam3_camera_names
-    DP3_Model.sam3_prompt_map = sam3_prompt_map
-    DP3_Model.sam3_text_refresh_every = sam3_text_refresh_every
-    DP3_Model.sam3_min_mask_points = sam3_min_mask_points
-    DP3_Model.sam3_tracking_state = {
-        placeholder: {}
-        for placeholder in object_placeholders
-    }
-    DP3_Model.sam3_frame_idx = 0
+    DP3_Model.sam2_tracker_factory = sam2_tracker_factory
+    DP3_Model.sam2_extract_all_fn = sam2_extract_all_fn
+    DP3_Model.sam2_camera_names = sam2_camera_names
+    DP3_Model.sam2_bbox_prompts_by_camera = sam2_bbox_prompts_by_camera
+    DP3_Model.sam2_bbox_prompts_persistent = sam2_bbox_prompts_persistent
+    DP3_Model.sam2_interactive_init = sam2_interactive_init
+    DP3_Model.sam2_min_mask_points = sam2_min_mask_points
+    DP3_Model.sam2_tracking_state_by_camera = {}
     DP3_Model.ndf_feat_dim = ndf_feat_dim
     DP3_Model.ndf_point_num_by_placeholder = {
         placeholder: ndf_point_num
@@ -756,10 +771,7 @@ def reset_model(
             placeholder: []
             for placeholder in getattr(model, "object_placeholders", [])
         }
-    if hasattr(model, "sam3_tracking_state"):
-        model.sam3_tracking_state = {
-            placeholder: {}
-            for placeholder in getattr(model, "object_placeholders", [])
-        }
-    if hasattr(model, "sam3_frame_idx"):
-        model.sam3_frame_idx = 0
+    if hasattr(model, "sam2_tracking_state_by_camera"):
+        model.sam2_tracking_state_by_camera = {}
+    if hasattr(model, "sam2_bbox_prompts_by_camera") and not bool(getattr(model, "sam2_bbox_prompts_persistent", False)):
+        model.sam2_bbox_prompts_by_camera = {}

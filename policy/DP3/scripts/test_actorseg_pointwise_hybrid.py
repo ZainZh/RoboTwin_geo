@@ -47,7 +47,6 @@ class TestActorSegPointwiseHybrid(unittest.TestCase):
         model = SimpleNamespace(
             use_object_pointcloud=True,
             use_actorseg_objpc=True,
-            use_sam3_objpc=False,
             use_ndf_pointwise=True,
             use_ndf_pointwise_hybrid=True,
             use_semantic_pointwise=False,
@@ -78,7 +77,6 @@ class TestActorSegPointwiseHybrid(unittest.TestCase):
         model = SimpleNamespace(
             use_object_pointcloud=True,
             use_actorseg_objpc=True,
-            use_sam3_objpc=False,
             use_ndf_pointwise=False,
             use_ndf_pointwise_hybrid=False,
             use_semantic_pointwise=True,

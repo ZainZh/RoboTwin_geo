@@ -5,7 +5,7 @@ project_name: grasp_mug
 calibration_path: script/real_zed_collection/calibration/three_camera_charuco_extrinsics.yaml
 
 camera_labels: global,left,right
-zed_serials: [38968158,31021548,37856216]
+zed_serials: [31021548,37856216,38968158]
 zed_resolution: HD1080
 zed_fps: 15
 zed_depth_mode: NEURAL

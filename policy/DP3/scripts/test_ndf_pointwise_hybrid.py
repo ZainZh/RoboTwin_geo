@@ -35,7 +35,6 @@ def make_model(*, hybrid: bool, interact: bool = False, ndf_models=None) -> Simp
     return SimpleNamespace(
         use_object_pointcloud=True,
         use_actorseg_objpc=False,
-        use_sam3_objpc=False,
         use_ndf_pointwise=True,
         use_ndf_pointwise_hybrid=hybrid,
         use_ndf_pointwise_interact=interact,

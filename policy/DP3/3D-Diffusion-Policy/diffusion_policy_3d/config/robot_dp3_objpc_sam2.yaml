@@ -1,8 +1,8 @@
 defaults:
-  - task: demo_task_objpc_sam3
+  - task: demo_task_objpc
   - _self_
 
-name: dp3_objpc_sam3
+name: dp3_objpc_sam2
 
 task_name: null
 shape_meta: ${task.shape_meta}
@@ -121,7 +121,7 @@ logging:
   tags:
   - RoboTwin
   - ObjPC
-  - SAM3
+  - SAM2
 
 checkpoint:
   save_ckpt: False

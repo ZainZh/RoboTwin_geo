@@ -6,7 +6,7 @@ Design a real-robot data collection pipeline that keeps the robot-control behavi
 
 ## Current Phase
 
-Workspace anchor and live crop support
+SAM2 streaming tracking migration for real objpc training/eval data
 
 ## Phases
 
@@ -48,6 +48,57 @@ Workspace anchor and live crop support
 - [x] Verify geometry utilities and collection script syntax without requiring real hardware.
 - **Status:** complete with hardware run pending
 
+### Phase 7: Real SAM3 ObjPC Dataset Postprocessing
+- [x] Add an offline SAM3 mask generator for `{A}=mug` and `{B}=box` that can reuse bbox prompts between frames.
+- [x] Add a batch driver that converts raw real-ZED episodes into `data/<task>/<task_config>/data/episode*.hdf5`.
+- [x] Keep the output compatible with `policy/DP3/train_objpc.sh` without changing existing DP3 training scripts.
+- [x] Verify helper behavior, syntax, and a small pilot conversion path.
+- [ ] Run full SAM3 postprocessing over all real episodes on a GPU-visible runtime.
+- **Status:** complete with full dataset run pending
+
+### Phase 8: SSD Output And Debug Previews
+- [x] Default real SAM3 objpc postprocess output to the external SSD path.
+- [x] Add repo-side symlink creation so `policy/DP3/train_objpc.sh` can still load data from `data/<task>/<config>`.
+- [x] Add debug mask overlays on original RGB frames.
+- [x] Add merged `{A}/{B}` colored `.ply` object point cloud previews.
+- [x] Verify debug output on a 1-frame SAM3 smoke.
+- **Status:** complete
+
+### Phase 9: Workspace-Constrained SAM Masks
+- [x] Add static RGB ROI masking for SAM masks, using workspace bbox projection by default.
+- [x] Add manual per-camera RGB ROI override through `--mask_roi_xyxy`.
+- [x] Add per-frame depth-based workspace gating so saved masks only keep pixels whose depth point lies inside the workspace bbox.
+- [x] Verify mask metadata and debug point cloud output on a 1-frame SAM3 smoke.
+- **Status:** complete
+
+### Phase 10: Interactive 2D Camera Workspace Masks
+- [x] Add an interactive first-frame polygon selector for each camera.
+- [x] Save per-camera 2D workspace masks and overlays.
+- [x] Restrict SAM input images to the clicked per-camera polygon masks before inference.
+- [x] Keep saved SAM masks restricted to the clicked per-camera polygon masks.
+- [x] Restrict HDF5 point-cloud reconstruction to the clicked per-camera polygon masks.
+- [x] Invalidate old non-polygon SAM mask caches when polygon mode is enabled.
+- [x] Make polygon mask mode disable depth workspace gating by default, with an opt-in `--also_depth_workspace_filter`.
+- **Status:** complete
+
+### Phase 11: SAM2 Streaming Tracking Migration
+- [x] Read `include/SAM2_streaming` and identify the bbox-initialized real-time tracking API.
+- [x] Locate local SAM2 checkpoint/config availability.
+- [x] Add a repo-local SAM2 tracking adapter that does not depend on SAM3/Ultralytics.
+- [x] Add an interactive per-camera/per-placeholder bbox initializer for real recordings.
+- [x] Add a SAM2-tracking real postprocess path that writes the same RoboTwin HDF5 fields.
+- [x] Add real eval integration so the first frame initializes A/B boxes on each camera and later frames call `track`.
+- [x] Move active real-data docs/scripts from SAM3 naming to SAM2 naming.
+- **Status:** complete with GPU/hardware run pending
+
+### Phase 12: Legacy SAM/SAM3 Cleanup
+- [x] Remove old SAM/SAM3 real-data segmentation scripts and postprocess entrypoints.
+- [x] Remove DP3 `objpc_sam3` preprocessing, training, eval, and config files.
+- [x] Remove SAM3 branches from DP3 deployment so only `objpc_sam2` remains for online mask tracking.
+- [x] Update tests/docs so active code no longer imports SAM3/Ultralytics or the old generic SAM path.
+- [x] Verify active source search, Python syntax, SAM2 tests, DP3 hybrid tests, shell syntax, and Hydra SAM2 config composition.
+- **Status:** complete
+
 ## Decisions Made
 
 | Decision | Rationale |
@@ -58,6 +109,9 @@ Workspace anchor and live crop support
 | Use reference-camera frame in v1 | Current policy is joint-space; robot-base hand-eye calibration is useful but not required for a fixed camera setting |
 | Add explicit workspace anchor instead of implicit last calibration pose | Keeps crop coordinates physically meaningful and repeatable across sessions |
 | Save cropped RGB/depth plus crop metadata rather than only fused point clouds | Reduces storage while preserving postprocess flexibility for masks and feature extraction |
+| Use SAM3 for the first real-data postprocess path | The local SAM3 checkpoint exists and the DP3 online eval path already uses the same SAM3 tracker; the configured SAM2 checkpoint is absent |
+| Migrate active real tracking to SAM2 streaming bbox initialization | SAM2 streaming removes the observed SAM3 text-prompt instability and matches the planned real eval workflow |
+| Remove legacy SAM/SAM3 code paths after SAM2 migration | Avoid dependency/import pollution and keep the real-data segmentation stack centered on one maintained tracker |
 
 ## Key Questions
 
@@ -69,6 +123,7 @@ Workspace anchor and live crop support
 
 | Error | Attempt | Resolution |
 |-------|---------|------------|
+| SAM2 postprocess failed in `scaled_dot_product_attention` with `RuntimeError: No available kernel` | User ran `postprocess_real_zed_sam2_objpc_dataset.py` on GPU; warnings showed Q/K/V were float32 and Flash/Memory Efficient attention kernels were unavailable for that dtype | Wrapped SAM2 predictor calls in CUDA autocast, defaulting to `bfloat16`, and enabled CUDA SDP kernels in the SAM2 loader |
 
 ## Notes
 

@@ -769,6 +769,10 @@
   - Updated `collect_zed_robotwin_raw.py` to save cropped RGB-D plus workspace metadata when `workspace_crop_enabled=true`.
   - Updated postprocess/export tools to prefer workspace calibration paths when `frame_mode=workspace`.
   - Added workspace crop arguments to HDF5 postprocess so already-collected full raw data can be re-exported in the new workspace frame without being discarded.
+  - Updated workspace frame convention so tabletop workspace +Z is Charuco board -Z, keeping bbox z positive above the table.
+  - Added serial-based camera calibration remapping for old and future data where raw labels and calibration labels differ.
+  - Corrected the real-ZED collection config serial order to match the calibration labels.
+  - Re-exported a fixed workspace preview under `outputs/real_zed_collection/previews/episode_20260425164903_fixed_workspace`.
   - Verified with `python -m unittest script/test_real_zed_collection_pipeline.py`, `python -m py_compile ...`, and script `--help` checks.
 - Files created/modified:
   - `task_plan.md` (updated)
@@ -783,3 +787,150 @@
   - `script/real_zed_collection/configs/real_zed_collection.yaml` (modified)
   - `script/real_zed_collection/README.md` (modified)
   - `script/test_real_zed_collection_pipeline.py` (modified)
+
+### Phase 11: Real SAM3 ObjPC Postprocessing
+- **Status:** complete with full dataset run pending
+- Actions taken:
+  - Confirmed the collected raw dataset is at `/media/zheng/Extreme SSD/geo_mani_data/grasp_mug/real_zed_raw` with 61 episodes and three raw camera labels: `global,left,right`.
+  - Confirmed the local SAM3 checkpoint exists at `/home/zheng/Datasets/sam3/sam3.pt`; the previously configured SAM2 checkpoint path does not exist on this machine.
+  - Chose SAM3 for the first real-data pipeline so offline postprocessing and online inference can share the same prompt+bbox tracking behavior.
+  - Added the first offline SAM3 episode mask generator scaffold at `script/real_zed_collection/segment_objects_sam3.py`.
+  - Added `script/real_zed_collection/postprocess_real_zed_sam3_objpc_dataset.py` to generate SAM3 masks and write compact `train_objpc.sh`-compatible HDF5 episodes.
+  - Added optional compact HDF5 output in `postprocess_raw_to_robotwin_hdf5.py` so real objpc training data can omit duplicated RGB-D observations by default.
+  - Added an explicit SAM3 device override path; `--sam3_device auto` resolves to CUDA when available, otherwise CPU.
+  - Verified unit coverage with `python -m unittest script.test_real_zed_collection_pipeline`.
+  - Verified syntax with `python -m py_compile policy/DP3/scripts/sam3_pointcloud_utils.py script/real_zed_collection/segment_objects_sam3.py script/real_zed_collection/postprocess_real_zed_sam3_objpc_dataset.py script/real_zed_collection/postprocess_raw_to_robotwin_hdf5.py`.
+  - Ran a compact 1-frame postprocess smoke and confirmed the HDF5 only contains `joint_action`, `pointcloud`, and `object_pointcloud`.
+  - Ran a 1-frame SAM3 smoke; masks and object point clouds were written under `data/grasp_mug/demo_real_zed_sam3_objpc_sam3_smoke`.
+  - Ran a 2-frame pipeline smoke through `policy/DP3/process_data_objpc.sh`; zarr output shape was `(1, 1024, 6)` for `data/point_cloud`.
+
+### Phase 12: SSD Output And Debug Preview Mode
+- **Status:** complete
+- Actions taken:
+  - Moved the real-SAM3 objpc batch script under `script/real_zed_collection/postprocess/`.
+  - Changed its default output path to `/media/${USER}/Extreme SSD/geo_mani_data/<task>/robotwin_objpc/<task_config>`.
+  - Added automatic repo data symlink creation at `data/<task>/<task_config>` for compatibility with `policy/DP3/train_objpc.sh`.
+  - Added `--debug`, `--debug_stride`, and `--debug_max_frames`.
+  - Added debug mask overlays under `debug/episode*/mask_overlays/<placeholder>/<camera>/overlay_*.png`.
+  - Added merged colored `{A}/{B}` point cloud previews under `debug/episode*/pointclouds/frame_*_objects_ab.ply`.
+  - Verified with a 1-frame SAM3 debug smoke: 6 overlay PNGs were written and the merged PLY contained 2048 vertices.
+
+### Phase 13: Workspace-Constrained SAM Mask Generation
+- **Status:** complete
+- Actions taken:
+  - Added `apply_mask_roi(...)` to zero SAM mask pixels outside a per-camera RGB ROI before saving.
+  - Added automatic workspace-bbox projection to RGB ROI, with camera-matrix scaling for old recordings where RGB is 640x360 and depth is 1920x1080.
+  - Added `--mask_roi_xyxy` for manual per-camera RGB ROI override.
+  - Added per-frame depth-based workspace mask filtering in `segment_objects_sam3.py`; saved SAM masks now only keep pixels whose depth point transforms inside the workspace bbox.
+  - Verified on a 1-frame SAM3 smoke that `workspace_filter=True` is written for all camera/object masks and the debug PLY still contains 2048 vertices.
+
+### Phase 14: Interactive 2D Workspace Mask Mode
+- **Status:** complete
+- Actions taken:
+  - Added `script/real_zed_collection/select_camera_workspace_masks.py` to display each camera's first raw RGB frame and let the user click a polygon.
+  - The selector saves `workspace_mask.png`, `workspace_overlay.png`, and `workspace_masks_meta.json`.
+  - Added `apply_mask_domain(...)` to restrict SAM masks to the clicked per-camera polygon mask.
+  - Changed SAM3 inference in polygon mode so it crops to the polygon bbox and zeros pixels outside the polygon before calling the tracker, rather than only intersecting the output mask afterward.
+  - Added cache invalidation for old non-polygon SAM masks so polygon mode regenerates them instead of reusing stale post-intersection masks.
+  - Added `--camera_workspace_mask_root` to the SAM3 objpc batch postprocess path.
+  - Added point-cloud reconstruction support for the same per-camera 2D masks in `postprocess_raw_to_robotwin_hdf5.py`.
+  - When `--camera_workspace_mask_root` is set, depth workspace filtering is disabled by default; `--also_depth_workspace_filter` opts it back in.
+  - Verified full tests with `python -m unittest script.test_real_zed_collection_pipeline` (`19` tests).
+  - Verified syntax with `python -m py_compile script/real_zed_collection/select_camera_workspace_masks.py script/real_zed_collection/segment_objects_sam3.py script/real_zed_collection/postprocess/postprocess_real_zed_sam3_objpc_dataset.py script/real_zed_collection/postprocess/postprocess_raw_to_robotwin_hdf5.py script/test_real_zed_collection_pipeline.py`.
+  - Verified a no-SAM smoke with synthetic per-camera masks: meta recorded all three mask labels and `workspace_mask_filter_enabled=False`.
+
+### Phase 15: SAM3 Mask Quality Check
+- **Status:** complete
+- Actions taken:
+  - Inspected existing smoke outputs and confirmed older previews had `sam_input_domain=0`, so they were not true polygon-input SAM results.
+  - Ran a fresh 1-frame SAM3 check using `/media/zheng/Extreme SSD/geo_mani_data/grasp_mug/camera_workspace_masks` and confirmed all six camera/object entries have `sam_input_domain=True`.
+  - Generated debug contact sheets:
+    - `outputs/real_zed_collection/mask_debug/polygon_input_sam3_check/polygon_sam_debug_contact_sheet.png`
+    - `outputs/real_zed_collection/mask_debug/polygon_input_sam3_check/prompt_compare_contact_sheet.png`
+  - Compared `{A}:mug,{B}:box` against `{A}:cup,{B}:box`; `cup` recovered the left-camera `{A}` mask that `mug` missed.
+  - Updated the real SAM3 batch default prompt to `{A}:cup,{B}:box` and aligned the standalone SAM3 script default confidence to `0.2`.
+  - Added prompt-aware mask-cache invalidation so rerunning with a changed prompt regenerates masks even when existing masks were already generated with polygon input-domain mode.
+  - Verified with `python -m py_compile script/real_zed_collection/segment_objects_sam3.py script/real_zed_collection/postprocess/postprocess_real_zed_sam3_objpc_dataset.py script/test_real_zed_collection_pipeline.py`.
+  - Verified with `python -m unittest script.test_real_zed_collection_pipeline` (`20` tests).
+
+### Phase 16: SAM2 Streaming Migration Discovery
+- **Status:** in_progress
+- Actions taken:
+  - Read `include/SAM2_streaming/demo_webcam_box.py` and confirmed the manual bbox flow: draw a box, `load_first_frame`, `add_new_prompt`, then `track` each frame.
+  - Read `include/SAM2_streaming/sam2/build_sam.py` and `sam2_camera_predictor.py` to identify the stable callable API for a wrapper.
+  - Confirmed local SAM2 checkpoint exists at `/home/zheng/Datasets/sam2/sam2.1_hiera_large.pt`.
+  - Confirmed matching config exists under `include/SAM2_streaming/configs/sam2.1/sam2.1_hiera_l.yaml`.
+  - Confirmed current Python environment can import `sam2.build_sam.build_sam2_camera_predictor` and has Hydra/OmegaConf.
+  - Mapped current SAM3 dependency surfaces: real postprocess scripts, DP3 `objpc_sam3` preprocessing/eval scripts, `sam3_pointcloud_utils.py`, and `deploy_policy.py` online eval branch.
+
+### Phase 17: SAM2 Streaming Real ObjPC Path
+- **Status:** complete with GPU runtime run pending
+- Actions taken:
+  - Added `script/real_zed_collection/sam2_tracking_utils.py`, a small wrapper around `build_sam2_camera_predictor`, `load_first_frame`, `add_new_prompt`, and `track`.
+  - Added `script/real_zed_collection/select_sam2_bboxes.py` for manually selecting first-frame `{A}/{B}` bboxes in each camera.
+  - Added `script/real_zed_collection/segment_objects_sam2.py` to run one SAM2 streaming tracker per camera and write masks in the same per-placeholder/per-camera layout used by the real objpc postprocess.
+  - Added `script/real_zed_collection/postprocess/postprocess_real_zed_sam2_objpc_dataset.py` as the active real-data batch path; it writes compact train_objpc-compatible HDF5 and creates the repo-side `data/<task>/<task_config>` symlink.
+  - Updated `script/real_zed_collection/README.md` so the active real-data flow is workspace polygon mask selection, SAM2 bbox selection, SAM2 tracking masks, and `demo_real_zed_sam2_objpc` conversion/training.
+  - Added SAM2 unit coverage to `script/test_real_zed_collection_pipeline.py` for bbox prompt IO, SAM2 logit-to-placeholder mapping, fake-tracker mask writing, and SAM2 default output paths.
+  - Added `policy/DP3/scripts/sam2_pointcloud_utils.py` for online SAM2 mask-to-scene-pointcloud projection during eval.
+  - Added `policy/DP3/scripts/test_sam2_pointcloud_utils.py` to verify one-pass A/B tracking initialization, subsequent tracking without reinitialization, and bbox prompt filtering.
+  - Updated `policy/DP3/deploy_policy.py` with a separate `objpc_sam2` branch, so online SAM2 eval can build the main DP3 `point_cloud` from SAM2-tracked masks without changing old objpc/SAM3 paths.
+  - Added `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/robot_dp3_objpc_sam2.yaml` and `policy/DP3/eval_objpc_sam2.sh`.
+  - Verified SAM2 checkpoint/config discovery with shell checks:
+    - `/home/zheng/Datasets/sam2/sam2.1_hiera_large.pt` exists.
+    - `include/SAM2_streaming/configs/sam2.1/sam2.1_hiera_l.yaml` exists.
+  - Verified with `python -m unittest script.test_real_zed_collection_pipeline`.
+  - Verified with `python policy/DP3/scripts/test_sam2_pointcloud_utils.py`.
+  - Verified syntax with `python -m py_compile script/real_zed_collection/sam2_tracking_utils.py script/real_zed_collection/select_sam2_bboxes.py script/real_zed_collection/segment_objects_sam2.py script/real_zed_collection/postprocess/postprocess_real_zed_sam2_objpc_dataset.py script/test_real_zed_collection_pipeline.py`.
+  - Verified syntax with `python -m py_compile policy/DP3/deploy_policy.py policy/DP3/scripts/sam2_pointcloud_utils.py policy/DP3/scripts/test_sam2_pointcloud_utils.py`.
+  - Verified `robot_dp3_objpc_sam2.yaml` composes with Hydra and keeps `point_cloud` shape `[1024, 6]`.
+  - Verified `bash -n policy/DP3/eval_objpc_sam2.sh`.
+  - Verified CLI argument surfaces with `--help` for `select_sam2_bboxes.py`, `segment_objects_sam2.py`, and `postprocess_real_zed_sam2_objpc_dataset.py`.
+  - Verified active SAM2 files contain no direct `sam3` / `SAM3` / `ultralytics` references.
+  - Did not run the actual SAM2 model in this shell because `torch.cuda.is_available()` is false and the upstream streaming predictor stores state on CUDA.
+
+### Phase 18: SAM2 CUDA SDPA Autocast Fix
+- **Status:** complete with user-side GPU rerun pending
+- Actions taken:
+  - Diagnosed the user traceback from `SAM2_streaming/sam2/modeling/sam/transformer.py` as a CUDA SDPA kernel-selection failure, not a data-format or bbox-prompt failure.
+  - Confirmed the warnings showed the root cause: Q/K/V were float32, while available fast attention kernels require `Half` or `BFloat16`; the upstream SAM2 webcam demo uses bf16 autocast.
+  - Added a failing regression test proving `SAM2StreamingObjectTracker` should run predictor calls inside autocast.
+  - Updated `script/real_zed_collection/sam2_tracking_utils.py` so `load_first_frame`, `add_new_prompt`, and `track` run under `torch.autocast(device_type="cuda", dtype=torch.bfloat16)` by default.
+  - Enabled CUDA Flash/Memory Efficient/Math SDP kernels in the SAM2 checkpoint loader where the installed PyTorch exposes those switches.
+  - Added `--sam2_autocast_dtype` to `segment_objects_sam2.py`, `postprocess_real_zed_sam2_objpc_dataset.py`, `eval_objpc_sam2.sh`, and the DP3 online SAM2 tracker factory path.
+  - Documented the bf16 default and `float16` fallback in `script/real_zed_collection/README.md`.
+  - Verified with `python -m unittest script.test_real_zed_collection_pipeline` (`25` tests).
+  - Verified with `python policy/DP3/scripts/test_sam2_pointcloud_utils.py` (`3` tests).
+  - Verified syntax with `python -m py_compile script/real_zed_collection/sam2_tracking_utils.py script/real_zed_collection/segment_objects_sam2.py script/real_zed_collection/postprocess/postprocess_real_zed_sam2_objpc_dataset.py policy/DP3/scripts/sam2_pointcloud_utils.py policy/DP3/deploy_policy.py script/test_real_zed_collection_pipeline.py`.
+  - Verified `bash -n policy/DP3/eval_objpc_sam2.sh`.
+
+### Phase 19: SAM2 Per-Episode Bbox Prompts
+- **Status:** complete
+- Actions taken:
+  - Confirmed the user's concern: in data processing, SAM2 tracking should be reinitialized per recorded episode because object poses can differ across episodes.
+  - Confirmed the tracker itself was already recreated inside `segment_episode_sam2(...)`, but the batch driver reused one global bbox prompt file for all raw episodes.
+  - Added per-episode bbox prompt resolution to `postprocess_real_zed_sam2_objpc_dataset.py`.
+  - The lookup priority is now:
+    - `sam2_bbox_prompts/<raw_episode_name>/sam2_bbox_prompts.json`
+    - `sam2_bbox_prompts/episode<processed_index>/sam2_bbox_prompts.json`
+    - `sam2_bbox_prompts/episode_<processed_index:06d>/sam2_bbox_prompts.json`
+    - fallback `sam2_bbox_prompts/sam2_bbox_prompts.json`
+  - Added `--require_per_episode_bboxes` so production processing can fail fast instead of silently using a global prompt.
+  - Added `--all_episodes`, `--per_episode_subdir`, and `--skip_existing` to `select_sam2_bboxes.py`.
+  - Updated README instructions to use `--all_episodes --skip_existing` and `--require_per_episode_bboxes`.
+  - Added regression coverage for per-episode prompt priority and required-per-episode behavior.
+  - Verified targeted tests with `python -m unittest script.test_real_zed_collection_pipeline.RealZedCollectionPipelineTest.test_sam2_objpc_batch_prefers_per_episode_bbox_prompts script.test_real_zed_collection_pipeline.RealZedCollectionPipelineTest.test_sam2_objpc_batch_can_require_per_episode_bbox_prompts`.
+  - Verified syntax with `python -m py_compile script/real_zed_collection/select_sam2_bboxes.py script/real_zed_collection/postprocess/postprocess_real_zed_sam2_objpc_dataset.py`.
+
+### Phase 20: Legacy SAM/SAM3 Cleanup
+- **Status:** complete
+- Actions taken:
+  - Removed old real-data SAM/SAM3 scripts and the DP3 `objpc_sam3` preprocessing/training/eval/config files.
+  - Removed the SAM3 online eval branch from `policy/DP3/deploy_policy.py`.
+  - Removed SAM3-specific unit tests and stale generic SAM documentation.
+  - Verified active source search under `policy`, `script`, and `envs` has no `sam3`, `ultralytics`, `objpc_sam3`, or `segment_objects_sam.py` references.
+  - Verified with `python -m unittest script.test_real_zed_collection_pipeline` (`14` tests).
+  - Verified with `python policy/DP3/scripts/test_sam2_pointcloud_utils.py` (`3` tests).
+  - Verified with `python policy/DP3/scripts/test_ndf_pointwise_hybrid.py`, `python policy/DP3/scripts/test_semantic_pointwise_hybrid.py`, `python policy/DP3/scripts/test_utonia_pointwise_hybrid.py`, and `python policy/DP3/scripts/test_actorseg_pointwise_hybrid.py`.
+  - Verified syntax with `python -m py_compile` for the active SAM2/deploy/test files and `bash -n policy/DP3/eval_objpc_sam2.sh`.
+  - Verified Hydra composition for `robot_dp3_objpc_sam2` and confirmed `point_cloud` shape remains `[1024, 6]`.

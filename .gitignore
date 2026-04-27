@@ -31,3 +31,6 @@ envs/curobo/*
 include/geometry_awareness_manipulation
 
 *.xml
+
+outputs/
+

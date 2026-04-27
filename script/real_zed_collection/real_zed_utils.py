@@ -119,6 +119,43 @@ def load_three_zed_calibration(path: str | Path, frame_mode: str = "reference_ca
     return out
 
 
+def calibration_label_map_from_manifest(
+    manifest: dict[str, Any],
+    calibrations: dict[str, CameraCalibration],
+    labels: Iterable[str] | None = None,
+) -> dict[str, str]:
+    """Map raw camera labels to calibration labels, preferring serial numbers.
+
+    This protects old recordings where the collection config's label order did
+    not match the calibration YAML's label->serial mapping.
+    """
+    raw_labels = [str(label) for label in (labels or manifest.get("camera_labels", []) or calibrations.keys())]
+    serials_raw = manifest.get("camera_serials", {})
+    serial_by_raw_label: dict[str, int] = {}
+    if isinstance(serials_raw, dict):
+        for key, value in serials_raw.items():
+            try:
+                serial_by_raw_label[str(key)] = int(value)
+            except Exception:
+                continue
+
+    calib_by_serial: dict[int, str] = {}
+    for calib_label, calib in calibrations.items():
+        if int(calib.serial_number) > 0:
+            calib_by_serial[int(calib.serial_number)] = str(calib_label)
+
+    out: dict[str, str] = {}
+    for raw_label in raw_labels:
+        serial = serial_by_raw_label.get(raw_label)
+        if serial is not None and serial in calib_by_serial:
+            out[raw_label] = calib_by_serial[serial]
+        elif raw_label in calibrations:
+            out[raw_label] = raw_label
+        else:
+            raise ValueError(f"Cannot map raw camera label {raw_label!r} to calibration labels {sorted(calibrations)}")
+    return out
+
+
 def depth_rgb_to_point_cloud(
     *,
     depth_m: np.ndarray,
