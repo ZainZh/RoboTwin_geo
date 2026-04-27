@@ -934,3 +934,30 @@
   - Verified with `python policy/DP3/scripts/test_ndf_pointwise_hybrid.py`, `python policy/DP3/scripts/test_semantic_pointwise_hybrid.py`, `python policy/DP3/scripts/test_utonia_pointwise_hybrid.py`, and `python policy/DP3/scripts/test_actorseg_pointwise_hybrid.py`.
   - Verified syntax with `python -m py_compile` for the active SAM2/deploy/test files and `bash -n policy/DP3/eval_objpc_sam2.sh`.
   - Verified Hydra composition for `robot_dp3_objpc_sam2` and confirmed `point_cloud` shape remains `[1024, 6]`.
+
+### Phase 21: SAM2 Prompt Selection UX
+- **Status:** complete
+- Actions taken:
+  - Fixed accidental single-click/zero-area bbox selection so it no longer raises during rendering.
+  - Extended SAM2 prompt files to store either bbox prompts or point prompts while keeping old bbox-only JSON readable.
+  - Added selector key controls: `m` toggles bbox/point mode, left click adds a foreground point in point mode, and right click adds a background point.
+  - Added first-frame SAM2 preview overlay in the selector, with `--disable_sam2_preview` for prompt-only operation.
+  - Updated segment/postprocess/eval prompt loading so point prompt records can initialize SAM2 tracking.
+  - Verified with `python -m unittest script.test_real_zed_collection_pipeline` and `python policy/DP3/scripts/test_sam2_pointcloud_utils.py`.
+
+### Phase 22: Real-ZED DP Image Baseline
+- **Status:** complete
+- Actions taken:
+  - Added `policy/DP/process_data_real_zed.py`, `policy/DP/process_data_real_zed.sh`, and `policy/DP/train_real_zed.sh` for a single-camera real-ZED DP image baseline.
+  - Extended `process_data_real_zed.py` with `--camera_labels` and explicit raw-to-zarr mapping for `global,left,right`.
+  - Added `policy/DP/diffusion_policy/dataset/robot_multi_image_dataset.py` for three-camera zarr loading and `head_cam/left_cam/right_cam` postprocess output.
+  - Added `policy/DP/diffusion_policy/config/task/default_task_14_multicam.yaml` and `default_task_16_multicam.yaml`.
+  - Updated `policy/DP/train.py` so every RGB obs shape is set from `head_camera_type`, not only `head_cam`.
+  - Added `policy/DP/process_data_real_zed_multicam.sh` and `policy/DP/train_real_zed_multicam.sh`; the multicam train wrapper exposes `batch_size`, `val_batch_size`, and `gradient_accumulate_every` for GPU memory control.
+  - Added a unit test that builds a synthetic three-camera raw episode and verifies zarr keys/shapes.
+  - Verified with `python -m py_compile policy/DP/process_data_real_zed.py policy/DP/train.py policy/DP/diffusion_policy/dataset/robot_multi_image_dataset.py script/test_real_zed_collection_pipeline.py`.
+  - Verified with `bash -n policy/DP/process_data_real_zed.sh policy/DP/train_real_zed.sh policy/DP/process_data_real_zed_multicam.sh policy/DP/train_real_zed_multicam.sh`.
+  - Verified with `python -m unittest script.test_real_zed_collection_pipeline`.
+  - Verified Hydra composition for both 14D and 16D multicam configs; both expose `head_cam`, `left_cam`, `right_cam`, and `agent_pos` through `RobotMultiImageDataset`.
+  - Verified real-data smoke conversion for one episode:
+    `python process_data_real_zed.py grasp_mug demo_real_zed_sam2_objpc 1 --camera_labels global,left,right --output_zarr /tmp/dp_real_zed_multicam_smoke.zarr`.

@@ -91,7 +91,7 @@ python script/real_zed_collection/select_sam2_bboxes.py \
   --all_episodes --skip_existing
 ```
 
-Controls: drag with the left mouse button to draw a box. Enter/Space/`s` saves the current object, `r` resets the current box, and `q`/Esc aborts.
+Controls: default mode is bbox prompt; drag with the left mouse button to draw a box. Press `m` to switch between bbox and point prompt modes. In point mode, left click adds a foreground point and right click adds a background point, which is useful when the object is partially occluded. Press `p` to force-refresh the SAM2 preview for the current prompt. Enter/Space/`s` saves the current object, `r` resets the current object prompt, and `q`/Esc aborts. The window header shows the current episode index/name, camera, object placeholder, mode, and preview mask pixel count. By default the selector runs a SAM2 first-frame preview and overlays the current mask with a dimmed background and contour; pass `--disable_sam2_preview` if you only want to save prompts.
 Because object poses can differ across recorded episodes, the recommended mode is `--all_episodes`, which saves prompts under `sam2_bbox_prompts/<raw_episode_name>/sam2_bbox_prompts.json`. The postprocess script will use those per-episode prompts first. If you only save one global `sam2_bbox_prompts.json`, it is treated as a fallback and is only safe when every episode starts from the same image-space object pose.
 
 6. Generate SAM2 tracking masks and convert raw episodes.

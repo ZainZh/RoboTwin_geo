@@ -44,13 +44,13 @@ def load_sam2_bbox_prompt_file(
     *,
     camera_names: Sequence[str],
     placeholders: Sequence[str],
-) -> Dict[str, Dict[str, List[int]]]:
+) -> Dict[str, Dict[str, object]]:
     data = _read_bbox_prompt_json(path_or_root)
     records = data.get("records", {})
     if not isinstance(records, dict):
         raise ValueError(f"Invalid SAM2 bbox prompt file: {path_or_root}")
     placeholder_filter = {str(item) for item in placeholders}
-    out: Dict[str, Dict[str, List[int]]] = {}
+    out: Dict[str, Dict[str, object]] = {}
     for camera_name in camera_names:
         per_camera = records.get(str(camera_name), {})
         if not isinstance(per_camera, dict):
@@ -60,9 +60,22 @@ def load_sam2_bbox_prompt_file(
             if str(placeholder) not in placeholder_filter or not isinstance(item, dict):
                 continue
             bbox = item.get("bbox_xyxy")
-            if bbox is None:
-                continue
-            out[str(camera_name)][str(placeholder)] = [int(v) for v in bbox[:4]]
+            points = item.get("points_xy", item.get("points"))
+            labels = item.get("point_labels", item.get("labels"))
+            if bbox is not None:
+                out[str(camera_name)][str(placeholder)] = [int(v) for v in bbox[:4]]
+            elif points is not None:
+                point_list = [[int(round(float(x))), int(round(float(y)))] for x, y in points]
+                if labels is None:
+                    label_list = [1 for _ in point_list]
+                else:
+                    label_list = [1 if int(v) > 0 else 0 for v in labels]
+                if len(point_list) > 0 and len(point_list) == len(label_list):
+                    out[str(camera_name)][str(placeholder)] = {
+                        "prompt_type": "point",
+                        "points_xy": point_list,
+                        "point_labels": label_list,
+                    }
     return out
 
 
@@ -258,7 +271,7 @@ def extract_placeholder_point_clouds_sam2_online(
     camera_names: Sequence[str],
     tracker_factory: Callable[[str], object],
     tracking_state_by_camera: Dict[str, Sam2CameraTrackingState],
-    bbox_prompts_by_camera: Mapping[str, Mapping[str, Sequence[int]]] | None,
+    bbox_prompts_by_camera: Mapping[str, Mapping[str, object]] | None,
     target_num_points: int,
     min_mask_points: int = 16,
     interactive_init: bool = False,

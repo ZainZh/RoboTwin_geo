@@ -17,7 +17,7 @@ from script.real_zed_collection.sam2_tracking_utils import (
     make_sam2_tracker_factory,
 )
 from script.real_zed_collection.select_camera_workspace_masks import load_camera_workspace_masks
-from script.real_zed_collection.select_sam2_bboxes import load_sam2_bbox_prompts
+from script.real_zed_collection.select_sam2_bboxes import load_sam2_prompt_records
 DEFAULT_TASK_NAME = "grasp_mug"
 
 def default_raw_root(task_name: str = DEFAULT_TASK_NAME, *, user: str | None = None) -> Path:
@@ -30,7 +30,7 @@ def default_bbox_prompt_root(task_name: str = DEFAULT_TASK_NAME, *, user: str | 
     return Path("/media") / resolved_user / "Extreme SSD" / "geo_mani_data" / str(task_name) / "sam2_bbox_prompts"
 
 
-def default_output_dir(task_name: str, task_config: str, *, user: str | None = None) -> Path:
+def default_output_dir(task_name: str = DEFAULT_TASK_NAME, task_config: str | None = None, *, user: str | None = None) -> Path:
     resolved_user = user or os.environ.get("USER") or os.environ.get("USERNAME") or "zheng"
     return Path("/media") / resolved_user / "Extreme SSD" / "geo_mani_data" / str(task_name) / "robotwin_objpc" / str(task_config)
 
@@ -103,7 +103,7 @@ def segment_episode_sam2(
     *,
     raw_episode_dir: str | Path,
     output_mask_root: str | Path,
-    bbox_prompts_by_camera: Mapping[str, Mapping[str, Sequence[int]]],
+    bbox_prompts_by_camera: Mapping[str, Mapping[str, object]],
     camera_labels: Sequence[str],
     placeholders: Sequence[str],
     tracker_factory: Callable[[str], Any],
@@ -133,10 +133,10 @@ def segment_episode_sam2(
         "raw_episode_dir": str(raw_episode_dir),
         "camera_labels": labels,
         "placeholders": placeholder_list,
-        "bbox_prompts_by_camera": {
+        "prompts_by_camera": {
             label: {
-                placeholder: [int(v) for v in bbox]
-                for placeholder, bbox in per_camera.items()
+                placeholder: dict(prompt) if isinstance(prompt, Mapping) else {"bbox_xyxy": [int(v) for v in prompt]}
+                for placeholder, prompt in per_camera.items()
             }
             for label, per_camera in bbox_prompts_by_camera.items()
         },
@@ -145,13 +145,13 @@ def segment_episode_sam2(
     }
 
     for label in labels:
-        camera_boxes = {
-            placeholder: list(bbox_prompts_by_camera.get(label, {}).get(placeholder, []))
+        camera_prompts = {
+            placeholder: bbox_prompts_by_camera.get(label, {}).get(placeholder)
             for placeholder in placeholder_list
             if placeholder in bbox_prompts_by_camera.get(label, {})
         }
-        if not camera_boxes:
-            raise ValueError(f"No SAM2 bbox prompts for camera {label!r}.")
+        if not camera_prompts:
+            raise ValueError(f"No SAM2 prompts for camera {label!r}.")
         tracker = tracker_factory(label)
         initialized = False
         for local_idx, frame in enumerate(selected_frames):
@@ -163,7 +163,10 @@ def segment_episode_sam2(
             tracker_image = apply_image_domain(image, domain_mask) if bool(mask_input_domain) else image
 
             if not initialized:
-                masks = tracker.initialize(tracker_image, camera_boxes)
+                if hasattr(tracker, "initialize_prompts"):
+                    masks = tracker.initialize_prompts(tracker_image, camera_prompts)
+                else:
+                    masks = tracker.initialize(tracker_image, camera_prompts)
                 initialized = True
                 mode = "initialized"
             else:
@@ -202,7 +205,7 @@ def segment_episode_sam2(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate real-ZED per-object masks using bbox-initialized SAM2 streaming tracking.")
+    parser = argparse.ArgumentParser(description="Generate real-ZED per-object masks using bbox/point-initialized SAM2 streaming tracking.")
     parser.add_argument("--raw_episode_dir", required=True)
     parser.add_argument("--output_mask_root", required=True)
     parser.add_argument("--bbox_prompt_root", required=True)
@@ -225,7 +228,7 @@ def main() -> None:
     args = parse_args()
     labels = [item.strip() for item in str(args.camera_labels).split(",") if item.strip()]
     placeholders = [item.strip() for item in str(args.object_placeholders).split(",") if item.strip()]
-    boxes = load_sam2_bbox_prompts(args.bbox_prompt_root, camera_labels=labels, placeholders=placeholders)
+    prompts = load_sam2_prompt_records(args.bbox_prompt_root, camera_labels=labels, placeholders=placeholders)
     domains = (
         {}
         if not str(args.camera_workspace_mask_root).strip()
@@ -242,7 +245,7 @@ def main() -> None:
     out = segment_episode_sam2(
         raw_episode_dir=args.raw_episode_dir,
         output_mask_root=args.output_mask_root,
-        bbox_prompts_by_camera=boxes,
+        bbox_prompts_by_camera=prompts,
         camera_labels=labels,
         placeholders=placeholders,
         tracker_factory=tracker_factory,

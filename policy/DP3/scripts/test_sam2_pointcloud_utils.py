@@ -1,4 +1,7 @@
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
 import numpy as np
 
@@ -103,10 +106,6 @@ class Sam2PointcloudUtilsTest(unittest.TestCase):
         self.assertEqual(meta["cameras"]["global"]["mode"], "tracked")
 
     def test_load_sam2_bbox_prompt_file_filters_cameras_and_placeholders(self):
-        import json
-        import tempfile
-        from pathlib import Path
-
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "sam2_bbox_prompts.json"
             path.write_text(
@@ -126,7 +125,34 @@ class Sam2PointcloudUtilsTest(unittest.TestCase):
 
             boxes = load_sam2_bbox_prompt_file(path, camera_names=["global"], placeholders=["{B}"])
 
-        self.assertEqual(boxes, {"global": {"{B}": [1, 1, 3, 3]}})
+            self.assertEqual(boxes, {"global": {"{B}": [1, 1, 3, 3]}})
+
+    def test_load_sam2_prompt_file_accepts_point_prompt_records(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "sam2_bbox_prompts.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "records": {
+                            "global": {
+                                "{A}": {
+                                    "prompt_type": "point",
+                                    "points_xy": [[2, 3], [4, 5]],
+                                    "point_labels": [1, 0],
+                                }
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            prompts = load_sam2_bbox_prompt_file(path, camera_names=["global"], placeholders=["{A}"])
+
+            self.assertEqual(
+                prompts,
+                {"global": {"{A}": {"prompt_type": "point", "points_xy": [[2, 3], [4, 5]], "point_labels": [1, 0]}}},
+            )
 
 
 if __name__ == "__main__":

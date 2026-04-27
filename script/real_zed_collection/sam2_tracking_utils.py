@@ -31,6 +31,37 @@ def bbox_xyxy_to_sam2_box(bbox_xyxy: Sequence[float]) -> np.ndarray:
     return np.asarray([[x0, y0], [x1, y1]], dtype=np.float32)
 
 
+def prompt_spec_to_sam2_kwargs(prompt_spec) -> dict[str, np.ndarray]:
+    if prompt_spec is None:
+        return {}
+    if isinstance(prompt_spec, Mapping):
+        bbox = prompt_spec.get("bbox_xyxy")
+        points = prompt_spec.get("points_xy", prompt_spec.get("points"))
+        labels = prompt_spec.get("point_labels", prompt_spec.get("labels"))
+    else:
+        bbox = prompt_spec
+        points = None
+        labels = None
+
+    kwargs: dict[str, np.ndarray] = {}
+    if bbox is not None:
+        bbox_values = [float(v) for v in bbox]
+        if len(bbox_values) >= 4:
+            kwargs["bbox"] = bbox_xyxy_to_sam2_box(bbox_values[:4])
+    if points is not None:
+        points_arr = np.asarray(points, dtype=np.float32).reshape(-1, 2)
+        if points_arr.size > 0:
+            if labels is None:
+                labels_arr = np.ones((points_arr.shape[0],), dtype=np.int32)
+            else:
+                labels_arr = np.asarray(labels, dtype=np.int32).reshape(-1)
+            if labels_arr.shape[0] != points_arr.shape[0]:
+                raise ValueError("SAM2 point prompt labels must match points.")
+            kwargs["points"] = points_arr
+            kwargs["labels"] = labels_arr
+    return kwargs
+
+
 def _to_numpy(value) -> np.ndarray:
     if hasattr(value, "detach"):
         return value.detach().cpu().numpy()
@@ -162,24 +193,25 @@ class SAM2StreamingObjectTracker:
             out[str(placeholder)] = mask_arr
         return out
 
-    def initialize(
+    def initialize_prompts(
         self,
         image: np.ndarray,
-        boxes_by_placeholder: Mapping[str, Sequence[float]],
+        prompts_by_placeholder: Mapping[str, object],
     ) -> dict[str, np.ndarray]:
         image_arr = np.asarray(image, dtype=np.uint8)
         with self._inference_context():
             self.predictor.load_first_frame(image_arr)
         latest_masks: dict[str, np.ndarray] = {}
         for placeholder in self.placeholders:
-            bbox = boxes_by_placeholder.get(placeholder)
-            if bbox is None:
+            prompt_spec = prompts_by_placeholder.get(placeholder)
+            kwargs = prompt_spec_to_sam2_kwargs(prompt_spec)
+            if not kwargs:
                 continue
             with self._inference_context():
                 _frame_idx, out_obj_ids, out_mask_logits = self.predictor.add_new_prompt(
                     frame_idx=0,
                     obj_id=self.placeholder_to_obj_id[placeholder],
-                    bbox=bbox_xyxy_to_sam2_box(bbox),
+                    **kwargs,
                 )
             latest_masks.update(
                 masks_from_sam2_logits(
@@ -190,6 +222,34 @@ class SAM2StreamingObjectTracker:
                 )
             )
         return self._complete_masks(latest_masks, image_arr.shape[:2])
+
+    def initialize(
+        self,
+        image: np.ndarray,
+        boxes_by_placeholder: Mapping[str, Sequence[float]],
+    ) -> dict[str, np.ndarray]:
+        return self.initialize_prompts(image, boxes_by_placeholder)
+
+    def preview_prompt(self, image: np.ndarray, placeholder: str, prompt_spec) -> np.ndarray:
+        image_arr = np.asarray(image, dtype=np.uint8)
+        kwargs = prompt_spec_to_sam2_kwargs(prompt_spec)
+        if not kwargs:
+            return np.zeros(image_arr.shape[:2], dtype=bool)
+        with self._inference_context():
+            self.predictor.load_first_frame(image_arr)
+        with self._inference_context():
+            _frame_idx, out_obj_ids, out_mask_logits = self.predictor.add_new_prompt(
+                frame_idx=0,
+                obj_id=self.placeholder_to_obj_id[str(placeholder)],
+                **kwargs,
+            )
+        masks = masks_from_sam2_logits(
+            out_obj_ids=out_obj_ids,
+            out_mask_logits=out_mask_logits,
+            obj_id_to_placeholder=self.obj_id_to_placeholder,
+            image_shape_hw=image_arr.shape[:2],
+        )
+        return self._complete_masks(masks, image_arr.shape[:2]).get(str(placeholder), np.zeros(image_arr.shape[:2], dtype=bool))
 
     def track(self, image: np.ndarray) -> dict[str, np.ndarray]:
         image_arr = np.asarray(image, dtype=np.uint8)

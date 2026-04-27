@@ -9,6 +9,13 @@
 - The saved DP frame currently contains robot `obs`, `control`, activation flags, and RGB images named `base_rgb`, `left_wrist_rgb`, and `right_wrist_rgb`.
 - The current xtrainer collection path does not record depth, camera intrinsics/extrinsics, per-camera point clouds, fused scene point clouds, or object point clouds.
 
+### Real-ZED DP image baseline notes (2026-04-27)
+- `policy/DP` is an image-based DP baseline. Its original preprocess/dataset path only writes and loads `head_camera`, while `deploy_policy.py` already constructs `head_cam`, `left_cam`, and `right_cam` observations during inference.
+- `MultiImageObsEncoder` already supports multiple RGB keys through `shape_meta.obs`; the missing pieces were a multi-camera zarr layout and a dataset/config that exposes all three image observations.
+- The real-ZED raw RGB frames are `360x640`, so `Large_L515` is the correct camera config for this real image baseline unless the frames are explicitly resized during preprocessing.
+- The compact SAM2 objpc HDF5 files do not store `/observation/*/rgb`, but `real_zed_sam2_objpc_meta.json` links each processed episode back to the raw episode directory. DP image zarr generation should therefore read RGB from raw ZED frame NPZs and joint vectors from the compact HDF5.
+- The three-camera branch maps raw camera labels as `global -> head_camera`, `left -> left_camera`, and `right -> right_camera`; DP training sees those as `head_cam`, `left_cam`, and `right_cam`.
+
 ### Existing DP3 training data expectations
 - `policy/DP3/scripts/process_data.py` expects RoboTwin-style HDF5 episodes under `data/<task>/<task_config>/data/episode{i}.hdf5`.
 - The minimum baseline DP3 fields are `/joint_action/vector` and `/pointcloud`.

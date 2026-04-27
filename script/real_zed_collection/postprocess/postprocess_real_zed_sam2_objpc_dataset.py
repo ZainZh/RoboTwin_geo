@@ -22,7 +22,7 @@ from script.real_zed_collection.sam2_tracking_utils import (
 )
 from script.real_zed_collection.segment_objects_sam2 import segment_episode_sam2
 from script.real_zed_collection.select_camera_workspace_masks import load_camera_workspace_masks
-from script.real_zed_collection.select_sam2_bboxes import load_sam2_bbox_prompts
+from script.real_zed_collection.select_sam2_bboxes import load_sam2_prompt_records
 from script.real_zed_collection.workspace_crop_utils import WorkspaceBounds
 
 
@@ -115,7 +115,7 @@ def resolve_episode_bbox_prompts(
     camera_labels: list[str],
     placeholders: list[str],
     require_per_episode: bool = False,
-) -> tuple[dict[str, dict[str, list[int]]], str]:
+) -> tuple[dict[str, dict[str, dict[str, object]]], str]:
     root = Path(bbox_prompt_root).expanduser().resolve()
     raw_episode_dir = Path(raw_episode_dir).expanduser().resolve()
     per_episode_candidates = [
@@ -127,7 +127,7 @@ def resolve_episode_bbox_prompts(
         prompt_file = candidate / "sam2_bbox_prompts.json"
         if prompt_file.exists():
             return (
-                load_sam2_bbox_prompts(prompt_file, camera_labels=camera_labels, placeholders=placeholders),
+                load_sam2_prompt_records(prompt_file, camera_labels=camera_labels, placeholders=placeholders),
                 str(prompt_file),
             )
 
@@ -139,7 +139,7 @@ def resolve_episode_bbox_prompts(
         )
     if global_prompt_file.exists():
         return (
-            load_sam2_bbox_prompts(global_prompt_file, camera_labels=camera_labels, placeholders=placeholders),
+            load_sam2_prompt_records(global_prompt_file, camera_labels=camera_labels, placeholders=placeholders),
             str(global_prompt_file),
         )
     raise FileNotFoundError(
@@ -472,7 +472,7 @@ def process_dataset(args: argparse.Namespace) -> dict[str, Any]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Generate bbox-initialized SAM2 tracking masks and convert real three-ZED raw episodes to train_objpc.sh-compatible HDF5."
+        description="Generate bbox/point-initialized SAM2 tracking masks and convert real three-ZED raw episodes to train_objpc.sh-compatible HDF5."
     )
     parser.add_argument("--raw_root", default=str(default_raw_root()))
     parser.add_argument("--task_name", default=DEFAULT_TASK_NAME)

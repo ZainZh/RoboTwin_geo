@@ -99,6 +99,14 @@ SAM2 streaming tracking migration for real objpc training/eval data
 - [x] Verify active source search, Python syntax, SAM2 tests, DP3 hybrid tests, shell syntax, and Hydra SAM2 config composition.
 - **Status:** complete
 
+### Phase 13: Real-ZED DP Image Baseline
+- [x] Add a single-camera DP zarr conversion path from real-ZED raw RGB plus compact SAM2 objpc HDF5 joint vectors.
+- [x] Add an independent three-camera DP zarr conversion path using `global,left,right -> head_camera,left_camera,right_camera`.
+- [x] Add a multi-camera DP dataset/config branch so `head_cam/left_cam/right_cam` all enter `MultiImageObsEncoder`.
+- [x] Keep the existing single-camera DP scripts/configs unchanged.
+- [x] Verify single-camera conversion, three-camera conversion, shell syntax, Python syntax, and unit coverage.
+- **Status:** complete
+
 ## Decisions Made
 
 | Decision | Rationale |
@@ -112,6 +120,7 @@ SAM2 streaming tracking migration for real objpc training/eval data
 | Use SAM3 for the first real-data postprocess path | The local SAM3 checkpoint exists and the DP3 online eval path already uses the same SAM3 tracker; the configured SAM2 checkpoint is absent |
 | Migrate active real tracking to SAM2 streaming bbox initialization | SAM2 streaming removes the observed SAM3 text-prompt instability and matches the planned real eval workflow |
 | Remove legacy SAM/SAM3 code paths after SAM2 migration | Avoid dependency/import pollution and keep the real-data segmentation stack centered on one maintained tracker |
+| Use a separate DP multicam branch instead of modifying the old DP dataset | Keeps the single-camera baseline reproducible while allowing three RGB streams to train through the existing `MultiImageObsEncoder` |
 
 ## Key Questions
 

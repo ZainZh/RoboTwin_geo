@@ -1,4 +1,5 @@
 import json
+import importlib.util
 import sys
 import tempfile
 import unittest
@@ -15,6 +16,74 @@ class RealZedCollectionPipelineTest(unittest.TestCase):
 
         self.assertEqual(parse_camera_labels("global,ego,side"), ["global", "ego", "side"])
         self.assertEqual(parse_camera_labels(["global", "ego", "side"]), ["global", "ego", "side"])
+
+    def test_dp_real_zed_preprocess_can_write_three_camera_zarr(self):
+        module_path = Path(__file__).resolve().parents[1] / "policy" / "DP" / "process_data_real_zed.py"
+        spec = importlib.util.spec_from_file_location("process_data_real_zed_for_test", module_path)
+        process_data_real_zed = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(process_data_real_zed)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw_episode = root / "raw" / "episode_000000"
+            raw_episode.mkdir(parents=True)
+            processed_dir = root / "processed"
+            processed_dir.mkdir()
+            hdf5_path = processed_dir / "episode0.hdf5"
+            meta_path = root / "real_zed_sam2_objpc_meta.json"
+            zarr_path = root / "dp_three_camera.zarr"
+
+            frames = []
+            for frame_idx in range(4):
+                camera_paths = {}
+                for camera_idx, camera_label in enumerate(("global", "left", "right")):
+                    rgb = np.zeros((3, 4, 3), dtype=np.uint8)
+                    rgb[..., camera_idx] = 10 * (camera_idx + 1) + frame_idx
+                    camera_path = raw_episode / f"{camera_label}_{frame_idx:06d}.npz"
+                    np.savez(camera_path, rgb=rgb)
+                    camera_paths[camera_label] = str(camera_path.name)
+                frames.append({"frame_index": frame_idx, "cameras": camera_paths})
+
+            (raw_episode / "manifest.json").write_text(json.dumps({"frames": frames}), encoding="utf-8")
+            with h5py.File(hdf5_path, "w") as root_h5:
+                joint_action = root_h5.create_group("joint_action")
+                joint_action.create_dataset(
+                    "vector",
+                    data=np.arange(4 * 14, dtype=np.float32).reshape(4, 14),
+                )
+            meta_path.write_text(
+                json.dumps(
+                    {
+                        "processed": [
+                            {
+                                "raw_episode_dir": str(raw_episode),
+                                "hdf5_path": str(hdf5_path),
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            process_data_real_zed.build_dp_real_zed_zarr(
+                task_name="grasp_mug",
+                task_config="demo_real_zed_sam2_objpc",
+                expert_data_num=1,
+                camera_labels=["global", "left", "right"],
+                meta_path=meta_path,
+                output_zarr=zarr_path,
+            )
+
+            import zarr
+
+            zarr_root = zarr.open(str(zarr_path), "r")
+            self.assertEqual(zarr_root["data/head_camera"].shape, (3, 3, 3, 4))
+            self.assertEqual(zarr_root["data/left_camera"].shape, (3, 3, 3, 4))
+            self.assertEqual(zarr_root["data/right_camera"].shape, (3, 3, 3, 4))
+            self.assertEqual(zarr_root["data/state"].shape, (3, 14))
+            self.assertEqual(zarr_root["data/action"].shape, (3, 14))
+            np.testing.assert_array_equal(zarr_root["meta/episode_ends"][:], np.array([3]))
+            self.assertEqual(zarr_root.attrs["source"]["camera_labels"], ["global", "left", "right"])
 
     def test_postprocess_writes_robotwin_hdf5_from_raw_episode_and_masks(self):
         from script.real_zed_collection.postprocess.postprocess_raw_to_robotwin_hdf5 import postprocess_episode
@@ -257,11 +326,14 @@ class RealZedCollectionPipelineTest(unittest.TestCase):
     def test_sam2_bbox_prompt_round_trips(self):
         from script.real_zed_collection.select_sam2_bboxes import (
             load_sam2_bbox_prompts,
+            load_sam2_prompt_records,
             normalize_bbox_xyxy,
             save_sam2_bbox_prompts,
+            try_normalize_bbox_xyxy,
         )
 
         self.assertEqual(normalize_bbox_xyxy((9, 8, 1, 2), (10, 10)), [1, 2, 9, 8])
+        self.assertIsNone(try_normalize_bbox_xyxy((3, 4, 3, 4), (10, 10)))
 
         with tempfile.TemporaryDirectory() as tmp:
             path = save_sam2_bbox_prompts(
@@ -275,6 +347,55 @@ class RealZedCollectionPipelineTest(unittest.TestCase):
 
             self.assertEqual(loaded["global"]["{A}"], [1, 2, 9, 8])
             self.assertEqual(loaded["global"]["{B}"], [0, 0, 5, 5])
+
+            path = save_sam2_bbox_prompts(
+                output_root=Path(tmp) / "points",
+                raw_episode_dir="/raw/episode",
+                frame_index=0,
+                image_shapes_by_camera={"global": (10, 20)},
+                boxes_by_camera={
+                    "global": {
+                        "{A}": {
+                            "prompt_type": "point",
+                            "points_xy": [[9, 8], [1, 2]],
+                            "point_labels": [1, 0],
+                        }
+                    }
+                },
+            )
+            records = load_sam2_prompt_records(path, camera_labels=["global"], placeholders=["{A}"])
+            self.assertEqual(records["global"]["{A}"]["prompt_type"], "point")
+            self.assertEqual(records["global"]["{A}"]["points_xy"], [[9, 8], [1, 2]])
+            self.assertEqual(records["global"]["{A}"]["point_labels"], [1, 0])
+
+    def test_sam2_selector_preview_mask_is_rendered_on_canvas(self):
+        from script.real_zed_collection.select_sam2_bboxes import DISPLAY_HEADER_HEIGHT, _render_selection_canvas
+
+        image = np.full((8, 10, 3), 100, dtype=np.uint8)
+        mask = np.zeros((8, 10), dtype=bool)
+        mask[2:6, 3:8] = True
+
+        canvas = _render_selection_canvas(
+            image,
+            display_scale=1.0,
+            episode_label="Episode 1/1: unit",
+            camera_label="global",
+            placeholder="{A}",
+            prompt_mode="bbox",
+            start=None,
+            current=None,
+            bbox=None,
+            points_xy=[],
+            point_labels=[],
+            preview_mask=mask,
+            preview_status="preview: ok, mask_pixels=20",
+            drawing=False,
+        )
+
+        masked_pixel = canvas[DISPLAY_HEADER_HEIGHT + 3, 4]
+        background_pixel = canvas[DISPLAY_HEADER_HEIGHT + 0, 0]
+        self.assertGreater(int(masked_pixel[0]), int(background_pixel[0]))
+        self.assertLess(int(background_pixel[0]), 100)
 
     def test_sam2_logits_are_mapped_to_placeholder_masks(self):
         from script.real_zed_collection.sam2_tracking_utils import masks_from_sam2_logits
@@ -460,7 +581,7 @@ class RealZedCollectionPipelineTest(unittest.TestCase):
                 placeholders=["{A}"],
             )
 
-        self.assertEqual(boxes["global"]["{A}"], [3, 3, 6, 6])
+        self.assertEqual(boxes["global"]["{A}"]["bbox_xyxy"], [3, 3, 6, 6])
         self.assertIn("episode_202604270001", prompt_path)
 
     def test_sam2_objpc_batch_can_require_per_episode_bbox_prompts(self):
