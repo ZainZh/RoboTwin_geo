@@ -8,6 +8,8 @@ from typing import Any, Iterable
 import numpy as np
 import yaml
 
+from script.real_zed_collection.workspace_crop_utils import invert_transform
+
 
 @dataclass(frozen=True)
 class CameraCalibration:
@@ -48,21 +50,45 @@ def _matrix(value: Any, shape: tuple[int, int], name: str) -> np.ndarray:
 def load_three_zed_calibration(path: str | Path, frame_mode: str = "reference_camera") -> dict[str, CameraCalibration]:
     """Load three-ZED YAML and return transforms into the selected world frame.
 
-    First version supports the reference camera frame. The function keeps the
-    `frame_mode` argument explicit so robot/table-frame support can be added
-    without changing postprocess call sites.
+    `frame_mode="reference_camera"` returns transforms into the calibration
+    reference camera. `frame_mode="workspace"` returns transforms into a
+    workspace/world frame saved by the workspace-anchor script.
     """
     with Path(path).expanduser().open("r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
     if not isinstance(cfg, dict):
         raise ValueError(f"Invalid calibration YAML: {path}")
-    if str(frame_mode) != "reference_camera":
-        raise ValueError("First version supports frame_mode='reference_camera' only.")
+    frame_mode = str(frame_mode)
+    if frame_mode not in {"reference_camera", "workspace"}:
+        raise ValueError("frame_mode must be one of: reference_camera, workspace")
 
     cameras_raw = cfg.get("cameras", {})
     rel_raw = cfg.get("relative_to_reference", {})
     if not isinstance(cameras_raw, dict) or not cameras_raw:
         raise ValueError("Calibration YAML missing non-empty 'cameras'.")
+
+    t_workspace_from_ref: np.ndarray | None = None
+    if frame_mode == "workspace":
+        workspace_raw = cfg.get("workspace", cfg.get("workspace_frame", {}))
+        if not isinstance(workspace_raw, dict) or not workspace_raw:
+            raise ValueError(f"Calibration YAML has no workspace frame: {path}")
+        if "t_workspace_from_ref" in workspace_raw:
+            t_workspace_from_ref = _matrix(workspace_raw["t_workspace_from_ref"], (4, 4), "workspace.t_workspace_from_ref")
+        elif "t_workspace_from_reference" in workspace_raw:
+            t_workspace_from_ref = _matrix(
+                workspace_raw["t_workspace_from_reference"],
+                (4, 4),
+                "workspace.t_workspace_from_reference",
+            )
+        elif "t_ref_from_workspace" in workspace_raw:
+            t_workspace_from_ref = invert_transform(
+                _matrix(workspace_raw["t_ref_from_workspace"], (4, 4), "workspace.t_ref_from_workspace")
+            )
+        else:
+            raise ValueError(
+                "Calibration YAML workspace frame must contain t_workspace_from_ref, "
+                "t_workspace_from_reference, or t_ref_from_workspace."
+            )
 
     out: dict[str, CameraCalibration] = {}
     for label, camera_info in cameras_raw.items():
@@ -81,11 +107,14 @@ def load_three_zed_calibration(path: str | Path, frame_mode: str = "reference_ca
                 )
                 t_board_from_cam = _matrix(camera_info["t_board_from_cam"], (4, 4), "t_board_from_cam")
                 t_world_from_cam = t_world_from_board @ t_board_from_cam
+        t_world_from_cam = _matrix(t_world_from_cam, (4, 4), "t_ref_from_cam")
+        if t_workspace_from_ref is not None:
+            t_world_from_cam = t_workspace_from_ref @ t_world_from_cam
         out[str(label)] = CameraCalibration(
             label=str(label),
             serial_number=int(camera_info.get("serial_number", 0)),
             camera_matrix=_matrix(camera_info.get("camera_matrix", np.eye(3)), (3, 3), "camera_matrix"),
-            t_world_from_cam=_matrix(t_world_from_cam, (4, 4), "t_ref_from_cam"),
+            t_world_from_cam=t_world_from_cam,
         )
     return out
 

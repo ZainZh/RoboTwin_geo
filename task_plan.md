@@ -6,7 +6,7 @@ Design a real-robot data collection pipeline that keeps the robot-control behavi
 
 ## Current Phase
 
-Implemented first version
+Workspace anchor and live crop support
 
 ## Phases
 
@@ -40,6 +40,14 @@ Implemented first version
 - [ ] Run on real ZED/robot hardware.
 - **Status:** complete with hardware run pending
 
+### Phase 6: Workspace Anchor And Cropped Capture
+- [x] Add a standalone workspace-anchor script that uses a placed Charuco board to define a stable workspace/world frame.
+- [x] Add calibration-health checks comparing per-camera board poses after transforming into the current reference frame.
+- [x] Add reusable workspace crop utilities for 3D bbox projection, 2D ROI clipping, image/depth crop, and crop-adjusted intrinsics.
+- [x] Update real ZED raw collection so future recordings can save cropped RGB/depth with workspace metadata while retaining optional full-frame debug snapshots.
+- [x] Verify geometry utilities and collection script syntax without requiring real hardware.
+- **Status:** complete with hardware run pending
+
 ## Decisions Made
 
 | Decision | Rationale |
@@ -48,6 +56,8 @@ Implemented first version
 | Do not compute model features during collection | NDF, semantic, and Utonia variants should all reuse the same raw/canonical data |
 | Use canonical HDF5 as the compatibility boundary | Existing DP3 preprocess scripts already consume HDF5 episode files and then emit zarr |
 | Use reference-camera frame in v1 | Current policy is joint-space; robot-base hand-eye calibration is useful but not required for a fixed camera setting |
+| Add explicit workspace anchor instead of implicit last calibration pose | Keeps crop coordinates physically meaningful and repeatable across sessions |
+| Save cropped RGB/depth plus crop metadata rather than only fused point clouds | Reduces storage while preserving postprocess flexibility for masks and feature extraction |
 
 ## Key Questions
 

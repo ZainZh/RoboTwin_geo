@@ -35,6 +35,21 @@
 - `postprocess_raw_to_robotwin_hdf5.py` converts one raw episode plus masks into RoboTwin-compatible HDF5 with `/joint_action/vector`, `/pointcloud`, `/object_pointcloud/{placeholder}`, and per-camera observation groups.
 - First version uses `frame_mode=reference_camera`; robot-base/table-frame support remains an explicit extension.
 
+### Workspace crop extension requirements (2026-04-27)
+- The collected raw data currently uses the `global` ZED camera as the reference/world frame. This is useful for fusion but awkward for stable physical workspace crop ranges.
+- The desired next version should define an explicit `workspace` frame from a deliberately placed Charuco board after camera extrinsic calibration.
+- Calibration health can be checked without robot hand-eye calibration by detecting the same workspace board from multiple ZEDs, transforming each camera's `T_cam_from_board` into the current reference frame, and measuring pairwise residuals. Large translation/rotation residuals indicate the three-camera extrinsics or physical camera positions have drifted.
+- Future collection should be allowed to save cropped RGB/depth to reduce disk use, but each cropped frame must preserve enough metadata for later point-cloud reconstruction: crop pixel box, adjusted crop intrinsics, original image/depth shape, `T_workspace_from_camera`, and workspace bbox parameters.
+- It is safer to optionally save occasional full-frame debug snapshots even when normal frames are cropped.
+
+### Workspace crop implementation notes (2026-04-27)
+- `script/real_zed_collection/calibrate_workspace_frame.py` defines the workspace frame from a single deliberately placed Charuco board and writes a calibration YAML that still contains the original three-camera calibration plus `workspace` and `relative_to_workspace` sections.
+- Calibration health is measured by transforming each camera's observed board pose into the reference-camera frame and comparing all samples against the averaged anchor pose.
+- `load_three_zed_calibration(..., frame_mode="workspace")` now returns `t_world_from_cam` as `T_workspace_from_camera`.
+- Live cropped collection stores cropped `rgb`, cropped `depth_m`, crop-adjusted `camera_matrix`, original shapes, ROI boxes, workspace bounds, and `t_workspace_from_camera` per camera NPZ.
+- When `frame_mode=workspace`, postprocess and point-cloud export prefer `workspace_calibration_snapshot_path` / `workspace_calibration_path` from the manifest.
+- Existing full raw episodes can be reprocessed with `postprocess_raw_to_robotwin_hdf5.py --frame_mode workspace --workspace_crop_* ...`; this crops fused scene/object point clouds in workspace coordinates and stores cropped per-camera RGB/depth observations.
+
 ## New Task: `pour_kettle_mug` (2026-04-16)
 
 ### Requirements

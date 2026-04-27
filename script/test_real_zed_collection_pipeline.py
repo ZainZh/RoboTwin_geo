@@ -108,6 +108,80 @@ class RealZedCollectionPipelineTest(unittest.TestCase):
                 self.assertEqual(root_h5["/observation/cam1/cam2world_gl"].shape, (4, 4))
                 np.testing.assert_allclose(root_h5["/joint_action/vector"][2], np.full((14,), 2))
 
+    def test_load_three_zed_calibration_can_return_workspace_frame(self):
+        from script.real_zed_collection.real_zed_utils import load_three_zed_calibration
+
+        with tempfile.TemporaryDirectory() as tmp:
+            calib_path = Path(tmp) / "calibration.yaml"
+            calib_path.write_text(
+                "\n".join(
+                    [
+                        "type: three_camera_charuco_extrinsics",
+                        "reference_camera: cam0",
+                        "cameras:",
+                        "  cam0:",
+                        "    serial_number: 1",
+                        "    camera_matrix: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]",
+                        "  cam1:",
+                        "    serial_number: 2",
+                        "    camera_matrix: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]",
+                        "relative_to_reference:",
+                        "  cam0:",
+                        "    t_ref_from_cam: [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]",
+                        "  cam1:",
+                        "    t_ref_from_cam: [[1.0, 0.0, 0.0, 0.1], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]",
+                        "workspace:",
+                        "  reference_camera: cam0",
+                        "  t_workspace_from_ref: [[1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 2.0], [0.0, 0.0, 1.0, 3.0], [0.0, 0.0, 0.0, 1.0]]",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            calib = load_three_zed_calibration(calib_path, frame_mode="workspace")
+            np.testing.assert_allclose(calib["cam0"].t_world_from_cam[:3, 3], np.array([1.0, 2.0, 3.0]))
+            np.testing.assert_allclose(calib["cam1"].t_world_from_cam[:3, 3], np.array([1.1, 2.0, 3.0]))
+
+    def test_workspace_bbox_projection_crop_updates_intrinsics_and_metadata(self):
+        from script.real_zed_collection.workspace_crop_utils import (
+            WorkspaceBounds,
+            apply_workspace_crop_to_camera_frame,
+            project_workspace_bbox_to_roi,
+        )
+
+        camera_matrix = np.array(
+            [[100.0, 0.0, 50.0], [0.0, 100.0, 50.0], [0.0, 0.0, 1.0]],
+            dtype=np.float64,
+        )
+        t_workspace_from_cam = np.eye(4, dtype=np.float64)
+        bounds = WorkspaceBounds(x_min=-0.1, x_max=0.1, y_min=-0.1, y_max=0.1, z_min=1.0, z_max=1.0)
+
+        roi = project_workspace_bbox_to_roi(
+            camera_matrix=camera_matrix,
+            image_shape_hw=(100, 100),
+            t_workspace_from_cam=t_workspace_from_cam,
+            bounds=bounds,
+            margin_px=2,
+        )
+        self.assertEqual(roi, (38, 38, 63, 63))
+
+        rgb = np.zeros((100, 100, 3), dtype=np.uint8)
+        depth_m = np.ones((100, 100), dtype=np.float32)
+        cropped = apply_workspace_crop_to_camera_frame(
+            rgb=rgb,
+            depth_m=depth_m,
+            camera_matrix=camera_matrix,
+            t_workspace_from_cam=t_workspace_from_cam,
+            bounds=bounds,
+            margin_px=2,
+        )
+
+        self.assertEqual(cropped["rgb"].shape, (25, 25, 3))
+        self.assertEqual(cropped["depth_m"].shape, (25, 25))
+        self.assertEqual(cropped["depth_crop_box_xyxy"].tolist(), [38, 38, 63, 63])
+        np.testing.assert_allclose(cropped["camera_matrix"][0, 2], 12.0)
+        np.testing.assert_allclose(cropped["camera_matrix"][1, 2], 12.0)
+
 
 if __name__ == "__main__":
     unittest.main()

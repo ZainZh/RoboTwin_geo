@@ -26,6 +26,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--raw_episode_dir", required=True, type=str)
     parser.add_argument("--frame_index", default=0, type=int)
     parser.add_argument("--calibration_path", default="", type=str)
+    parser.add_argument("--frame_mode", default="reference_camera", choices=["reference_camera", "workspace"])
     parser.add_argument("--output_path", default="", type=str)
     parser.add_argument("--min_depth_m", default=0.05, type=float)
     parser.add_argument("--max_depth_m", default=3.0, type=float)
@@ -144,15 +145,25 @@ def _write_ply(path: Path, point_cloud: np.ndarray) -> None:
         f.write(vertex.tobytes())
 
 
-def _resolve_calibration_path(raw_episode_dir: Path, manifest: dict, override: str) -> Path:
+def _resolve_calibration_path(raw_episode_dir: Path, manifest: dict, override: str, frame_mode: str = "reference_camera") -> Path:
     if str(override).strip():
         calib_path = Path(override).expanduser().resolve()
     else:
-        snapshot_rel = str(manifest.get("calibration_snapshot_path", "")).strip()
+        if str(frame_mode) == "workspace":
+            snapshot_rel = str(
+                manifest.get("workspace_calibration_snapshot_path", "")
+                or manifest.get("calibration_snapshot_path", "")
+            ).strip()
+            source_path = str(
+                manifest.get("workspace_calibration_path", "")
+                or manifest.get("calibration_path", "")
+            ).strip()
+        else:
+            snapshot_rel = str(manifest.get("calibration_snapshot_path", "")).strip()
+            source_path = str(manifest.get("calibration_path", "")).strip()
         if snapshot_rel:
             calib_path = (raw_episode_dir / snapshot_rel).resolve()
         else:
-            source_path = str(manifest.get("calibration_path", "")).strip()
             if not source_path:
                 raise ValueError("Missing calibration path. Pass --calibration_path or include it in manifest.json.")
             calib_path = Path(source_path).expanduser().resolve()
@@ -173,8 +184,8 @@ def main() -> None:
     if frame_index < 0 or frame_index >= len(frames):
         raise IndexError(f"frame_index out of range: {frame_index}, available [0, {len(frames) - 1}]")
 
-    calibration_path = _resolve_calibration_path(raw_episode_dir, manifest, args.calibration_path)
-    calib = load_three_zed_calibration(calibration_path)
+    calibration_path = _resolve_calibration_path(raw_episode_dir, manifest, args.calibration_path, frame_mode=args.frame_mode)
+    calib = load_three_zed_calibration(calibration_path, frame_mode=args.frame_mode)
 
     frame = frames[frame_index]
     labels = [str(x) for x in manifest.get("camera_labels", list(calib.keys()))]

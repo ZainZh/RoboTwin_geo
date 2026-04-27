@@ -756,3 +756,30 @@
 - Files created/modified:
   - `findings.md` (updated)
   - `progress.md` (updated)
+
+### Phase 10: Workspace Anchor And Cropped Real-ZED Capture
+- **Status:** complete with hardware run pending
+- Actions taken:
+  - Re-read the existing real-ZED calibration, collection, export, and postprocess scripts.
+  - Confirmed current collection saves full-resolution depth and downsampled RGB for all cameras, with no live crop path.
+  - Added a new plan phase for explicit workspace-anchor calibration and cropped capture metadata.
+  - Added workspace crop utility tests first and verified they failed before implementation.
+  - Implemented workspace-frame loading, 3D bbox projection to camera ROI, crop-adjusted intrinsics, and cropped frame metadata.
+  - Added `calibrate_workspace_frame.py` to define workspace/world from a placed Charuco board and report calibration residuals.
+  - Updated `collect_zed_robotwin_raw.py` to save cropped RGB-D plus workspace metadata when `workspace_crop_enabled=true`.
+  - Updated postprocess/export tools to prefer workspace calibration paths when `frame_mode=workspace`.
+  - Added workspace crop arguments to HDF5 postprocess so already-collected full raw data can be re-exported in the new workspace frame without being discarded.
+  - Verified with `python -m unittest script/test_real_zed_collection_pipeline.py`, `python -m py_compile ...`, and script `--help` checks.
+- Files created/modified:
+  - `task_plan.md` (updated)
+  - `findings.md` (updated)
+  - `progress.md` (updated)
+  - `script/real_zed_collection/workspace_crop_utils.py` (new)
+  - `script/real_zed_collection/calibrate_workspace_frame.py` (new)
+  - `script/real_zed_collection/collect_zed_robotwin_raw.py` (modified)
+  - `script/real_zed_collection/real_zed_utils.py` (modified)
+  - `script/real_zed_collection/postprocess_raw_to_robotwin_hdf5.py` (modified)
+  - `script/real_zed_collection/export_raw_episode_pointcloud.py` (modified)
+  - `script/real_zed_collection/configs/real_zed_collection.yaml` (modified)
+  - `script/real_zed_collection/README.md` (modified)
+  - `script/test_real_zed_collection_pipeline.py` (modified)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import os
+import argparse
 from queue import Empty, Full, Queue
 import shutil
 import sys
@@ -18,6 +19,7 @@ import numpy as np
 import yaml
 
 from script.real_zed_collection.real_zed_utils import ensure_dir, load_three_zed_calibration, write_json
+from script.real_zed_collection.workspace_crop_utils import WorkspaceBounds, apply_workspace_crop_to_camera_frame
 
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "configs" / "real_zed_collection.yaml"
@@ -52,6 +54,17 @@ class Args:
     compress_camera_frames: bool = False
     show_img: bool = False
     save_zed_xyzrgba: bool = False
+    workspace_calibration_path: str = ""
+    workspace_crop_enabled: bool = False
+    workspace_crop_x_min: float = -0.75
+    workspace_crop_x_max: float = 0.75
+    workspace_crop_y_min: float = -0.55
+    workspace_crop_y_max: float = 0.75
+    workspace_crop_z_min: float = 0.25
+    workspace_crop_z_max: float = 1.25
+    workspace_crop_margin_px: int = 32
+    workspace_crop_resize_rgb: bool = False
+    workspace_crop_debug_full_frame_interval: int = 0
     max_frames: int = -1
 
 
@@ -96,10 +109,35 @@ def _load_args_defaults(config_path: Path | None) -> Args:
     return defaults
 
 
+def _parse_args_without_tyro(defaults: Args, cli_args: list[str]) -> Args:
+    parser = argparse.ArgumentParser(description="Collect raw real-robot three-ZED data for RoboTwin/DP3.")
+    for item in fields(Args):
+        name = item.name
+        default_value = getattr(defaults, name)
+        flag = f"--{name}"
+        if isinstance(default_value, bool):
+            parser.add_argument(flag, action=argparse.BooleanOptionalAction, default=default_value)
+        elif isinstance(default_value, int) and not isinstance(default_value, bool):
+            parser.add_argument(flag, type=int, default=default_value)
+        elif isinstance(default_value, float):
+            parser.add_argument(flag, type=float, default=default_value)
+        elif isinstance(default_value, list):
+            item_type = int if all(isinstance(x, int) for x in default_value) else str
+            parser.add_argument(flag, nargs="*", type=item_type, default=default_value)
+        else:
+            parser.add_argument(flag, type=str, default=str(default_value))
+    parsed = parser.parse_args(cli_args)
+    return Args(**vars(parsed))
+
+
 def _blue_text(text: str) -> str:
     if hasattr(sys.stdout, "isatty") and sys.stdout.isatty():
         return f"{ANSI_BLUE}{text}{ANSI_RESET}"
     return text
+
+
+def _resolve_user_path(path: str | Path) -> Path:
+    return Path(os.path.expandvars(str(path))).expanduser().resolve()
 
 
 def _print_args_summary(args: Args, config_path: Path | None, save_root: Path) -> None:
@@ -110,11 +148,11 @@ def _print_args_summary(args: Args, config_path: Path | None, save_root: Path) -
         print(f"  - {item.name}: {getattr(args, item.name)}")
 
 
-def _snapshot_calibration_file(calibration_path: str | Path, episode_dir: Path) -> str:
-    src = Path(calibration_path).expanduser().resolve()
+def _snapshot_calibration_file(calibration_path: str | Path, episode_dir: Path, dst_name: str = "calibration_snapshot.yaml") -> str:
+    src = _resolve_user_path(calibration_path)
     if not src.exists():
         raise FileNotFoundError(f"Calibration file does not exist: {src}")
-    dst = episode_dir / "calibration_snapshot.yaml"
+    dst = episode_dir / str(dst_name)
     shutil.copy2(src, dst)
     return dst.name
 
@@ -221,6 +259,17 @@ def _resize_rgb_for_storage(
     if target_width <= 0 or target_height <= 0 or (src_w == target_width and src_h == target_height):
         return rgb.astype(np.uint8)
     return cv2.resize(rgb, (int(target_width), int(target_height)), interpolation=cv2.INTER_AREA).astype(np.uint8)
+
+
+def _workspace_bounds_from_args(args: Args) -> WorkspaceBounds:
+    return WorkspaceBounds(
+        x_min=float(args.workspace_crop_x_min),
+        x_max=float(args.workspace_crop_x_max),
+        y_min=float(args.workspace_crop_y_min),
+        y_max=float(args.workspace_crop_y_max),
+        z_min=float(args.workspace_crop_z_min),
+        z_max=float(args.workspace_crop_z_max),
+    )
 
 
 def _build_robot_snapshot(obs: dict[str, Any], action: np.ndarray) -> dict[str, np.ndarray]:
@@ -423,6 +472,12 @@ def zed_capture_loop(
     save_rgb_width: int,
     save_rgb_height: int,
     save_xyzrgba: bool,
+    workspace_crop_enabled: bool,
+    t_workspace_from_cam: np.ndarray | None,
+    workspace_bounds: WorkspaceBounds | None,
+    workspace_crop_margin_px: int,
+    workspace_crop_resize_rgb: bool,
+    workspace_crop_debug_full_frame_interval: int,
     shared: SharedZedFrame,
     stop_event: threading.Event,
 ) -> None:
@@ -463,11 +518,39 @@ def zed_capture_loop(
             bgr = image_raw[:, :, :3] if image_raw.ndim == 3 and image_raw.shape[2] >= 3 else image_raw
             rgb = cv2.cvtColor(np.ascontiguousarray(bgr), cv2.COLOR_BGR2RGB)
             depth_m = np.asarray(depth_raw, dtype=np.float32)
-            rgb_save = _resize_rgb_for_storage(
-                rgb=rgb,
-                target_width=int(save_rgb_width),
-                target_height=int(save_rgb_height),
-            )
+            save_camera_matrix = np.asarray(camera_matrix, dtype=np.float32)
+            frame_extra: dict[str, Any] = {}
+            if workspace_crop_enabled:
+                if t_workspace_from_cam is None or workspace_bounds is None:
+                    raise RuntimeError(f"Workspace crop enabled for {label}, but transform/bounds are missing.")
+                cropped = apply_workspace_crop_to_camera_frame(
+                    rgb=rgb,
+                    depth_m=depth_m,
+                    camera_matrix=camera_matrix,
+                    t_workspace_from_cam=t_workspace_from_cam,
+                    bounds=workspace_bounds,
+                    margin_px=int(workspace_crop_margin_px),
+                    resize_rgb_width=int(save_rgb_width) if bool(workspace_crop_resize_rgb) else 0,
+                    resize_rgb_height=int(save_rgb_height) if bool(workspace_crop_resize_rgb) else 0,
+                )
+                rgb_save = np.asarray(cropped.pop("rgb"), dtype=np.uint8)
+                depth_m = np.asarray(cropped.pop("depth_m"), dtype=np.float32)
+                save_camera_matrix = np.asarray(cropped.pop("camera_matrix"), dtype=np.float32)
+                frame_extra.update(cropped)
+                debug_interval = int(workspace_crop_debug_full_frame_interval)
+                if debug_interval > 0 and frame_idx % debug_interval == 0:
+                    frame_extra["full_rgb_debug"] = _resize_rgb_for_storage(
+                        rgb=rgb,
+                        target_width=int(save_rgb_width),
+                        target_height=int(save_rgb_height),
+                    )
+                    frame_extra["full_depth_m_debug"] = np.asarray(depth_raw, dtype=np.float32)
+            else:
+                rgb_save = _resize_rgb_for_storage(
+                    rgb=rgb,
+                    target_width=int(save_rgb_width),
+                    target_height=int(save_rgb_height),
+                )
             frame = {
                 "label": label,
                 "serial": int(serial),
@@ -475,8 +558,9 @@ def zed_capture_loop(
                 "timestamp_unix_sec": time.time(),
                 "rgb": rgb_save,
                 "depth_m": depth_m.astype(np.float32),
-                "camera_matrix": np.asarray(camera_matrix, dtype=np.float32),
+                "camera_matrix": save_camera_matrix,
             }
+            frame.update(frame_extra)
             if save_xyzrgba:
                 zed.retrieve_measure(xyzrgba_mat, sl.MEASURE.XYZRGBA)
                 xyzrgba = xyzrgba_mat.get_data()
@@ -538,8 +622,21 @@ def _save_raw_frame(
             "depth_m": np.asarray(frame["depth_m"], dtype=np.float32),
             "camera_matrix": np.asarray(frame["camera_matrix"], dtype=np.float32),
         }
-        if "xyzrgba" in frame:
-            payload["xyzrgba"] = np.asarray(frame["xyzrgba"], dtype=np.float32)
+        for optional_key, dtype in (
+            ("rgb_camera_matrix", np.float32),
+            ("original_camera_matrix", np.float32),
+            ("depth_crop_box_xyxy", np.int32),
+            ("rgb_crop_box_xyxy", np.int32),
+            ("original_depth_shape_hw", np.int32),
+            ("original_rgb_shape_hw", np.int32),
+            ("workspace_bounds_m", np.float32),
+            ("t_workspace_from_camera", np.float32),
+            ("full_rgb_debug", np.uint8),
+            ("full_depth_m_debug", np.float32),
+            ("xyzrgba", np.float32),
+        ):
+            if optional_key in frame:
+                payload[optional_key] = np.asarray(frame[optional_key], dtype=dtype)
         if compress_camera_frames:
             np.savez_compressed(camera_path, **payload)
         else:
@@ -574,9 +671,21 @@ def main(args: Args, config_path: Path | None = None) -> None:
     )
 
     labels, serials = _resolve_cameras(args)
-    save_root = ensure_dir(Path(args.save_data_path) / args.project_name / "real_zed_raw")
+    save_root = ensure_dir(_resolve_user_path(args.save_data_path) / args.project_name / "real_zed_raw")
     _print_args_summary(args, config_path, save_root)
     record_period_sec = 0.0 if float(args.save_frequency_hz) <= 0.0 else 1.0 / float(args.save_frequency_hz)
+    workspace_bounds: WorkspaceBounds | None = None
+    workspace_calib: dict[str, Any] = {}
+    workspace_calibration_path = ""
+    if bool(args.workspace_crop_enabled):
+        workspace_bounds = _workspace_bounds_from_args(args)
+        workspace_calibration_path = str(_resolve_user_path(args.workspace_calibration_path or args.calibration_path))
+        workspace_calib = load_three_zed_calibration(workspace_calibration_path, frame_mode="workspace")
+        missing_workspace = [label for label in labels if label not in workspace_calib]
+        if missing_workspace:
+            raise ValueError(f"Workspace calibration missing camera labels: {missing_workspace}")
+        print(f"[INFO] Workspace crop enabled with calibration: {workspace_calibration_path}")
+        print(f"[INFO] Workspace bounds: {workspace_bounds.as_dict()}")
 
     stop_event = threading.Event()
     shared_by_label = {label: SharedZedFrame() for label in labels}
@@ -604,6 +713,16 @@ def main(args: Args, config_path: Path | None = None) -> None:
                 "save_rgb_width": int(args.save_rgb_width),
                 "save_rgb_height": int(args.save_rgb_height),
                 "save_xyzrgba": bool(args.save_zed_xyzrgba),
+                "workspace_crop_enabled": bool(args.workspace_crop_enabled),
+                "t_workspace_from_cam": (
+                    workspace_calib[label].t_world_from_cam.astype(np.float64)
+                    if bool(args.workspace_crop_enabled)
+                    else None
+                ),
+                "workspace_bounds": workspace_bounds,
+                "workspace_crop_margin_px": int(args.workspace_crop_margin_px),
+                "workspace_crop_resize_rgb": bool(args.workspace_crop_resize_rgb),
+                "workspace_crop_debug_full_frame_interval": int(args.workspace_crop_debug_full_frame_interval),
                 "shared": shared_by_label[label],
                 "stop_event": stop_event,
             },
@@ -703,6 +822,13 @@ def main(args: Args, config_path: Path | None = None) -> None:
                     calibration_snapshot_rel = ""
                     if args.calibration_path:
                         calibration_snapshot_rel = _snapshot_calibration_file(args.calibration_path, active_episode_dir)
+                    workspace_snapshot_rel = ""
+                    if workspace_calibration_path and workspace_calibration_path != str(_resolve_user_path(args.calibration_path)):
+                        workspace_snapshot_rel = _snapshot_calibration_file(
+                            workspace_calibration_path,
+                            active_episode_dir,
+                            dst_name="workspace_calibration_snapshot.yaml",
+                        )
                     print(_blue_text(f"[RECORD] START -> {active_episode_dir}"))
                     writer_queue.put(
                         WriteTask(
@@ -713,8 +839,17 @@ def main(args: Args, config_path: Path | None = None) -> None:
                                 "created_at_unix_sec": time.time(),
                                 "camera_labels": labels,
                                 "camera_serials": dict(zip(labels, serials)),
-                                "calibration_path": str(Path(args.calibration_path).expanduser().resolve()) if args.calibration_path else "",
+                                "calibration_path": str(_resolve_user_path(args.calibration_path)) if args.calibration_path else "",
                                 "calibration_snapshot_path": calibration_snapshot_rel,
+                                "workspace_calibration_path": workspace_calibration_path,
+                                "workspace_calibration_snapshot_path": workspace_snapshot_rel,
+                                "workspace_crop_enabled": bool(args.workspace_crop_enabled),
+                                "workspace_crop_bounds_m": workspace_bounds.as_dict() if workspace_bounds is not None else {},
+                                "workspace_crop_margin_px": int(args.workspace_crop_margin_px),
+                                "workspace_crop_resize_rgb": bool(args.workspace_crop_resize_rgb),
+                                "workspace_crop_debug_full_frame_interval": int(
+                                    args.workspace_crop_debug_full_frame_interval
+                                ),
                                 "save_rgb_width": int(args.save_rgb_width),
                                 "save_rgb_height": int(args.save_rgb_height),
                                 "save_frequency_hz": float(args.save_frequency_hz),
@@ -816,8 +951,12 @@ def main(args: Args, config_path: Path | None = None) -> None:
 
 
 if __name__ == "__main__":
-    import tyro
-
     config_path, cli_args = _extract_config_path(sys.argv[1:])
     default_args = _load_args_defaults(config_path)
-    main(tyro.cli(Args, args=cli_args, default=default_args), config_path=config_path)
+    try:
+        import tyro
+    except ModuleNotFoundError:
+        parsed_args = _parse_args_without_tyro(default_args, cli_args)
+    else:
+        parsed_args = tyro.cli(Args, args=cli_args, default=default_args)
+    main(parsed_args, config_path=config_path)

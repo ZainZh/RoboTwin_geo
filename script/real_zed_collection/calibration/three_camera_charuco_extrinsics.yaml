@@ -2,7 +2,7 @@ type: three_camera_charuco_extrinsics
 calibration_mode: interactive_multi_pose_enter
 charuco_config_name: charuco_300_9x14_20mm_15mm
 charuco_config:
-  path: /home/clover/github/RoboTwin_geo/script/real_zed_collection/charuco_config/charuco_300_9x14_20mm_15mm.yaml
+  path: script/real_zed_collection/charuco_config/charuco_300_9x14_20mm_15mm.yaml
   resolved_dictionary: DICT_5X5_100
   board_name: charuco-300
   squares_x: 14

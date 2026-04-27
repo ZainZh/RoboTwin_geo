@@ -24,6 +24,7 @@ from script.real_zed_collection.real_zed_utils import (
     transform_point_cloud,
     write_json,
 )
+from script.real_zed_collection.workspace_crop_utils import WorkspaceBounds, apply_workspace_crop_to_camera_frame
 
 
 def parse_object_prompts(text: str) -> dict[str, str]:
@@ -83,15 +84,25 @@ def _load_frame_npz(raw_episode_dir: Path, rel_path: str) -> dict[str, np.ndarra
         return {key: data[key] for key in data.files}
 
 
-def _resolve_calibration_path(raw_episode_dir: Path, manifest: dict, override: str | Path) -> Path:
+def _resolve_calibration_path(raw_episode_dir: Path, manifest: dict, override: str | Path, frame_mode: str = "reference_camera") -> Path:
     if str(override).strip():
         calib_path = Path(override).expanduser().resolve()
     else:
-        snapshot_rel = str(manifest.get("calibration_snapshot_path", "")).strip()
+        if str(frame_mode) == "workspace":
+            snapshot_rel = str(
+                manifest.get("workspace_calibration_snapshot_path", "")
+                or manifest.get("calibration_snapshot_path", "")
+            ).strip()
+            source_path = str(
+                manifest.get("workspace_calibration_path", "")
+                or manifest.get("calibration_path", "")
+            ).strip()
+        else:
+            snapshot_rel = str(manifest.get("calibration_snapshot_path", "")).strip()
+            source_path = str(manifest.get("calibration_path", "")).strip()
         if snapshot_rel:
             calib_path = (raw_episode_dir / snapshot_rel).resolve()
         else:
-            source_path = str(manifest.get("calibration_path", "")).strip()
             if not source_path:
                 raise ValueError("Missing calibration path. Pass --calibration_path or include it in manifest.json.")
             calib_path = Path(source_path).expanduser().resolve()
@@ -131,6 +142,30 @@ def _camera_frame_to_world_pc(
     return transform_point_cloud(pc_cam, t_world_from_cam)
 
 
+def _crop_point_cloud_by_bounds(point_cloud: np.ndarray, bounds: WorkspaceBounds | None) -> np.ndarray:
+    pc = np.asarray(point_cloud, dtype=np.float32)
+    if bounds is None or pc.size == 0:
+        return pc
+    mask = (
+        (pc[:, 0] >= float(bounds.x_min))
+        & (pc[:, 0] <= float(bounds.x_max))
+        & (pc[:, 1] >= float(bounds.y_min))
+        & (pc[:, 1] <= float(bounds.y_max))
+        & (pc[:, 2] >= float(bounds.z_min))
+        & (pc[:, 2] <= float(bounds.z_max))
+    )
+    return pc[mask]
+
+
+def _rgb_to_depth_shape(rgb: np.ndarray, depth_shape: tuple[int, int]) -> np.ndarray:
+    rgb_arr = np.asarray(rgb, dtype=np.uint8)
+    if rgb_arr.shape[:2] == depth_shape:
+        return rgb_arr
+    if cv2 is None:
+        raise ValueError(f"rgb/depth shape mismatch without cv2 available: rgb={rgb_arr.shape[:2]}, depth={depth_shape}")
+    return cv2.resize(rgb_arr, (int(depth_shape[1]), int(depth_shape[0])), interpolation=cv2.INTER_LINEAR)
+
+
 def postprocess_episode(
     *,
     raw_episode_dir: str | Path,
@@ -145,6 +180,8 @@ def postprocess_episode(
     min_depth_m: float = 0.05,
     max_depth_m: float = 3.0,
     frame_mode: str = "reference_camera",
+    workspace_crop_bounds: WorkspaceBounds | None = None,
+    workspace_crop_margin_px: int = 0,
 ) -> Path:
     raw_episode_dir = Path(raw_episode_dir).expanduser().resolve()
     output_dir = ensure_dir(output_dir)
@@ -153,7 +190,7 @@ def postprocess_episode(
     if not isinstance(frames, list) or not frames:
         raise ValueError(f"Raw episode manifest has no frames: {raw_episode_dir / 'manifest.json'}")
 
-    calib_path = _resolve_calibration_path(raw_episode_dir, manifest, calibration_path)
+    calib_path = _resolve_calibration_path(raw_episode_dir, manifest, calibration_path, frame_mode=frame_mode)
     calib = load_three_zed_calibration(calib_path, frame_mode=frame_mode)
     labels = camera_labels or list(manifest.get("camera_labels", [])) or list(calib.keys())
     labels = [str(label) for label in labels]
@@ -201,8 +238,25 @@ def postprocess_episode(
                 else calib[label].camera_matrix.astype(np.float32)
             )
             intrinsic_by_camera[label] = camera_matrix.astype(np.float32)
-            observation_by_camera[label]["rgb"].append(rgb.astype(np.uint8))
-            observation_by_camera[label]["depth"].append(depth_m.astype(np.float32))
+            obs_rgb = rgb.astype(np.uint8)
+            obs_depth = depth_m.astype(np.float32)
+            obs_camera_matrix = camera_matrix.astype(np.float32)
+            if workspace_crop_bounds is not None:
+                rgb_for_crop = _rgb_to_depth_shape(obs_rgb, obs_depth.shape)
+                cropped_obs = apply_workspace_crop_to_camera_frame(
+                    rgb=rgb_for_crop,
+                    depth_m=obs_depth,
+                    camera_matrix=obs_camera_matrix,
+                    t_workspace_from_cam=calib[label].t_world_from_cam,
+                    bounds=workspace_crop_bounds,
+                    margin_px=int(workspace_crop_margin_px),
+                )
+                obs_rgb = np.asarray(cropped_obs["rgb"], dtype=np.uint8)
+                obs_depth = np.asarray(cropped_obs["depth_m"], dtype=np.float32)
+                obs_camera_matrix = np.asarray(cropped_obs["camera_matrix"], dtype=np.float32)
+            intrinsic_by_camera[label] = obs_camera_matrix.astype(np.float32)
+            observation_by_camera[label]["rgb"].append(obs_rgb.astype(np.uint8))
+            observation_by_camera[label]["depth"].append(obs_depth.astype(np.float32))
 
             scene_chunks.append(
                 _camera_frame_to_world_pc(
@@ -231,11 +285,19 @@ def postprocess_episode(
                     )
                 )
 
-        scene_point_clouds.append(deterministic_resample(merge_point_clouds(scene_chunks), int(scene_point_num)))
+        scene_point_clouds.append(
+            deterministic_resample(
+                _crop_point_cloud_by_bounds(merge_point_clouds(scene_chunks), workspace_crop_bounds),
+                int(scene_point_num),
+            )
+        )
         for placeholder in placeholders:
             object_point_clouds[placeholder].append(
                 deterministic_resample(
-                    merge_point_clouds(object_chunks_by_placeholder[placeholder]),
+                    _crop_point_cloud_by_bounds(
+                        merge_point_clouds(object_chunks_by_placeholder[placeholder]),
+                        workspace_crop_bounds,
+                    ),
                     int(object_point_num),
                 )
             )
@@ -287,6 +349,7 @@ def postprocess_episode(
             "raw_episode": str(raw_episode_dir),
             "calibration_path": str(calib_path),
             "frame_mode": str(frame_mode),
+            "workspace_crop_bounds_m": {} if workspace_crop_bounds is None else workspace_crop_bounds.as_dict(),
         }
     }
     if scene_info_path.exists():
@@ -311,6 +374,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min_depth_m", type=float, default=0.05)
     parser.add_argument("--max_depth_m", type=float, default=3.0)
     parser.add_argument("--frame_mode", type=str, default="reference_camera")
+    parser.add_argument("--workspace_crop_x_min", type=float, default=None)
+    parser.add_argument("--workspace_crop_x_max", type=float, default=None)
+    parser.add_argument("--workspace_crop_y_min", type=float, default=None)
+    parser.add_argument("--workspace_crop_y_max", type=float, default=None)
+    parser.add_argument("--workspace_crop_z_min", type=float, default=None)
+    parser.add_argument("--workspace_crop_z_max", type=float, default=None)
+    parser.add_argument("--workspace_crop_margin_px", type=int, default=0)
     return parser.parse_args()
 
 
@@ -318,6 +388,27 @@ def main() -> None:
     args = parse_args()
     labels = [item.strip() for item in args.camera_labels.split(",") if item.strip()]
     prompts = parse_object_prompts(args.object_prompts)
+    crop_values = [
+        args.workspace_crop_x_min,
+        args.workspace_crop_x_max,
+        args.workspace_crop_y_min,
+        args.workspace_crop_y_max,
+        args.workspace_crop_z_min,
+        args.workspace_crop_z_max,
+    ]
+    if any(value is not None for value in crop_values):
+        if any(value is None for value in crop_values):
+            raise ValueError("All six workspace crop bounds must be provided together.")
+        workspace_crop_bounds = WorkspaceBounds(
+            x_min=float(args.workspace_crop_x_min),
+            x_max=float(args.workspace_crop_x_max),
+            y_min=float(args.workspace_crop_y_min),
+            y_max=float(args.workspace_crop_y_max),
+            z_min=float(args.workspace_crop_z_min),
+            z_max=float(args.workspace_crop_z_max),
+        )
+    else:
+        workspace_crop_bounds = None
     hdf5_path = postprocess_episode(
         raw_episode_dir=args.raw_episode_dir,
         output_dir=args.output_dir,
@@ -331,6 +422,8 @@ def main() -> None:
         min_depth_m=args.min_depth_m,
         max_depth_m=args.max_depth_m,
         frame_mode=args.frame_mode,
+        workspace_crop_bounds=workspace_crop_bounds,
+        workspace_crop_margin_px=args.workspace_crop_margin_px,
     )
     print(hdf5_path)
 
