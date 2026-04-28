@@ -993,3 +993,28 @@
   - Moved direct NDF imports in `policy/DP3/deploy_policy.py` behind `get_ndf_utils()`.
   - Moved indirect NDF imports in `policy/DP3/scripts/object_pointcloud_utils.py` into the specific fallback functions that need them.
   - Verified baseline-style `encode_obs` still works while `sapien`, `envs`, and `ndf_feature_utils` are all deliberately blocked.
+
+### Phase 25: Robot-Camera Calibration Design
+- **Status:** design proposed
+- Actions taken:
+  - Read xtrainer `run_control.py` and current `collect_zed_robotwin_raw.py` button/servo semantics.
+  - Confirmed Button B rising edge is the correct interaction to repurpose as "capture one calibration sample".
+  - Confirmed xtrainer Dobot `ee_pos_quat` is zero-filled, so calibration must use `get_XYZrxryrz_state()`.
+  - Verified OpenCV has `aruco` AprilTag dictionary support and `calibrateRobotWorldHandEye`.
+  - Derived the correct target-on-gripper mapping for solving `T_base_from_camera` from held-AprilTag samples.
+
+### Phase 26: Robot-Camera AprilTag Calibration Script
+- **Status:** complete with hardware run pending
+- Actions taken:
+  - Added `script/test_robot_camera_apriltag_calibration.py` with a synthetic target-on-gripper calibration problem.
+  - Verified the new test failed before the calibration module existed.
+  - Added `script/real_zed_collection/calibrate_robot_camera_apriltag.py`.
+  - Implemented reusable math helpers, Dobot pose conversion, AprilTag detection, OpenCV robot-world-hand-eye solving, residual reporting, YAML output, and an interactive ZED + xtrainer robot collection loop.
+  - Kept Button A lock/servo semantics and Button B sample capture, with the existing collection-script servo safety checks.
+  - Verified with `python -m unittest script.test_robot_camera_apriltag_calibration`.
+  - Verified with `python -m py_compile script/real_zed_collection/calibrate_robot_camera_apriltag.py script/test_robot_camera_apriltag_calibration.py`.
+  - Verified CLI wiring with `python script/real_zed_collection/calibrate_robot_camera_apriltag.py --help`.
+  - Updated the marker detector to support generic OpenCV ArUco dictionaries through `--marker_dictionary`.
+  - Added `--marker_dictionary auto` so a single-face ArUco marker with only id 4 can be tried without knowing the exact 4x4/5x5/6x6 family upfront.
+  - Added unit coverage for dictionary alias normalization and auto dictionary expansion.
+  - Re-verified with `python -m unittest script.test_robot_camera_apriltag_calibration`, `python -m py_compile script/real_zed_collection/calibrate_robot_camera_apriltag.py script/test_robot_camera_apriltag_calibration.py`, and `python script/real_zed_collection/calibrate_robot_camera_apriltag.py --help`.

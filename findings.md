@@ -36,6 +36,22 @@
 - Real control machines should not need full RoboTwin simulator dependencies for DP3 real inference. The blocking import chain was `policy/DP3/deploy_policy.py` importing `sapien.core` and `envs` at module import time, even though real inference only needs `get_model` and `encode_obs`.
 - A second unnecessary real-inference dependency chain was `deploy_policy.py -> object_pointcloud_utils.py -> ndf_feature_utils.py`. Baseline and semantic-pointwise-hybrid real inference do not need NDF, so both direct and indirect NDF imports should be lazy.
 
+### Robot-camera calibration design notes (2026-04-28)
+- xtrainer/RoboTwin teleoperation uses Button A short press for lock/unlock, Button A long press for servo, and Button B rising edge for recording/green-light events.
+- `RobotEnv.get_obs()["ee_pos_quat"]` is currently zero-filled in xtrainer's Dobot driver, so robot-camera calibration cannot rely on that field.
+- The usable robot pose source is `RobotEnv.get_XYZrxryrz_state()`, which returns concatenated left/right Cartesian poses `[x,y,z,rx,ry,rz]` from Dobot `GetPose()`.
+- For an AprilTag cube held by the gripper and observed by a fixed external camera, each sample gives `T_base_from_gripper_i` from the robot and `T_camera_from_tag_i` from tag PnP.
+- This is a target-on-gripper / fixed-camera calibration. With OpenCV `calibrateRobotWorldHandEye`, map algorithm world to the fixed camera frame and algorithm camera to the moving tag frame:
+  - input `world2cam` as `T_tag_from_camera_i = inverse(T_camera_from_tag_i)`
+  - input `base2gripper` as `T_gripper_from_base_i = inverse(T_base_from_gripper_i)`
+  - output `base2world` as `T_camera_from_base`, whose inverse is the needed `T_base_from_camera`
+  - output `gripper2cam` as `T_tag_from_gripper`, which is the fixed tag/cube mounting transform
+- Left and right arms should be calibrated separately because xtrainer exposes separate left/right Dobot base frames.
+- Implemented `script/real_zed_collection/calibrate_robot_camera_apriltag.py` as a standalone interactive collector/solver. It opens one ZED by calibration label or serial number, detects ArUco/AprilTag markers with OpenCV ArUco, captures samples with Button B, and writes `t_camera_from_base`, `t_base_from_camera`, `t_tag_from_gripper`, per-sample residuals, debug images, and raw sample JSON/YAML.
+- The calibration script keeps xtrainer-style Button A lock/servo behavior and reuses the same servo safety checks from `collect_zed_robotwin_raw.py`.
+- The default pose conversion assumes Dobot Cartesian pose units are millimeters and Euler angles are degrees (`--pose_xyz_unit mm --pose_rotation_mode euler_deg --pose_euler_order xyz`); these are explicit CLI parameters so hardware validation can adjust convention if needed.
+- The marker detector now accepts `--marker_dictionary`, including explicit dictionaries such as `DICT_4X4_50` and an `auto` mode that tries common ArUco and AprilTag dictionaries. For the user's single-face ArUco marker with id 4, run with `--tag_id 4` and either the known dictionary or `--marker_dictionary auto`.
+
 ### Existing DP3 training data expectations
 - `policy/DP3/scripts/process_data.py` expects RoboTwin-style HDF5 episodes under `data/<task>/<task_config>/data/episode{i}.hdf5`.
 - The minimum baseline DP3 fields are `/joint_action/vector` and `/pointcloud`.

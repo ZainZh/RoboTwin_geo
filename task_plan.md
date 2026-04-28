@@ -116,6 +116,15 @@ SAM2 streaming tracking migration for real objpc training/eval data
 - [ ] Run on real ZED/robot hardware.
 - **Status:** complete with hardware run pending
 
+### Phase 15: Robot-Base To Camera AprilTag Calibration
+- [x] Read xtrainer/RoboTwin teleoperation semantics and identify the usable robot Cartesian pose source.
+- [x] Design target-on-gripper AprilTag calibration for separate left/right Dobot bases.
+- [x] Add a standalone interactive ZED + robot calibration script under `script/real_zed_collection`.
+- [x] Add synthetic unit coverage for the OpenCV robot-world-hand-eye transform convention.
+- [x] Verify unit test, syntax, and CLI wiring without requiring hardware.
+- [ ] Run the calibration on real robot/ZED hardware.
+- **Status:** complete with hardware run pending
+
 ## Decisions Made
 
 | Decision | Rationale |
@@ -130,6 +139,7 @@ SAM2 streaming tracking migration for real objpc training/eval data
 | Migrate active real tracking to SAM2 streaming bbox initialization | SAM2 streaming removes the observed SAM3 text-prompt instability and matches the planned real eval workflow |
 | Remove legacy SAM/SAM3 code paths after SAM2 migration | Avoid dependency/import pollution and keep the real-data segmentation stack centered on one maintained tracker |
 | Use a separate DP multicam branch instead of modifying the old DP dataset | Keeps the single-camera baseline reproducible while allowing three RGB streams to train through the existing `MultiImageObsEncoder` |
+| Calibrate robot base to camera with a held AprilTag cube | Makes the point-cloud frame recoverable after robot-base movement and supports future robot-base-frame training/inference |
 
 ## Key Questions
 
