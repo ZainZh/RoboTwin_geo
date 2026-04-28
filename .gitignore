@@ -34,3 +34,5 @@ include/geometry_awareness_manipulation
 
 outputs/
 
+
+policy/DP3/checkpoints
