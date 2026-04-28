@@ -113,6 +113,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--show", action="store_true", default=True)
     parser.add_argument("--no_show", dest="show", action="store_false")
     parser.add_argument("--window_name", default="robot_camera_apriltag_calibration")
+    parser.add_argument("--window_width", type=int, default=1280)
+    parser.add_argument("--window_height", type=int, default=720)
     parser.add_argument("--axis_length_m", type=float, default=0.05)
     return parser.parse_args()
 
@@ -399,6 +401,18 @@ def draw_detection(
     return vis
 
 
+def resize_for_display(image: np.ndarray, max_width: int, max_height: int) -> np.ndarray:
+    if max_width <= 0 or max_height <= 0:
+        return image
+    height, width = image.shape[:2]
+    scale = min(float(max_width) / float(width), float(max_height) / float(height), 1.0)
+    if scale >= 1.0:
+        return image
+    out_width = max(1, int(round(width * scale)))
+    out_height = max(1, int(round(height * scale)))
+    return cv2.resize(image, (out_width, out_height), interpolation=cv2.INTER_AREA)
+
+
 def button_monitor_realtime(agent) -> None:
     last_keys_status = np.array(([0, 0], [0, 0]))
     start_press_status = np.array(([0, 0], [0, 0]))
@@ -607,7 +621,7 @@ def run_interactive_collection(args: argparse.Namespace) -> dict[str, Any]:
                 status_lines,
             )
             if bool(args.show):
-                cv2.imshow(str(args.window_name), vis)
+                cv2.imshow(str(args.window_name), resize_for_display(vis, int(args.window_width), int(args.window_height)))
                 key = cv2.waitKey(1) & 0xFF
                 if key in (ord("q"), 27):
                     raise KeyboardInterrupt

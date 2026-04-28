@@ -11,6 +11,7 @@ from script.real_zed_collection.calibrate_robot_camera_apriltag import (
     _resolve_camera_serial,
     candidate_aruco_dictionary_names,
     invert_transform,
+    resize_for_display,
     resolve_aruco_dictionary_id,
     solve_robot_camera_calibration,
 )
@@ -94,6 +95,18 @@ class RobotCameraAprilTagCalibrationTest(unittest.TestCase):
         self.assertIn("DICT_6X6_50", names)
         self.assertIn("DICT_APRILTAG_36H11", names)
         self.assertEqual(candidate_aruco_dictionary_names("4x4_50"), ["DICT_4X4_50"])
+
+    def test_resize_for_display_preserves_aspect_with_max_bounds(self):
+        image = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        resized = resize_for_display(image, max_width=1280, max_height=720)
+
+        self.assertEqual(resized.shape[:2], (720, 1280))
+
+    def test_resize_for_display_does_not_upscale(self):
+        image = np.zeros((360, 640, 3), dtype=np.uint8)
+        resized = resize_for_display(image, max_width=1280, max_height=720)
+
+        self.assertEqual(resized.shape[:2], (360, 640))
 
     def test_solve_recovers_base_from_camera_for_moving_tag(self):
         camera_from_base = _axis_angle_transform([0.3, -0.2, 1.0], 0.55, [0.45, -0.25, 0.8])

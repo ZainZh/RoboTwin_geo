@@ -1021,3 +1021,6 @@
   - Added config-driven camera label/serial mapping to `calibrate_three_zed_extrinsics.py` and `calibrate_robot_camera_apriltag.py`.
   - Added tests confirming `real_zed_collection.yaml` maps `global -> 38968158`, `left -> 31021548`, and `right -> 37856216`, and that robot-camera calibration prefers that mapping over stale calibration YAML serials.
   - Verified with `python -m unittest script.test_robot_camera_apriltag_calibration`, `python -m py_compile script/real_zed_collection/calibrate_three_zed_extrinsics.py script/real_zed_collection/calibrate_robot_camera_apriltag.py script/test_robot_camera_apriltag_calibration.py`, both calibration `--help` commands, and a direct serial-resolution smoke print.
+  - Added preview-window bounds to `calibrate_robot_camera_apriltag.py` via `--window_width` and `--window_height`, defaulting to `1280x720`.
+  - Added unit coverage that the display resize preserves aspect ratio and does not upscale smaller frames.
+  - Re-verified with `python -m unittest script.test_robot_camera_apriltag_calibration`, `python -m py_compile script/real_zed_collection/calibrate_robot_camera_apriltag.py script/test_robot_camera_apriltag_calibration.py`, and `python script/real_zed_collection/calibrate_robot_camera_apriltag.py --help`.
