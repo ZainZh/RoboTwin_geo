@@ -2,11 +2,9 @@
 import sys
 
 import torch
-import sapien.core as sapien
 import traceback
 import os
 import numpy as np
-from envs import *
 from hydra import initialize, compose
 from omegaconf import OmegaConf
 from hydra.core.hydra_config import HydraConfig
@@ -23,6 +21,18 @@ import importlib.util
 from hydra import initialize, compose
 from omegaconf import OmegaConf
 from datetime import datetime
+
+try:
+    import sapien.core as sapien
+except Exception:
+    sapien = None
+
+try:
+    from envs import *  # noqa: F401,F403
+except Exception as exc:
+    _ENVS_IMPORT_ERROR = exc
+else:
+    _ENVS_IMPORT_ERROR = None
 
 current_file_path = os.path.abspath(__file__)
 parent_directory = os.path.dirname(current_file_path)

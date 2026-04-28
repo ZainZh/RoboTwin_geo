@@ -986,3 +986,6 @@
   - Verified with `bash -n policy/DP3/real_infer_baseline.sh policy/DP3/real_infer_semantic_pointwise_hybrid.sh`.
   - Verified CLI wiring with both shell wrappers using `--help`.
   - Did not run hardware execution in this session.
+  - Diagnosed control-machine dependency failures as a `deploy_policy.py` top-level simulator import problem.
+  - Changed `sapien.core` and `envs` imports in `policy/DP3/deploy_policy.py` to optional imports so real inference can load DP3 without full simulator dependencies.
+  - Verified `deploy_policy` imports when `sapien` and `envs` are deliberately blocked by a temporary import hook.

@@ -33,6 +33,7 @@
 - `RobotRunner.get_action(policy, observation)` accepts one encoded observation at a time and returns an action chunk. A real execution script should update the DP3 observation cache, iterate the returned actions, send them to `RobotEnv.step`, and rebuild live observations between actions.
 - For real-ZED online SAM2 projection, `extrinsic_cv` must be world-to-camera. The live inference script therefore stores `invert_transform(T_world_from_camera)` in `observation/<camera>/extrinsic_cv` while keeping `cam2world_gl` as `T_world_from_camera`.
 - The real inference wrappers default to dry-run mode and require `--execute` to command the robot. This prevents accidentally moving hardware during model/camera/prompt checks.
+- Real control machines should not need full RoboTwin simulator dependencies for DP3 real inference. The blocking import chain was `policy/DP3/deploy_policy.py` importing `sapien.core` and `envs` at module import time, even though real inference only needs `get_model` and `encode_obs`.
 
 ### Existing DP3 training data expectations
 - `policy/DP3/scripts/process_data.py` expects RoboTwin-style HDF5 episodes under `data/<task>/<task_config>/data/episode{i}.hdf5`.
