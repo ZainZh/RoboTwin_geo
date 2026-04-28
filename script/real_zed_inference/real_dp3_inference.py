@@ -452,14 +452,18 @@ def add_xtrainer_to_path() -> None:
 
 def build_robot_env(args: argparse.Namespace):
     if bool(args.no_robot):
+        print("[INFO] Robot disabled by --no_robot; using zero/fallback joint state.")
         return None
     add_xtrainer_to_path()
     from dobot_control.env import RobotEnv  # noqa: PLC0415
     from dobot_control.robots.robot_node import ZMQClientRobot  # noqa: PLC0415
 
+    print(f"[INFO] Connecting robot client at {args.hostname}:{int(args.robot_port)} ...")
     robot_client = ZMQClientRobot(port=int(args.robot_port), host=str(args.hostname))
+    print("[INFO] Robot ZMQ client created; initializing RobotEnv ...")
     env = RobotEnv(robot_client)
     try:
+        print("[INFO] Setting robot light DO status ...")
         env.set_do_status([1, 0])
         env.set_do_status([2, 0])
         env.set_do_status([3, 0])
@@ -482,19 +486,24 @@ def reset_robot_to_photo_pose(env) -> np.ndarray:
     photo_left = np.deg2rad([-90, 0, -90, 0, 90, 90, 57])
     photo_right = np.deg2rad([90, 0, 90, 0, -90, -90, 57])
     flag = np.asarray([1, 1], dtype=np.float32)
+    print("[INFO] Reading robot joints before reset ...")
     current = np.asarray(env.get_obs()["joint_positions"], dtype=np.float32).reshape(14)
     safe = np.concatenate([safe_left, safe_right]).astype(np.float32)
     photo = np.concatenate([photo_left, photo_right]).astype(np.float32)
+    print("[INFO] Moving robot to safe pose ...")
     interpolate_robot(env, current, safe, max_step=0.001, flag=flag)
     time.sleep(0.5)
+    print("[INFO] Moving robot to initial photo pose ...")
     interpolate_robot(env, safe, photo, max_step=0.001, flag=flag)
     time.sleep(0.5)
+    print("[INFO] Robot reset complete.")
     return photo.astype(np.float32)
 
 
 def current_joint_vector(env, fallback: np.ndarray, *, use_last_gripper: bool = True) -> np.ndarray:
     if env is None:
         return np.asarray(fallback, dtype=np.float32).reshape(14).copy()
+    print("[TRACE] Reading robot joint observation ...", flush=True)
     obs = env.get_obs()
     joints = np.asarray(obs["joint_positions"], dtype=np.float32).reshape(14)
     if use_last_gripper:
@@ -573,7 +582,9 @@ def run_real_inference(args: argparse.Namespace) -> None:
     if bool(args.execute) and bool(args.no_robot):
         raise ValueError("--execute cannot be used together with --no_robot")
 
+    print("[INFO] Starting real DP3 inference.")
     placeholders = parse_placeholder_list(args.object_placeholders)
+    print("[INFO] Loading DP3 model ...")
     model, encode_obs = load_dp3_model(args)
     needs_sam2_objpc = args.mode == "semantic_pointwise_hybrid" or bool(args.enable_sam2_objpc)
 
@@ -581,13 +592,16 @@ def run_real_inference(args: argparse.Namespace) -> None:
     sam2_tracking_state_by_camera: dict[str, Any] = {}
     sam2_bbox_prompts_by_camera: dict[str, dict[str, object]] = {}
 
+    print("[INFO] Starting ZED cameras ...")
     live = start_zed_cameras(args)
     env = None
     try:
+        print("[INFO] Initializing robot interface ...")
         env = build_robot_env(args)
         if env is not None and bool(args.execute) and not bool(args.skip_robot_reset):
             last_action = reset_robot_to_photo_pose(env)
         elif env is not None:
+            print("[INFO] Reading initial robot joint state ...")
             raw = np.asarray(env.get_obs()["joint_positions"], dtype=np.float32).reshape(14)
             last_action = raw.copy()
         else:
@@ -596,6 +610,7 @@ def run_real_inference(args: argparse.Namespace) -> None:
         last_action[13] = float(args.initial_right_gripper)
 
         if needs_sam2_objpc:
+            print("[INFO] Loading SAM2 runtime for object point clouds ...")
             sam2_runtime = load_sam2_runtime(args, placeholders, live.labels)
             _, _, loaded_prompts = sam2_runtime
             sam2_bbox_prompts_by_camera.update(loaded_prompts)
@@ -609,8 +624,10 @@ def run_real_inference(args: argparse.Namespace) -> None:
         while action_step < int(args.max_steps):
             loop_start = time.time()
             joints = current_joint_vector(env, last_action)
+            print("[TRACE] Building live point-cloud observation ...", flush=True)
             observation, dense_scene = build_robotwin_observation(args=args, live=live, joint_vector=joints)
             if needs_sam2_objpc:
+                print("[TRACE] Updating SAM2 object point clouds ...", flush=True)
                 tracker_factory, extract_all_fn, _ = sam2_runtime
                 observation = add_sam2_object_pointclouds(
                     observation=observation,
@@ -629,6 +646,7 @@ def run_real_inference(args: argparse.Namespace) -> None:
             encoded_obs = encode_obs(observation, model)
             if len(model.env_runner.obs) == 0:
                 model.update_obs(encoded_obs)
+            print("[TRACE] Running DP3 policy inference ...", flush=True)
             actions = np.asarray(model.get_action(), dtype=np.float32).reshape(-1, 14)
 
             for action in actions:
