@@ -1,9 +1,14 @@
 import unittest
+from argparse import Namespace
+from tempfile import TemporaryDirectory
+from pathlib import Path
 
 import cv2
 import numpy as np
 
+from script.real_zed_collection.calibrate_three_zed_extrinsics import load_collection_camera_mapping
 from script.real_zed_collection.calibrate_robot_camera_apriltag import (
+    _resolve_camera_serial,
     candidate_aruco_dictionary_names,
     invert_transform,
     resolve_aruco_dictionary_id,
@@ -33,6 +38,48 @@ def _axis_angle_transform(axis, angle_rad, translation):
 
 
 class RobotCameraAprilTagCalibrationTest(unittest.TestCase):
+    def test_loads_label_serial_mapping_from_collection_config(self):
+        with TemporaryDirectory() as tmp:
+            config = Path(tmp) / "real_zed_collection.yaml"
+            config.write_text(
+                "camera_labels: global,left,right\n"
+                "zed_serials: [38968158, 31021548, 37856216]\n",
+                encoding="utf-8",
+            )
+
+            labels, serial_by_label = load_collection_camera_mapping(config)
+
+        self.assertEqual(labels, ["global", "left", "right"])
+        self.assertEqual(
+            serial_by_label,
+            {"global": 38968158, "left": 31021548, "right": 37856216},
+        )
+
+    def test_robot_camera_serial_prefers_collection_config_over_calibration_yaml(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            collection_config = root / "real_zed_collection.yaml"
+            collection_config.write_text(
+                "camera_labels: global,left,right\n"
+                "zed_serials: [38968158, 31021548, 37856216]\n",
+                encoding="utf-8",
+            )
+            calibration_yaml = root / "three_camera_charuco_extrinsics.yaml"
+            calibration_yaml.write_text(
+                "cameras:\n"
+                "  global:\n"
+                "    serial_number: 31021548\n",
+                encoding="utf-8",
+            )
+            args = Namespace(
+                zed_serial=0,
+                collection_config=str(collection_config),
+                calibration_path=str(calibration_yaml),
+                camera_label="global",
+            )
+
+            self.assertEqual(_resolve_camera_serial(args), 38968158)
+
     def test_resolve_aruco_dictionary_aliases(self):
         self.assertEqual(resolve_aruco_dictionary_id("DICT_4X4_50"), cv2.aruco.DICT_4X4_50)
         self.assertEqual(resolve_aruco_dictionary_id("4x4_50"), cv2.aruco.DICT_4X4_50)

@@ -19,6 +19,7 @@ from script.real_zed_collection.calibrate_three_zed_extrinsics import (
     _capture_frames,
     _configure_zed_image_controls,
     _open_zed,
+    load_collection_camera_mapping,
 )
 from script.real_zed_collection.collect_zed_robotwin_raw import (
     calculate_vel_pos,
@@ -64,6 +65,7 @@ AUTO_ARUCO_DICTIONARIES = [
 def parse_args() -> argparse.Namespace:
     repo_root = Path(__file__).resolve().parents[2]
     default_three_zed = repo_root / "script" / "real_zed_collection" / "calibration" / "three_camera_charuco_extrinsics.yaml"
+    default_collection_config = repo_root / "script" / "real_zed_collection" / "configs" / "real_zed_collection.yaml"
     default_session_root = repo_root / "outputs" / "real_zed_collection" / "robot_camera_calibration"
 
     parser = argparse.ArgumentParser(
@@ -74,6 +76,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--arm", choices=("left", "right"), default="left")
     parser.add_argument("--camera_label", default="global")
+    parser.add_argument(
+        "--collection_config",
+        default=str(default_collection_config),
+        help="Default source for camera_label->serial mapping. Pass empty string to fall back to --calibration_path.",
+    )
     parser.add_argument("--calibration_path", default=str(default_three_zed))
     parser.add_argument("--zed_serial", type=int, default=0, help="Overrides --camera_label lookup when >0.")
     parser.add_argument("--zed_resolution", default="HD1080")
@@ -267,6 +274,9 @@ def _load_yaml(path: str | Path) -> dict[str, Any]:
 def _resolve_camera_serial(args: argparse.Namespace) -> int:
     if int(args.zed_serial) > 0:
         return int(args.zed_serial)
+    _config_labels, config_serial_by_label = load_collection_camera_mapping(getattr(args, "collection_config", ""))
+    if args.camera_label in config_serial_by_label:
+        return int(config_serial_by_label[args.camera_label])
     cfg = _load_yaml(args.calibration_path)
     cameras = cfg.get("cameras", {})
     if not isinstance(cameras, dict) or args.camera_label not in cameras:

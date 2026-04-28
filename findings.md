@@ -51,6 +51,7 @@
 - The calibration script keeps xtrainer-style Button A lock/servo behavior and reuses the same servo safety checks from `collect_zed_robotwin_raw.py`.
 - The default pose conversion assumes Dobot Cartesian pose units are millimeters and Euler angles are degrees (`--pose_xyz_unit mm --pose_rotation_mode euler_deg --pose_euler_order xyz`); these are explicit CLI parameters so hardware validation can adjust convention if needed.
 - The marker detector now accepts `--marker_dictionary`, including explicit dictionaries such as `DICT_4X4_50` and an `auto` mode that tries common ArUco and AprilTag dictionaries. For the user's single-face ArUco marker with id 4, run with `--tag_id 4` and either the known dictionary or `--marker_dictionary auto`.
+- Three-ZED extrinsic calibration and robot-camera calibration now default to `script/real_zed_collection/configs/real_zed_collection.yaml` for `camera_labels`/`zed_serials`. Explicit `--serials` in three-ZED calibration and explicit `--zed_serial` in robot-camera calibration still override this config.
 
 ### Existing DP3 training data expectations
 - `policy/DP3/scripts/process_data.py` expects RoboTwin-style HDF5 episodes under `data/<task>/<task_config>/data/episode{i}.hdf5`.

@@ -1018,3 +1018,6 @@
   - Added `--marker_dictionary auto` so a single-face ArUco marker with only id 4 can be tried without knowing the exact 4x4/5x5/6x6 family upfront.
   - Added unit coverage for dictionary alias normalization and auto dictionary expansion.
   - Re-verified with `python -m unittest script.test_robot_camera_apriltag_calibration`, `python -m py_compile script/real_zed_collection/calibrate_robot_camera_apriltag.py script/test_robot_camera_apriltag_calibration.py`, and `python script/real_zed_collection/calibrate_robot_camera_apriltag.py --help`.
+  - Added config-driven camera label/serial mapping to `calibrate_three_zed_extrinsics.py` and `calibrate_robot_camera_apriltag.py`.
+  - Added tests confirming `real_zed_collection.yaml` maps `global -> 38968158`, `left -> 31021548`, and `right -> 37856216`, and that robot-camera calibration prefers that mapping over stale calibration YAML serials.
+  - Verified with `python -m unittest script.test_robot_camera_apriltag_calibration`, `python -m py_compile script/real_zed_collection/calibrate_three_zed_extrinsics.py script/real_zed_collection/calibrate_robot_camera_apriltag.py script/test_robot_camera_apriltag_calibration.py`, both calibration `--help` commands, and a direct serial-resolution smoke print.

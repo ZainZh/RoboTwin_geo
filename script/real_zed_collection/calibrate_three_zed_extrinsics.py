@@ -43,6 +43,7 @@ class PositionEstimate:
 def parse_args() -> argparse.Namespace:
     repo_root = Path(__file__).resolve().parents[2]
     default_output = repo_root / "script" / "real_zed_collection" / "calibration" / "three_camera_charuco_extrinsics.yaml"
+    default_collection_config = repo_root / "script" / "real_zed_collection" / "configs" / "real_zed_collection.yaml"
     default_geometry_repo = Path.home() / "github" / "geometry_awareness_manipulation"
 
     parser = argparse.ArgumentParser(
@@ -52,7 +53,13 @@ def parse_args() -> argparse.Namespace:
         )
     )
     parser.add_argument("--serials", type=int, nargs="*", default=None, metavar="SN")
-    parser.add_argument("--labels", type=str, nargs=3, default=["global", "left", "right"], metavar=("L0", "L1", "L2"))
+    parser.add_argument("--labels", type=str, nargs=3, default=None, metavar=("L0", "L1", "L2"))
+    parser.add_argument(
+        "--collection_config",
+        type=str,
+        default=str(default_collection_config),
+        help="Default source for camera_labels/zed_serials when --serials is omitted. Pass empty string to disable.",
+    )
     parser.add_argument("--reference_label", type=str, default="global")
     # parser.add_argument("--charuco_config_name", type=str, default="charuco_A4")
     parser.add_argument("--charuco_config_name", type=str, default="charuco_300_9x14_20mm_15mm")
@@ -86,6 +93,40 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--panel_height", type=int, default=800)
     parser.add_argument("--axis_length", type=float, default=0.035)
     return parser.parse_args()
+
+
+def _parse_camera_labels(value) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def load_collection_camera_mapping(config_path: str | Path | None) -> tuple[list[str], dict[str, int]]:
+    if config_path is None or not str(config_path).strip():
+        return [], {}
+    path = Path(config_path).expanduser()
+    if not path.exists():
+        return [], {}
+    with path.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"Collection config must be a YAML mapping: {path}")
+    labels = _parse_camera_labels(data.get("camera_labels"))
+    serials = [int(item) for item in (data.get("zed_serials") or [])]
+    if not labels and not serials:
+        return [], {}
+    if len(labels) != len(serials):
+        raise ValueError(
+            f"Collection config camera_labels and zed_serials length mismatch: "
+            f"{path} labels={labels} serials={serials}"
+        )
+    if len(set(labels)) != len(labels):
+        raise ValueError(f"Collection config camera_labels must be unique: {labels}")
+    if len(set(serials)) != len(serials):
+        raise ValueError(f"Collection config zed_serials must be unique: {serials}")
+    return labels, dict(zip(labels, serials))
 
 
 def _as_transform(rotation: np.ndarray, translation: np.ndarray) -> np.ndarray:
@@ -744,7 +785,8 @@ def main() -> None:
     if sl is None:
         raise RuntimeError("pyzed.sl is not available. Please install ZED SDK Python API.")
 
-    labels = [str(x) for x in args.labels]
+    config_labels, config_serial_by_label = load_collection_camera_mapping(args.collection_config)
+    labels = [str(x) for x in (args.labels or config_labels or ["global", "left", "right"])]
     if len(labels) != 3 or len(set(labels)) != 3:
         raise ValueError("Please provide exactly 3 unique labels.")
     if args.reference_label not in labels:
@@ -761,6 +803,14 @@ def main() -> None:
             raise ValueError(f"When using --serials, provide exactly {len(labels)} serials.")
         serials = serials_cli
         serial_source = "cli"
+    elif config_serial_by_label:
+        missing_labels = [label for label in labels if label not in config_serial_by_label]
+        if missing_labels:
+            raise ValueError(
+                f"Collection config {args.collection_config} is missing serials for labels: {missing_labels}"
+            )
+        serials = [int(config_serial_by_label[label]) for label in labels]
+        serial_source = f"collection_config:{Path(args.collection_config).expanduser().resolve()}"
     else:
         if len(discovered_serials) < len(labels):
             raise RuntimeError(
