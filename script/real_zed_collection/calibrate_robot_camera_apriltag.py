@@ -41,6 +41,35 @@ class AprilTagDetection:
     tvec: np.ndarray
 
 
+@dataclass
+class CameraDetectionSnapshot:
+    frame: np.ndarray
+    detection: AprilTagDetection | None
+    timestamp_unix_sec: float
+
+
+class LatestCameraDetection:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._snapshot: CameraDetectionSnapshot | None = None
+        self._error: BaseException | None = None
+
+    def update(self, snapshot: CameraDetectionSnapshot) -> None:
+        with self._lock:
+            self._snapshot = snapshot
+            self._error = None
+
+    def set_error(self, error: BaseException) -> None:
+        with self._lock:
+            self._error = error
+
+    def snapshot(self) -> CameraDetectionSnapshot | None:
+        with self._lock:
+            if self._error is not None:
+                raise RuntimeError("Camera detection worker failed.") from self._error
+            return self._snapshot
+
+
 AUTO_ARUCO_DICTIONARIES = [
     "DICT_4X4_50",
     "DICT_4X4_100",
@@ -116,6 +145,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--window_width", type=int, default=1280)
     parser.add_argument("--window_height", type=int, default=720)
     parser.add_argument("--axis_length_m", type=float, default=0.05)
+    parser.add_argument("--camera_poll_interval_sec", type=float, default=0.0)
     return parser.parse_args()
 
 
@@ -413,6 +443,70 @@ def resize_for_display(image: np.ndarray, max_width: int, max_height: int) -> np
     return cv2.resize(image, (out_width, out_height), interpolation=cv2.INTER_AREA)
 
 
+def camera_detection_loop(
+    stream,
+    args: argparse.Namespace,
+    latest: LatestCameraDetection,
+    stop_event: threading.Event,
+    *,
+    capture_frames_fn=_capture_frames,
+    detect_pose_fn=detect_apriltag_pose,
+) -> None:
+    try:
+        while not stop_event.is_set():
+            frames = capture_frames_fn([stream])
+            frame = frames[0] if frames else None
+            if frame is None:
+                stop_event.wait(0.01)
+                continue
+            detection = detect_pose_fn(
+                frame,
+                stream.camera_matrix,
+                stream.dist_coeffs,
+                tag_size_m=float(args.tag_size_m),
+                tag_id=int(args.tag_id),
+                marker_dictionary=str(args.marker_dictionary),
+            )
+            latest.update(
+                CameraDetectionSnapshot(
+                    frame=frame,
+                    detection=detection,
+                    timestamp_unix_sec=float(time.time()),
+                )
+            )
+            poll_interval = float(getattr(args, "camera_poll_interval_sec", 0.0))
+            if poll_interval > 0.0:
+                stop_event.wait(poll_interval)
+    except BaseException as exc:
+        latest.set_error(exc)
+        stop_event.set()
+
+
+def start_camera_detection_worker(
+    stream,
+    args: argparse.Namespace,
+    latest: LatestCameraDetection,
+    stop_event: threading.Event,
+    *,
+    capture_frames_fn=_capture_frames,
+    detect_pose_fn=detect_apriltag_pose,
+) -> threading.Thread:
+    thread = threading.Thread(
+        target=camera_detection_loop,
+        kwargs={
+            "stream": stream,
+            "args": args,
+            "latest": latest,
+            "stop_event": stop_event,
+            "capture_frames_fn": capture_frames_fn,
+            "detect_pose_fn": detect_pose_fn,
+        },
+        daemon=True,
+    )
+    thread.start()
+    return thread
+
+
 def button_monitor_realtime(agent) -> None:
     last_keys_status = np.array(([0, 0], [0, 0]))
     start_press_status = np.array(([0, 0], [0, 0]))
@@ -571,6 +665,9 @@ def run_interactive_collection(args: argparse.Namespace) -> dict[str, Any]:
         int(args.zed_gain),
         args.zed_whitebalance_temp,
     )
+    camera_stop_event = threading.Event()
+    latest_camera = LatestCameraDetection()
+    camera_thread = start_camera_detection_worker(stream, args, latest_camera, camera_stop_event)
 
     env, agent, modules = _init_robot(args)
     button_thread = threading.Thread(target=button_monitor_realtime, args=(agent,), daemon=True)
@@ -589,39 +686,35 @@ def run_interactive_collection(args: argparse.Namespace) -> dict[str, Any]:
 
     try:
         while len(samples) < int(args.samples):
-            frames = _capture_frames([stream])
-            frame = frames[0]
-            if frame is None:
-                print("[WARN] ZED frame grab failed.")
-                time.sleep(0.05)
-                continue
-
-            detection = detect_apriltag_pose(
-                frame,
-                stream.camera_matrix,
-                stream.dist_coeffs,
-                tag_size_m=float(args.tag_size_m),
-                tag_id=int(args.tag_id),
-                marker_dictionary=str(args.marker_dictionary),
-            )
-            status_lines = [
-                f"arm={args.arm} camera={args.camera_label} sample={len(samples)}/{args.samples}",
-                (
-                    f"dict={args.marker_dictionary if detection is None else detection.marker_dictionary} "
-                    f"tag={'none' if detection is None else detection.tag_id} size={args.tag_size_m:.4f}m"
-                ),
-                "Button B: capture current pose",
-            ]
-            vis = draw_detection(
-                frame,
-                detection,
-                stream.camera_matrix,
-                stream.dist_coeffs,
-                float(args.axis_length_m),
-                status_lines,
-            )
-            if bool(args.show):
-                cv2.imshow(str(args.window_name), resize_for_display(vis, int(args.window_width), int(args.window_height)))
+            camera_snapshot = latest_camera.snapshot()
+            vis = None
+            if camera_snapshot is not None:
+                detection = camera_snapshot.detection
+                status_lines = [
+                    f"arm={args.arm} camera={args.camera_label} sample={len(samples)}/{args.samples}",
+                    (
+                        f"dict={args.marker_dictionary if detection is None else detection.marker_dictionary} "
+                        f"tag={'none' if detection is None else detection.tag_id} size={args.tag_size_m:.4f}m"
+                    ),
+                    f"camera_age={time.time() - camera_snapshot.timestamp_unix_sec:.3f}s | Button B: capture current pose",
+                ]
+                vis = draw_detection(
+                    camera_snapshot.frame,
+                    detection,
+                    stream.camera_matrix,
+                    stream.dist_coeffs,
+                    float(args.axis_length_m),
+                    status_lines,
+                )
+                if bool(args.show):
+                    cv2.imshow(
+                        str(args.window_name),
+                        resize_for_display(vis, int(args.window_width), int(args.window_height)),
+                    )
+                    key = cv2.waitKey(1) & 0xFF
+                    if key in (ord("q"), 27):
+                        raise KeyboardInterrupt
+            elif bool(args.show):
                 key = cv2.waitKey(1) & 0xFF
                 if key in (ord("q"), 27):
                     raise KeyboardInterrupt
@@ -653,12 +746,14 @@ def run_interactive_collection(args: argparse.Namespace) -> dict[str, Any]:
 
             if dev_what_to_do[0, 2] == 1:
                 what_to_do[0, 2] = 0
-                if detection is None:
-                    print("[WARN] Capture skipped: no requested AprilTag detected.")
+                capture_snapshot = latest_camera.snapshot()
+                if capture_snapshot is None or capture_snapshot.detection is None:
+                    print("[WARN] Capture skipped: no requested marker detected in the latest camera frame.")
                     modules["set_light"](env, "red", 1)
                     time.sleep(0.2)
                     modules["set_light"](env, "yellow", 1)
                 else:
+                    detection = capture_snapshot.detection
                     pose6, base_from_gripper = _capture_robot_pose_sample(env, args)
                     sample_idx = len(samples)
                     sample = {
@@ -673,8 +768,23 @@ def run_interactive_collection(args: argparse.Namespace) -> dict[str, Any]:
                         "camera_from_tag": detection.camera_from_tag,
                         "tag_rvec": detection.rvec,
                         "tag_tvec_m": detection.tvec,
+                        "camera_timestamp_unix_sec": float(capture_snapshot.timestamp_unix_sec),
+                        "camera_frame_age_sec": float(time.time() - capture_snapshot.timestamp_unix_sec),
                     }
                     samples.append(sample)
+                    if vis is None:
+                        vis = draw_detection(
+                            capture_snapshot.frame,
+                            detection,
+                            stream.camera_matrix,
+                            stream.dist_coeffs,
+                            float(args.axis_length_m),
+                            [
+                                f"arm={args.arm} camera={args.camera_label} sample={len(samples)}/{args.samples}",
+                                f"dict={detection.marker_dictionary} tag={detection.tag_id} size={args.tag_size_m:.4f}m",
+                                "captured",
+                            ],
+                        )
                     cv2.imwrite(str(session_dir / f"sample_{sample_idx:03d}.png"), vis)
                     _write_json(session_dir / f"sample_{sample_idx:03d}.json", _sample_to_jsonable(sample))
                     print(f"[CAPTURE] sample {len(samples)}/{args.samples}: tag={detection.tag_id}")
@@ -751,6 +861,8 @@ def run_interactive_collection(args: argparse.Namespace) -> dict[str, Any]:
         )
         return payload
     finally:
+        camera_stop_event.set()
+        camera_thread.join(timeout=2.0)
         try:
             stream.camera.close()
         except Exception:

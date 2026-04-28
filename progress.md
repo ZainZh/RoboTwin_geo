@@ -1024,3 +1024,7 @@
   - Added preview-window bounds to `calibrate_robot_camera_apriltag.py` via `--window_width` and `--window_height`, defaulting to `1280x720`.
   - Added unit coverage that the display resize preserves aspect ratio and does not upscale smaller frames.
   - Re-verified with `python -m unittest script.test_robot_camera_apriltag_calibration`, `python -m py_compile script/real_zed_collection/calibrate_robot_camera_apriltag.py script/test_robot_camera_apriltag_calibration.py`, and `python script/real_zed_collection/calibrate_robot_camera_apriltag.py --help`.
+  - Changed robot-camera calibration so ZED frame capture and marker detection run in a background worker thread, while the robot control loop reads the latest snapshot.
+  - Added `LatestCameraDetection`, `CameraDetectionSnapshot`, and `start_camera_detection_worker` with a unit test using fake capture/detection functions.
+  - Sample metadata now records `camera_timestamp_unix_sec` and `camera_frame_age_sec` so asynchronous capture latency can be inspected.
+  - Re-verified with `python -m unittest script.test_robot_camera_apriltag_calibration`, `python -m py_compile script/real_zed_collection/calibrate_robot_camera_apriltag.py script/test_robot_camera_apriltag_calibration.py`, and `python script/real_zed_collection/calibrate_robot_camera_apriltag.py --help`.

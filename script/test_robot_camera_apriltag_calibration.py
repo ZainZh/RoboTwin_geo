@@ -1,4 +1,6 @@
 import unittest
+import threading
+import time
 from argparse import Namespace
 from tempfile import TemporaryDirectory
 from pathlib import Path
@@ -8,12 +10,14 @@ import numpy as np
 
 from script.real_zed_collection.calibrate_three_zed_extrinsics import load_collection_camera_mapping
 from script.real_zed_collection.calibrate_robot_camera_apriltag import (
+    LatestCameraDetection,
     _resolve_camera_serial,
     candidate_aruco_dictionary_names,
     invert_transform,
     resize_for_display,
     resolve_aruco_dictionary_id,
     solve_robot_camera_calibration,
+    start_camera_detection_worker,
 )
 
 
@@ -107,6 +111,42 @@ class RobotCameraAprilTagCalibrationTest(unittest.TestCase):
         resized = resize_for_display(image, max_width=1280, max_height=720)
 
         self.assertEqual(resized.shape[:2], (360, 640))
+
+    def test_camera_detection_worker_updates_latest_snapshot(self):
+        class FakeStream:
+            camera_matrix = np.eye(3, dtype=np.float64)
+            dist_coeffs = np.zeros((5, 1), dtype=np.float64)
+
+        args = Namespace(tag_size_m=0.04, tag_id=4, marker_dictionary="DICT_4X4_50", camera_poll_interval_sec=0.001)
+        latest = LatestCameraDetection()
+        stop_event = threading.Event()
+        capture_calls = []
+
+        def fake_capture(_streams):
+            capture_calls.append(time.time())
+            return [np.zeros((4, 4, 3), dtype=np.uint8)]
+
+        def fake_detect(_frame, _camera_matrix, _dist_coeffs, **_kwargs):
+            return None
+
+        thread = start_camera_detection_worker(
+            FakeStream(),
+            args,
+            latest,
+            stop_event,
+            capture_frames_fn=fake_capture,
+            detect_pose_fn=fake_detect,
+        )
+
+        deadline = time.time() + 1.0
+        while latest.snapshot() is None and time.time() < deadline:
+            time.sleep(0.01)
+        stop_event.set()
+        thread.join(timeout=1.0)
+
+        self.assertIsNotNone(latest.snapshot())
+        self.assertGreaterEqual(len(capture_calls), 1)
+        self.assertFalse(thread.is_alive())
 
     def test_solve_recovers_base_from_camera_for_moving_tag(self):
         camera_from_base = _axis_angle_transform([0.3, -0.2, 1.0], 0.55, [0.45, -0.25, 0.8])
