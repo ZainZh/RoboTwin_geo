@@ -103,7 +103,7 @@ def parse_args() -> argparse.Namespace:
             "Teleop behavior follows the real-ZED collection script: Button A unlock/servo, Button B captures one sample."
         )
     )
-    parser.add_argument("--arm", choices=("left", "right"), default="left")
+    parser.add_argument("--arm", choices=("left", "right"), default="right")
     parser.add_argument("--camera_label", default="global")
     parser.add_argument(
         "--collection_config",
@@ -118,7 +118,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--zed_exposure", type=int, default=22)
     parser.add_argument("--zed_gain", type=int, default=12)
     parser.add_argument("--zed_whitebalance_temp", type=int, default=None)
-    parser.add_argument("--tag_id", type=int, default=-1, help="Use the first detected marker when negative.")
+    parser.add_argument("--tag_id", type=int, default=4, help="Use the first detected marker when negative.")
     parser.add_argument(
         "--marker_dictionary",
         default="DICT_APRILTAG_36h11",
@@ -137,8 +137,17 @@ def parse_args() -> argparse.Namespace:
         default="euler_deg",
     )
     parser.add_argument("--pose_euler_order", default="xyz")
+    parser.add_argument("--disable_outlier_rejection", action="store_true", default=False)
+    parser.add_argument("--outlier_rotation_threshold_deg", type=float, default=30.0)
+    parser.add_argument("--outlier_translation_threshold_m", type=float, default=0.05)
+    parser.add_argument("--outlier_rejection_passes", type=int, default=4)
     parser.add_argument("--session_root", default=str(default_session_root))
     parser.add_argument("--output_config", default="")
+    parser.add_argument(
+        "--recompute_from_yaml",
+        default="",
+        help="Re-solve an existing result YAML from saved raw samples without collecting new data.",
+    )
     parser.add_argument("--show", action="store_true", default=True)
     parser.add_argument("--no_show", dest="show", action="store_false")
     parser.add_argument("--window_name", default="robot_camera_apriltag_calibration")
@@ -181,8 +190,10 @@ def rotation_from_euler(angles: np.ndarray, order: str) -> np.ndarray:
     if sorted(order) != ["x", "y", "z"] or len(order) != 3:
         raise ValueError(f"Euler order must be a permutation of xyz, got {order!r}")
     rotation = np.eye(3, dtype=np.float64)
+    # Dobot GetPose() reports fixed-axis Euler angles; with column-vector
+    # transforms, order xyz composes as Rz @ Ry @ Rx.
     for axis, angle in zip(order, np.asarray(angles, dtype=np.float64).reshape(3)):
-        rotation = rotation @ _axis_rotation(axis, float(angle))
+        rotation = _axis_rotation(axis, float(angle)) @ rotation
     return rotation
 
 
@@ -293,6 +304,70 @@ def solve_robot_camera_calibration(samples: list[dict[str, Any]], method: str = 
         "per_sample_translation_error_m": [float(x) for x in translation_errors],
         "per_sample_rotation_error_deg": [float(x) for x in rotation_errors],
     }
+
+
+def solve_robot_camera_calibration_robust(
+    samples: list[dict[str, Any]],
+    *,
+    method: str = "SHAH",
+    reject_outliers: bool = True,
+    rotation_threshold_deg: float = 30.0,
+    translation_threshold_m: float = 0.20,
+    max_passes: int = 2,
+) -> dict[str, Any]:
+    initial_result = solve_robot_camera_calibration(samples, method=method)
+    active_indices = list(range(len(samples)))
+    rejected_indices: list[int] = []
+    result = initial_result
+
+    if reject_outliers:
+        for _ in range(max(0, int(max_passes))):
+            scores = []
+            for local_idx, (trans_err, rot_err) in enumerate(
+                zip(result["per_sample_translation_error_m"], result["per_sample_rotation_error_deg"])
+            ):
+                trans_score = float(trans_err) / max(float(translation_threshold_m), 1e-12)
+                rot_score = float(rot_err) / max(float(rotation_threshold_deg), 1e-12)
+                scores.append(max(trans_score, rot_score))
+            worst_local_idx = int(np.argmax(scores))
+            if float(scores[worst_local_idx]) <= 1.0:
+                break
+            next_active = [
+                sample_idx
+                for local_idx, sample_idx in enumerate(active_indices)
+                if local_idx != worst_local_idx
+            ]
+            if len(next_active) < 3:
+                break
+            rejected_indices.append(active_indices[worst_local_idx])
+            active_indices = next_active
+            result = solve_robot_camera_calibration([samples[idx] for idx in active_indices], method=method)
+
+    result = dict(result)
+    result["raw_sample_count"] = int(len(samples))
+    result["accepted_sample_indices"] = [int(idx) for idx in active_indices]
+    result["rejected_sample_indices"] = sorted({int(idx) for idx in rejected_indices})
+    result["outlier_rejection_enabled"] = bool(reject_outliers)
+    result["outlier_rotation_threshold_deg"] = float(rotation_threshold_deg)
+    result["outlier_translation_threshold_m"] = float(translation_threshold_m)
+    result["initial_mean_translation_error_m"] = float(initial_result["mean_translation_error_m"])
+    result["initial_max_translation_error_m"] = float(initial_result["max_translation_error_m"])
+    result["initial_mean_rotation_error_deg"] = float(initial_result["mean_rotation_error_deg"])
+    result["initial_max_rotation_error_deg"] = float(initial_result["max_rotation_error_deg"])
+    result["initial_per_sample_translation_error_m"] = initial_result["per_sample_translation_error_m"]
+    result["initial_per_sample_rotation_error_deg"] = initial_result["per_sample_rotation_error_deg"]
+    return result
+
+
+def _solve_from_args(samples: list[dict[str, Any]], args: argparse.Namespace, method: str) -> dict[str, Any]:
+    return solve_robot_camera_calibration_robust(
+        samples,
+        method=method,
+        reject_outliers=not bool(getattr(args, "disable_outlier_rejection", False)),
+        rotation_threshold_deg=float(getattr(args, "outlier_rotation_threshold_deg", 30.0)),
+        translation_threshold_m=float(getattr(args, "outlier_translation_threshold_m", 0.20)),
+        max_passes=int(getattr(args, "outlier_rejection_passes", 2)),
+    )
 
 
 def _load_yaml(path: str | Path) -> dict[str, Any]:
@@ -588,6 +663,92 @@ def _default_output_config(args: argparse.Namespace) -> Path:
     )
 
 
+def _recompute_output_config(args: argparse.Namespace, source_path: Path) -> Path:
+    if str(args.output_config).strip():
+        return Path(args.output_config).expanduser().resolve()
+    return source_path.with_name(f"{source_path.stem}_recomputed.yaml")
+
+
+def recompute_saved_calibration(args: argparse.Namespace) -> dict[str, Any]:
+    input_path = Path(args.recompute_from_yaml).expanduser().resolve()
+    payload = _load_yaml(input_path)
+    raw_samples = payload.get("samples", [])
+    if not isinstance(raw_samples, list) or len(raw_samples) < 3:
+        raise ValueError(f"Expected at least 3 saved samples in {input_path}")
+
+    xyz_unit = str(payload.get("pose_xyz_unit", args.pose_xyz_unit))
+    rotation_mode = str(payload.get("pose_rotation_mode", args.pose_rotation_mode))
+    euler_order = str(payload.get("pose_euler_order", args.pose_euler_order))
+    method = str(payload.get("method", args.method))
+
+    samples: list[dict[str, Any]] = []
+    jsonable_samples: list[dict[str, Any]] = []
+    for sample in raw_samples:
+        pose6 = np.asarray(sample["robot_pose_xyzrxryrz"], dtype=np.float64).reshape(6)
+        base_from_gripper = pose_xyzrxryrz_to_transform(
+            pose6,
+            xyz_unit=xyz_unit,
+            rotation_mode=rotation_mode,
+            euler_order=euler_order,
+        )
+        camera_from_tag = np.asarray(sample["camera_from_tag"], dtype=np.float64).reshape(4, 4)
+        updated = dict(sample)
+        updated["base_from_gripper"] = base_from_gripper
+        samples.append(
+            {
+                "base_from_gripper": base_from_gripper,
+                "camera_from_tag": camera_from_tag,
+            }
+        )
+        jsonable_samples.append(_sample_to_jsonable(updated))
+
+    result = _solve_from_args(samples, args, method)
+    payload = dict(payload)
+    payload["recomputed_at_unix_sec"] = float(time.time())
+    payload["recomputed_from_yaml"] = str(input_path)
+    payload["pose_xyz_unit"] = xyz_unit
+    payload["pose_rotation_mode"] = rotation_mode
+    payload["pose_euler_order"] = euler_order
+    payload["method"] = result["method"]
+    payload["sample_count"] = int(result["sample_count"])
+    payload["t_camera_from_base"] = _matrix_to_list(result["camera_from_base"])
+    payload["t_base_from_camera"] = _matrix_to_list(result["base_from_camera"])
+    payload["t_tag_from_gripper"] = _matrix_to_list(result["tag_from_gripper"])
+    payload["mean_translation_error_m"] = float(result["mean_translation_error_m"])
+    payload["max_translation_error_m"] = float(result["max_translation_error_m"])
+    payload["mean_rotation_error_deg"] = float(result["mean_rotation_error_deg"])
+    payload["max_rotation_error_deg"] = float(result["max_rotation_error_deg"])
+    payload["per_sample_translation_error_m"] = result["per_sample_translation_error_m"]
+    payload["per_sample_rotation_error_deg"] = result["per_sample_rotation_error_deg"]
+    payload["raw_sample_count"] = int(result["raw_sample_count"])
+    payload["accepted_sample_indices"] = result["accepted_sample_indices"]
+    payload["rejected_sample_indices"] = result["rejected_sample_indices"]
+    payload["outlier_rejection_enabled"] = bool(result["outlier_rejection_enabled"])
+    payload["outlier_rotation_threshold_deg"] = float(result["outlier_rotation_threshold_deg"])
+    payload["outlier_translation_threshold_m"] = float(result["outlier_translation_threshold_m"])
+    payload["initial_mean_translation_error_m"] = float(result["initial_mean_translation_error_m"])
+    payload["initial_max_translation_error_m"] = float(result["initial_max_translation_error_m"])
+    payload["initial_mean_rotation_error_deg"] = float(result["initial_mean_rotation_error_deg"])
+    payload["initial_max_rotation_error_deg"] = float(result["initial_max_rotation_error_deg"])
+    payload["initial_per_sample_translation_error_m"] = result["initial_per_sample_translation_error_m"]
+    payload["initial_per_sample_rotation_error_deg"] = result["initial_per_sample_rotation_error_deg"]
+    payload["samples"] = jsonable_samples
+
+    output_path = _recompute_output_config(args, input_path)
+    _write_yaml(output_path, payload)
+    print(f"[INFO] Wrote recomputed calibration YAML: {output_path}")
+    print(
+        "[INFO] Residuals: "
+        f"mean_trans={result['mean_translation_error_m']:.6f}m, "
+        f"max_trans={result['max_translation_error_m']:.6f}m, "
+        f"mean_rot={result['mean_rotation_error_deg']:.4f}deg, "
+        f"max_rot={result['max_rotation_error_deg']:.4f}deg"
+    )
+    if result["rejected_sample_indices"]:
+        print(f"[WARN] Rejected outlier samples: {result['rejected_sample_indices']}")
+    return payload
+
+
 def _load_robot_modules():
     repo_root = Path(__file__).resolve().parents[2]
     candidates = [
@@ -817,7 +978,7 @@ def run_interactive_collection(args: argparse.Namespace) -> dict[str, Any]:
                 last_action = action
                 total_time = max(time.time() - step_start, 1e-6)
 
-        result = solve_robot_camera_calibration(samples, method=args.method)
+        result = _solve_from_args(samples, args, args.method)
         output_config = Path(args.output_config).expanduser().resolve() if args.output_config else _default_output_config(args)
         payload = {
             "format": "robot_camera_apriltag_calibration_v1",
@@ -847,6 +1008,18 @@ def run_interactive_collection(args: argparse.Namespace) -> dict[str, Any]:
             "max_rotation_error_deg": float(result["max_rotation_error_deg"]),
             "per_sample_translation_error_m": result["per_sample_translation_error_m"],
             "per_sample_rotation_error_deg": result["per_sample_rotation_error_deg"],
+            "raw_sample_count": int(result["raw_sample_count"]),
+            "accepted_sample_indices": result["accepted_sample_indices"],
+            "rejected_sample_indices": result["rejected_sample_indices"],
+            "outlier_rejection_enabled": bool(result["outlier_rejection_enabled"]),
+            "outlier_rotation_threshold_deg": float(result["outlier_rotation_threshold_deg"]),
+            "outlier_translation_threshold_m": float(result["outlier_translation_threshold_m"]),
+            "initial_mean_translation_error_m": float(result["initial_mean_translation_error_m"]),
+            "initial_max_translation_error_m": float(result["initial_max_translation_error_m"]),
+            "initial_mean_rotation_error_deg": float(result["initial_mean_rotation_error_deg"]),
+            "initial_max_rotation_error_deg": float(result["initial_max_rotation_error_deg"]),
+            "initial_per_sample_translation_error_m": result["initial_per_sample_translation_error_m"],
+            "initial_per_sample_rotation_error_deg": result["initial_per_sample_rotation_error_deg"],
             "samples": [_sample_to_jsonable(sample) for sample in samples],
         }
         _write_yaml(output_config, payload)
@@ -859,6 +1032,8 @@ def run_interactive_collection(args: argparse.Namespace) -> dict[str, Any]:
             f"mean_rot={result['mean_rotation_error_deg']:.4f}deg, "
             f"max_rot={result['max_rotation_error_deg']:.4f}deg"
         )
+        if result["rejected_sample_indices"]:
+            print(f"[WARN] Rejected outlier samples: {result['rejected_sample_indices']}")
         return payload
     finally:
         camera_stop_event.set()
@@ -872,7 +1047,11 @@ def run_interactive_collection(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def main() -> None:
-    run_interactive_collection(parse_args())
+    args = parse_args()
+    if str(args.recompute_from_yaml).strip():
+        recompute_saved_calibration(args)
+    else:
+        run_interactive_collection(args)
 
 
 if __name__ == "__main__":

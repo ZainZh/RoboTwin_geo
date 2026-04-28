@@ -14,9 +14,11 @@ from script.real_zed_collection.calibrate_robot_camera_apriltag import (
     _resolve_camera_serial,
     candidate_aruco_dictionary_names,
     invert_transform,
+    pose_xyzrxryrz_to_transform,
     resize_for_display,
     resolve_aruco_dictionary_id,
     solve_robot_camera_calibration,
+    solve_robot_camera_calibration_robust,
     start_camera_detection_worker,
 )
 
@@ -112,6 +114,25 @@ class RobotCameraAprilTagCalibrationTest(unittest.TestCase):
 
         self.assertEqual(resized.shape[:2], (360, 640))
 
+    def test_dobot_xyzrxryrz_uses_fixed_axis_euler_order(self):
+        transform = pose_xyzrxryrz_to_transform(
+            np.array([100.0, 200.0, 300.0, 90.0, 0.0, 90.0]),
+            xyz_unit="mm",
+            rotation_mode="euler_deg",
+            euler_order="xyz",
+        )
+        expected_rotation = np.array(
+            [
+                [0.0, 0.0, 1.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            dtype=np.float64,
+        )
+
+        np.testing.assert_allclose(transform[:3, :3], expected_rotation, atol=1e-12)
+        np.testing.assert_allclose(transform[:3, 3], np.array([0.1, 0.2, 0.3]), atol=1e-12)
+
     def test_camera_detection_worker_updates_latest_snapshot(self):
         class FakeStream:
             camera_matrix = np.eye(3, dtype=np.float64)
@@ -179,6 +200,42 @@ class RobotCameraAprilTagCalibrationTest(unittest.TestCase):
         np.testing.assert_allclose(result["camera_from_base"], camera_from_base, atol=1e-6)
         np.testing.assert_allclose(result["base_from_camera"], invert_transform(camera_from_base), atol=1e-6)
         np.testing.assert_allclose(result["tag_from_gripper"], tag_from_gripper, atol=1e-6)
+        self.assertLess(result["mean_translation_error_m"], 1e-6)
+        self.assertLess(result["mean_rotation_error_deg"], 1e-5)
+
+    def test_robust_solve_rejects_bad_marker_pose(self):
+        camera_from_base = _axis_angle_transform([0.3, -0.2, 1.0], 0.55, [0.45, -0.25, 0.8])
+        tag_from_gripper = _axis_angle_transform([1.0, 0.2, -0.4], -0.35, [0.02, 0.0, 0.09])
+        samples = []
+        axes = [
+            [1.0, 0.0, 0.2],
+            [0.0, 1.0, 0.4],
+            [0.2, 0.1, 1.0],
+            [1.0, 1.0, 0.0],
+            [-0.2, 1.0, 0.7],
+            [0.7, -0.3, 1.0],
+            [1.0, -0.4, 0.3],
+        ]
+        for idx, axis in enumerate(axes):
+            base_from_gripper = _axis_angle_transform(
+                axis,
+                0.2 + 0.13 * idx,
+                [0.2 + 0.03 * idx, -0.35 + 0.02 * idx, 0.18 + 0.04 * idx],
+            )
+            camera_from_tag = camera_from_base @ base_from_gripper @ invert_transform(tag_from_gripper)
+            if idx == 3:
+                camera_from_tag = camera_from_tag @ _axis_angle_transform([0.0, 0.0, 1.0], np.pi, [0.1, 0.0, 0.0])
+            samples.append(
+                {
+                    "base_from_gripper": base_from_gripper,
+                    "camera_from_tag": camera_from_tag,
+                }
+            )
+
+        result = solve_robot_camera_calibration_robust(samples)
+
+        self.assertEqual(result["rejected_sample_indices"], [3])
+        np.testing.assert_allclose(result["camera_from_base"], camera_from_base, atol=1e-6)
         self.assertLess(result["mean_translation_error_m"], 1e-6)
         self.assertLess(result["mean_rotation_error_deg"], 1e-5)
 

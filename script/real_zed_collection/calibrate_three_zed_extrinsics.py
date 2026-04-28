@@ -431,8 +431,9 @@ def _open_zed(serial: int, resolution: str, fps: int) -> CameraStream:
         raise RuntimeError(f"Failed to open ZED serial={serial}: {status}")
 
     info = zed.get_camera_information()
-    calib_raw = getattr(info, "calibration_parameters_raw", None)
-    calib = calib_raw if calib_raw is not None else info.camera_configuration.calibration_parameters
+    # sl.VIEW.LEFT is rectified, so PnP must use the rectified intrinsics.
+    # Using calibration_parameters_raw here creates view-dependent pose drift.
+    calib = info.camera_configuration.calibration_parameters
     left = calib.left_cam
     k = np.array(
         [[left.fx, 0.0, left.cx], [0.0, left.fy, left.cy], [0.0, 0.0, 1.0]],
