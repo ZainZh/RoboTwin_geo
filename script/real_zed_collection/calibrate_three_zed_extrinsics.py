@@ -81,7 +81,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--zed_exposure", type=int, default=22)
     parser.add_argument("--zed_gain", type=int, default=12)
     parser.add_argument("--zed_whitebalance_temp", type=int, default=None)
-    parser.add_argument("--num_positions", type=int, default=25)
+    parser.add_argument("--num_positions", type=int, default=20)
     parser.add_argument("--samples_per_position", type=int, default=1)
     parser.add_argument("--position_timeout_sec", type=float, default=15.0)
     parser.add_argument("--output_config", type=str, default=str(default_output))
