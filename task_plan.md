@@ -107,6 +107,15 @@ SAM2 streaming tracking migration for real objpc training/eval data
 - [x] Verify single-camera conversion, three-camera conversion, shell syntax, Python syntax, and unit coverage.
 - **Status:** complete
 
+### Phase 14: Real DP3 Inference Scripts
+- [x] Read xtrainer real inference/control path and DP3 deploy interfaces.
+- [x] Add a real-ZED DP3 inference driver that fuses three ZED point clouds and commands the xtrainer robot env.
+- [x] Add baseline and semantic-pointwise-hybrid shell wrappers for the user's trained checkpoints.
+- [x] Keep SAM2 object tracking only where semantic hybrid needs `{A}/{B}` object point clouds.
+- [x] Verify syntax and wrapper argument wiring without requiring hardware.
+- [ ] Run on real ZED/robot hardware.
+- **Status:** complete with hardware run pending
+
 ## Decisions Made
 
 | Decision | Rationale |
@@ -133,6 +142,7 @@ SAM2 streaming tracking migration for real objpc training/eval data
 | Error | Attempt | Resolution |
 |-------|---------|------------|
 | SAM2 postprocess failed in `scaled_dot_product_attention` with `RuntimeError: No available kernel` | User ran `postprocess_real_zed_sam2_objpc_dataset.py` on GPU; warnings showed Q/K/V were float32 and Flash/Memory Efficient attention kernels were unavailable for that dtype | Wrapped SAM2 predictor calls in CUDA autocast, defaulting to `bfloat16`, and enabled CUDA SDP kernels in the SAM2 loader |
+| Real DP3 wrapper opened `/home/zheng/script/...` from repo-root invocation | Initial wrappers used `cd ../..`, which only works when launched from `policy/DP3` | Switched both wrappers to resolve the repository root from `${BASH_SOURCE[0]}` |
 
 ## Notes
 

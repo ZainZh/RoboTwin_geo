@@ -961,3 +961,28 @@
   - Verified Hydra composition for both 14D and 16D multicam configs; both expose `head_cam`, `left_cam`, `right_cam`, and `agent_pos` through `RobotMultiImageDataset`.
   - Verified real-data smoke conversion for one episode:
     `python process_data_real_zed.py grasp_mug demo_real_zed_sam2_objpc 1 --camera_labels global,left,right --output_zarr /tmp/dp_real_zed_multicam_smoke.zarr`.
+
+### Phase 23: DP Training Comparison With xtrainer
+- **Status:** complete
+- Actions taken:
+  - Read RoboTwin `policy/DP` training entrypoints, preprocessors, datasets, config, image encoder, policy, and workspace loop.
+  - Read xtrainer `ModelTrain/dp` pipeline, dataset, learner, data processing, and model code.
+  - Identified `ModelTrain/model_train.py` as a separate ACT/DETR-style entrypoint, not the `dp/` diffusion-policy training path.
+  - Summarized differences in data format, camera handling, image preprocessing, model feature dimensions, horizons, optimization loop, and checkpointing.
+
+### Phase 24: Real DP3 Inference Scripts
+- **Status:** complete with hardware run pending
+- Actions taken:
+  - Started implementation for real-robot inference scripts covering the user's trained DP3 baseline and semantic-pointwise-hybrid models.
+  - Restored planning context and added Phase 14 to `task_plan.md`.
+  - Read xtrainer real inference control flow and confirmed the 14D joint-action execution semantics.
+  - Read DP3 deploy/model runner interfaces and confirmed the real script can call `get_model`, `encode_obs`, and `model.get_action(encoded_obs)`.
+  - Read existing real-ZED capture/calibration utilities and SAM2 online point-cloud projection helpers for reuse.
+  - Added `script/real_zed_inference/real_dp3_inference.py`.
+  - Added `policy/DP3/real_infer_baseline.sh` for the user's `train.sh` DP3 baseline checkpoint.
+  - Added `policy/DP3/real_infer_semantic_pointwise_hybrid.sh` for the user's semantic-pointwise-hybrid checkpoint and semantic model path.
+  - Fixed wrapper root-path resolution after `--help` exposed that repo-root invocation jumped to `/home/zheng`.
+  - Verified with `python -m py_compile script/real_zed_inference/real_dp3_inference.py`.
+  - Verified with `bash -n policy/DP3/real_infer_baseline.sh policy/DP3/real_infer_semantic_pointwise_hybrid.sh`.
+  - Verified CLI wiring with both shell wrappers using `--help`.
+  - Did not run hardware execution in this session.

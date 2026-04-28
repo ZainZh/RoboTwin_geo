@@ -9,5 +9,6 @@
     <orderEntry type="module" module-name="geometry_awareness_manipulation" />
     <orderEntry type="module" module-name="3d_semantic_train" />
     <orderEntry type="module" module-name="Utonia" />
+    <orderEntry type="module" module-name="Dobot_Xtrainer" />
   </component>
 </module>

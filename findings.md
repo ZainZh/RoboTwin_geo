@@ -16,6 +16,24 @@
 - The compact SAM2 objpc HDF5 files do not store `/observation/*/rgb`, but `real_zed_sam2_objpc_meta.json` links each processed episode back to the raw episode directory. DP image zarr generation should therefore read RGB from raw ZED frame NPZs and joint vectors from the compact HDF5.
 - The three-camera branch maps raw camera labels as `global -> head_camera`, `left -> left_camera`, and `right -> right_camera`; DP training sees those as `head_cam`, `left_cam`, and `right_cam`.
 
+### RoboTwin `policy/DP` vs xtrainer `ModelTrain/dp` (2026-04-28)
+- RoboTwin `policy/DP` is a Hydra/zarr-based fork of the diffusion_policy image workspace. It preprocesses RoboTwin HDF5 or real-ZED raw/meta into zarr with `head_camera`, optional `left_camera/right_camera`, `state`, `action`, and `meta/episode_ends`.
+- xtrainer `ModelTrain/dp` is a standalone training pipeline around `Agent`, `Dataset`, and `DiffusionPolicy`. It reads xtrainer trajectory folders of per-frame `.pkl` files, optionally loads images lazily or through memmap, and builds train/eval split from directory names.
+- RoboTwin DP default is `horizon=8`, `n_obs_steps=3`, `n_action_steps=6`, `num_epochs=600`, `batch_size=128`, action dim 14/16 by config, image ResNet18 feature dim 512 per camera, and ImageNet normalization.
+- xtrainer DP default is `pred_horizon=16`, `obs_horizon=1`, `action_horizon=8`, `epochs=300`, `batch_size=32`, action dim fixed at 14 in `Agent`, ResNet18 projected to `image_output_size=32` per camera, image resize to `240x320`, random crop to `216x288`, and normalization with mean/std 128 for RGB.
+- RoboTwin DP conditions diffusion through `MultiImageObsEncoder` global condition and uses `DiffusionUnetImagePolicy`; xtrainer DP manually concatenates encoded modalities in order `eef, hand_pos, img, pos, touch` and feeds a custom `ConditionalUnet1D`.
+- RoboTwin DP currently uses only RGB + joint vector for real-ZED DP baseline; xtrainer DP can select `representation_type` such as `img-pos`, `eef`, `hand_pos`, `touch`, and `depth`, with optional delta action modes.
+
+### Real DP3 inference requirements (2026-04-28)
+- xtrainer `experiments/run_inference.py` commands the real robot with 14D joint actions through `RobotEnv.step(action, np.array([1,1]))`, clamps gripper dimensions `6` and `13` into `[0,1]`, and initializes observations from `env.get_obs()["joint_positions"]`.
+- RoboTwin DP3 deployment should reuse `policy/DP3/deploy_policy.py:get_model()` plus `encode_obs(...)`, because that path already loads the correct checkpoint, EMA setting, NDF/semantic models, and DP3 `RobotRunner` action queue.
+- For the user's baseline `train.sh` model, the real observation only needs `joint_action/vector` and a fused `/pointcloud` with shape `[1024,6]`.
+- For the user's `train_semantic_pointwise_hybrid.sh` model, the real observation needs both the hybrid main context point cloud and `object_pointcloud/{A,B}` so `encode_obs(...)` can compute `semantic_point_cloud_A` from the semantic checkpoint.
+- Existing `policy/DP3/scripts/sam2_pointcloud_utils.py` can produce `{A}/{B}` object point clouds online if the observation contains per-camera `rgb`, `intrinsic_cv`, and `extrinsic_cv`; this matches the real-ZED live camera frames once they are transformed into the workspace/world frame.
+- `RobotRunner.get_action(policy, observation)` accepts one encoded observation at a time and returns an action chunk. A real execution script should update the DP3 observation cache, iterate the returned actions, send them to `RobotEnv.step`, and rebuild live observations between actions.
+- For real-ZED online SAM2 projection, `extrinsic_cv` must be world-to-camera. The live inference script therefore stores `invert_transform(T_world_from_camera)` in `observation/<camera>/extrinsic_cv` while keeping `cam2world_gl` as `T_world_from_camera`.
+- The real inference wrappers default to dry-run mode and require `--execute` to command the robot. This prevents accidentally moving hardware during model/camera/prompt checks.
+
 ### Existing DP3 training data expectations
 - `policy/DP3/scripts/process_data.py` expects RoboTwin-style HDF5 episodes under `data/<task>/<task_config>/data/episode{i}.hdf5`.
 - The minimum baseline DP3 fields are `/joint_action/vector` and `/pointcloud`.
