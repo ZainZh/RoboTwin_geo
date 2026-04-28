@@ -41,12 +41,6 @@ sys.path.append(os.path.join(parent_directory, '3D-Diffusion-Policy'))
 sys.path.append(os.path.join(parent_directory, 'scripts'))
 
 from dp3_policy import *
-from ndf_feature_utils import (
-    compute_ndf_feature,
-    compute_ndf_interact_pointwise_cloud,
-    compute_ndf_pointwise_cloud,
-    load_ndf_model,
-)
 from object_pointcloud_utils import merge_object_point_clouds, parse_placeholder_list
 from pointwise_context_utils import build_context_point_cloud
 
@@ -78,6 +72,23 @@ def get_semantic_utils():
     from semantic_feature_utils import compute_semantic_pointwise_cloud, load_semantic_model
 
     return compute_semantic_pointwise_cloud, load_semantic_model
+
+
+def get_ndf_utils():
+    # Import lazily so baseline / semantic real inference does not require NDF runtime deps.
+    from ndf_feature_utils import (
+        compute_ndf_feature,
+        compute_ndf_interact_pointwise_cloud,
+        compute_ndf_pointwise_cloud,
+        load_ndf_model,
+    )
+
+    return (
+        compute_ndf_feature,
+        compute_ndf_interact_pointwise_cloud,
+        compute_ndf_pointwise_cloud,
+        load_ndf_model,
+    )
 
 
 def get_utonia_utils():
@@ -293,6 +304,7 @@ def encode_obs(observation, model):  # Post-Process Observation
     obs['point_cloud'] = point_cloud
 
     if use_ndf_pointwise:
+        _, compute_ndf_interact_pointwise_cloud, compute_ndf_pointwise_cloud, _ = get_ndf_utils()
         feat_dim = int(getattr(model, "ndf_feat_dim", 256))
         for placeholder, ndf_model in getattr(model, "ndf_models", {}).items():
             pointcloud_key = placeholder_pointcloud_key(placeholder)
@@ -369,7 +381,11 @@ def encode_obs(observation, model):  # Post-Process Observation
     if use_ndf_pointwise or use_semantic_pointwise or use_utonia_pointwise:
         return obs
 
-    for placeholder, ndf_model in getattr(model, "ndf_models", {}).items():
+    ndf_models = getattr(model, "ndf_models", {})
+    compute_ndf_feature = None
+    if len(ndf_models) > 0:
+        compute_ndf_feature, _, _, _ = get_ndf_utils()
+    for placeholder, ndf_model in ndf_models.items():
         feature_key = placeholder_feature_key(placeholder)
         feat_dim = int(getattr(model, "ndf_feat_dim", 256))
         object_pc = object_pointcloud.get(placeholder)
@@ -707,6 +723,9 @@ def get_model(usr_args):
     }
     DP3_Model.ndf_device = ndf_device
     DP3_Model.ndf_models = {}
+    load_ndf_model = None
+    if len(ndf_model_specs) > 0:
+        _, _, _, load_ndf_model = get_ndf_utils()
     for placeholder, checkpoint in ndf_model_specs.items():
         DP3_Model.ndf_models[placeholder] = load_ndf_model(
             checkpoint=checkpoint,

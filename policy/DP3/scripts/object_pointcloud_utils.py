@@ -4,13 +4,6 @@ from typing import Dict, Iterable, List, Optional, Tuple
 import h5py
 import numpy as np
 
-from ndf_feature_utils import (
-    extract_object_point_cloud,
-    load_asset_extents,
-    load_scene_info,
-    parse_asset_spec,
-)
-
 
 def _read_optional(group: h5py.Group, path: str):
     if path not in group:
@@ -60,12 +53,20 @@ def frame_image(arr, idx: int):
 
 
 def parse_target_extents(scene_info: dict, episode_idx: int, placeholder: str):
+    from ndf_feature_utils import load_asset_extents, parse_asset_spec
+
     episode_info = scene_info.get(f"episode_{episode_idx}", {}) if isinstance(scene_info, dict) else {}
     info_dict = episode_info.get("info", {}) if isinstance(episode_info, dict) else {}
     asset_spec = info_dict.get(placeholder, None)
     model_name, model_id = parse_asset_spec(asset_spec)
     extents = load_asset_extents(model_name, model_id)
     return extents, asset_spec
+
+
+def load_scene_info(scene_info_path: str) -> Dict:
+    from ndf_feature_utils import load_scene_info as _load_scene_info
+
+    return _load_scene_info(scene_info_path)
 
 
 def ensure_point_cloud_channels(point_cloud: np.ndarray, channels: int = 6) -> np.ndarray:
@@ -192,6 +193,8 @@ def extract_placeholder_point_cloud(
         }
 
     scene_pc = ensure_point_cloud_channels(episode["pointcloud"][frame_idx], channels=6)
+    from ndf_feature_utils import extract_object_point_cloud
+
     object_pc_xyz, extract_meta = extract_object_point_cloud(
         scene_point_cloud=scene_pc,
         intrinsic_cv=frame_matrix(episode["intrinsic_cv"], frame_idx),

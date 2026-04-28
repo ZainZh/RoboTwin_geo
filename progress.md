@@ -989,3 +989,7 @@
   - Diagnosed control-machine dependency failures as a `deploy_policy.py` top-level simulator import problem.
   - Changed `sapien.core` and `envs` imports in `policy/DP3/deploy_policy.py` to optional imports so real inference can load DP3 without full simulator dependencies.
   - Verified `deploy_policy` imports when `sapien` and `envs` are deliberately blocked by a temporary import hook.
+  - Confirmed the user's follow-up: `ndf_feature_utils` was also being imported at real inference import time.
+  - Moved direct NDF imports in `policy/DP3/deploy_policy.py` behind `get_ndf_utils()`.
+  - Moved indirect NDF imports in `policy/DP3/scripts/object_pointcloud_utils.py` into the specific fallback functions that need them.
+  - Verified baseline-style `encode_obs` still works while `sapien`, `envs`, and `ndf_feature_utils` are all deliberately blocked.
