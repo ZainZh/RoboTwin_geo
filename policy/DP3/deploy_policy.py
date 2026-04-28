@@ -610,6 +610,7 @@ def get_model(usr_args):
             checkpoint=str(utonia_spec["checkpoint"]),
             repo_id=str(utonia_spec["repo_id"]),
             upcast_levels=int(utonia_spec["upcast_levels"]),
+
         )
         utonia_models = {
             placeholder: utonia_artifacts
