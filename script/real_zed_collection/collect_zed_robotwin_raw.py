@@ -59,6 +59,7 @@ class Args:
     compress_camera_frames: bool = False
     show_img: bool = False
     save_zed_xyzrgba: bool = False
+    robot_camera_calibration_paths: list[str] = field(default_factory=list)
     workspace_calibration_path: str = ""
     workspace_crop_enabled: bool = False
     workspace_crop_x_min: float = -0.75
@@ -127,7 +128,7 @@ def _parse_args_without_tyro(defaults: Args, cli_args: list[str]) -> Args:
         elif isinstance(default_value, float):
             parser.add_argument(flag, type=float, default=default_value)
         elif isinstance(default_value, list):
-            item_type = int if all(isinstance(x, int) for x in default_value) else str
+            item_type = int if name == "zed_serials" else str
             parser.add_argument(flag, nargs="*", type=item_type, default=default_value)
         else:
             parser.add_argument(flag, type=str, default=str(default_value))
@@ -153,6 +154,12 @@ def _print_args_summary(args: Args, config_path: Path | None, save_root: Path) -
         print(f"  - {item.name}: {getattr(args, item.name)}")
 
 
+def parse_path_list(value: str | list[str] | tuple[str, ...]) -> list[str]:
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
 def _snapshot_calibration_file(calibration_path: str | Path, episode_dir: Path, dst_name: str = "calibration_snapshot.yaml") -> str:
     src = _resolve_user_path(calibration_path)
     if not src.exists():
@@ -160,6 +167,32 @@ def _snapshot_calibration_file(calibration_path: str | Path, episode_dir: Path, 
     dst = episode_dir / str(dst_name)
     shutil.copy2(src, dst)
     return dst.name
+
+
+def _snapshot_robot_camera_calibrations(paths: list[str], episode_dir: Path) -> list[dict[str, str]]:
+    snapshots: list[dict[str, str]] = []
+    if not paths:
+        return snapshots
+    snapshot_dir = episode_dir / "robot_camera_calibration_snapshots"
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    used_names: set[str] = set()
+    for idx, raw_path in enumerate(paths):
+        src = _resolve_user_path(raw_path)
+        if not src.exists():
+            raise FileNotFoundError(f"Robot-camera calibration file does not exist: {src}")
+        dst_name = src.name
+        if dst_name in used_names:
+            dst_name = f"{idx:02d}_{dst_name}"
+        used_names.add(dst_name)
+        dst = snapshot_dir / dst_name
+        shutil.copy2(src, dst)
+        snapshots.append(
+            {
+                "source_path": str(src),
+                "snapshot_path": str(dst.relative_to(episode_dir)),
+            }
+        )
+    return snapshots
 
 
 # Same button-state semantics as include/xtrainer_clover/experiments/run_control.py.
@@ -709,6 +742,16 @@ def main(args: Args, config_path: Path | None = None) -> None:
     else:
         workspace_label_by_raw_label = {label: label for label in labels}
 
+    robot_camera_calibration_paths = parse_path_list(args.robot_camera_calibration_paths)
+    robot_camera_calibration_abs_paths = [str(_resolve_user_path(path)) for path in robot_camera_calibration_paths]
+    for path in robot_camera_calibration_abs_paths:
+        if not Path(path).exists():
+            raise FileNotFoundError(f"Robot-camera calibration file does not exist: {path}")
+    if robot_camera_calibration_abs_paths:
+        print("[INFO] Robot-camera calibration snapshots enabled:")
+        for path in robot_camera_calibration_abs_paths:
+            print(f"  - {path}")
+
     stop_event = threading.Event()
     shared_by_label = {label: SharedZedFrame() for label in labels}
     writer_queue: Queue = Queue(maxsize=max(1, int(args.writer_queue_size)))
@@ -856,6 +899,10 @@ def main(args: Args, config_path: Path | None = None) -> None:
                             active_episode_dir,
                             dst_name="workspace_calibration_snapshot.yaml",
                         )
+                    robot_camera_calibration_snapshots = _snapshot_robot_camera_calibrations(
+                        robot_camera_calibration_abs_paths,
+                        active_episode_dir,
+                    )
                     print(_blue_text(f"[RECORD] START -> {active_episode_dir}"))
                     writer_queue.put(
                         WriteTask(
@@ -870,6 +917,8 @@ def main(args: Args, config_path: Path | None = None) -> None:
                                 "calibration_snapshot_path": calibration_snapshot_rel,
                                 "workspace_calibration_path": workspace_calibration_path,
                                 "workspace_calibration_snapshot_path": workspace_snapshot_rel,
+                                "robot_camera_calibration_paths": robot_camera_calibration_abs_paths,
+                                "robot_camera_calibration_snapshots": robot_camera_calibration_snapshots,
                                 "workspace_crop_enabled": bool(args.workspace_crop_enabled),
                                 "workspace_crop_bounds_m": workspace_bounds.as_dict() if workspace_bounds is not None else {},
                                 "workspace_crop_margin_px": int(args.workspace_crop_margin_px),
