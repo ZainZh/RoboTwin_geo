@@ -95,14 +95,30 @@ def describe_clouds(clouds: Mapping[str, np.ndarray]) -> str:
 
 
 class Open3DLiveViewer:
-    def __init__(self, *, placeholders: Sequence[str], show_scene: bool) -> None:
+    def __init__(
+        self,
+        *,
+        placeholders: Sequence[str],
+        show_scene: bool,
+        point_size: float,
+        window_width: int,
+        window_height: int,
+        coordinate_frame_size: float,
+    ) -> None:
         import open3d as o3d
 
         self.o3d = o3d
         self.placeholders = [str(item) for item in placeholders]
         self.show_scene = bool(show_scene)
         self.vis = o3d.visualization.Visualizer()
-        self.vis.create_window(window_name="SAM2 Object Point Clouds", width=1280, height=840)
+        self.vis.create_window(
+            window_name="SAM2 Object Point Clouds",
+            width=int(window_width),
+            height=int(window_height),
+        )
+        render_option = self.vis.get_render_option()
+        render_option.point_size = float(point_size)
+        render_option.background_color = np.asarray([0.02, 0.02, 0.02], dtype=np.float64)
         self.object_geometries = {
             placeholder: o3d.geometry.PointCloud()
             for placeholder in self.placeholders
@@ -112,7 +128,7 @@ class Open3DLiveViewer:
         self.scene_geometry = o3d.geometry.PointCloud() if self.show_scene else None
         if self.scene_geometry is not None:
             self.vis.add_geometry(self.scene_geometry)
-        self.vis.add_geometry(o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.12))
+        self.vis.add_geometry(o3d.geometry.TriangleMesh.create_coordinate_frame(size=float(coordinate_frame_size)))
 
     def _set_cloud(self, pcd, cloud: np.ndarray, *, scene: bool = False) -> None:
         pc = valid_point_rows(cloud)
@@ -123,13 +139,21 @@ class Open3DLiveViewer:
         colors = np.clip(pc[:, 3:6], 0.0, 1.0) if len(pc) > 0 else np.zeros((0, 3), dtype=np.float32)
         pcd.colors = self.o3d.utility.Vector3dVector(colors.astype(np.float64))
 
-    def update(self, *, object_clouds: Mapping[str, np.ndarray], scene_cloud: np.ndarray | None = None) -> bool:
+    def update(
+        self,
+        *,
+        object_clouds: Mapping[str, np.ndarray],
+        scene_cloud: np.ndarray | None = None,
+        reset_view: bool = False,
+    ) -> bool:
         for placeholder in self.placeholders:
             self._set_cloud(self.object_geometries[placeholder], object_clouds.get(placeholder, np.zeros((0, 6))))
             self.vis.update_geometry(self.object_geometries[placeholder])
         if self.scene_geometry is not None:
             self._set_cloud(self.scene_geometry, np.zeros((0, 6)) if scene_cloud is None else scene_cloud, scene=True)
             self.vis.update_geometry(self.scene_geometry)
+        if bool(reset_view):
+            self.vis.reset_view_point(True)
         alive = self.vis.poll_events()
         self.vis.update_renderer()
         return bool(alive)
@@ -191,6 +215,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sam2_min_mask_points", type=int, default=16)
 
     parser.add_argument("--color_mode", choices=["placeholder", "rgb"], default="placeholder")
+    parser.add_argument("--no_open3d", action="store_true", help="Disable Open3D rendering and only print reconstruction FPS.")
+    parser.add_argument("--point_size", type=float, default=6.0)
+    parser.add_argument("--open3d_width", type=int, default=1600)
+    parser.add_argument("--open3d_height", type=int, default=1000)
+    parser.add_argument("--coordinate_frame_size", type=float, default=0.12)
+    parser.add_argument("--reset_view_each_frame", action="store_true")
     parser.add_argument("--show_scene", action="store_true")
     parser.add_argument("--show_img", action="store_true")
     parser.add_argument("--preview_hz", type=float, default=10.0)
@@ -202,6 +232,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def run_preview(args: argparse.Namespace) -> None:
     placeholders = parse_placeholder_list(args.object_placeholders)
+    if not placeholders:
+        raise ValueError("--object_placeholders must contain at least one placeholder, e.g. '{A}'")
     if str(args.output_frame) in {"left_base", "right_base"} and not str(args.robot_camera_calibration_path).strip():
         args.robot_camera_calibration_path = default_robot_camera_calibration(str(args.output_frame))
 
@@ -209,6 +241,7 @@ def run_preview(args: argparse.Namespace) -> None:
     print(f"[INFO] output_frame={args.output_frame}")
     print(f"[INFO] workspace_crop_enabled={bool(args.workspace_crop_enabled)}")
     print(f"[INFO] sam2_image_width={int(args.sam2_image_width)} zed_resolution={args.zed_resolution}")
+    print(f"[INFO] open3d_enabled={not bool(args.no_open3d)}")
     if args.robot_camera_calibration_path:
         print(f"[INFO] robot_camera_calibration_path={args.robot_camera_calibration_path}")
 
@@ -251,10 +284,22 @@ def run_preview(args: argparse.Namespace) -> None:
                 if bool(args.show_scene)
                 else None
             )
-            if viewer is None:
-                viewer = Open3DLiveViewer(placeholders=placeholders, show_scene=bool(args.show_scene))
-            if not viewer.update(object_clouds=prepared, scene_cloud=scene_preview):
-                break
+            if not bool(args.no_open3d):
+                if viewer is None:
+                    viewer = Open3DLiveViewer(
+                        placeholders=placeholders,
+                        show_scene=bool(args.show_scene),
+                        point_size=float(args.point_size),
+                        window_width=int(args.open3d_width),
+                        window_height=int(args.open3d_height),
+                        coordinate_frame_size=float(args.coordinate_frame_size),
+                    )
+                if not viewer.update(
+                    object_clouds=prepared,
+                    scene_cloud=scene_preview,
+                    reset_view=bool(args.reset_view_each_frame),
+                ):
+                    break
             if bool(args.show_img):
                 maybe_show_cameras(observation, live.labels)
             frame_idx += 1

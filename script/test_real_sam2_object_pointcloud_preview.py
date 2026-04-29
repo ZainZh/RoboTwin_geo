@@ -45,6 +45,29 @@ class RealSam2ObjectPointcloudPreviewTest(unittest.TestCase):
 
         np.testing.assert_allclose(clouds["{A}"][0, 3:6], [0.4, 0.5, 0.6])
 
+    def test_parser_supports_single_object_and_headless_fps_mode(self):
+        from script.real_zed_inference.preview_sam2_object_pointcloud import build_arg_parser
+
+        args = build_arg_parser().parse_args(
+            [
+                "--object_placeholders",
+                "{A}",
+                "--no_open3d",
+                "--point_size",
+                "8",
+                "--open3d_width",
+                "1800",
+                "--open3d_height",
+                "1100",
+            ]
+        )
+
+        self.assertEqual(args.object_placeholders, "{A}")
+        self.assertTrue(args.no_open3d)
+        self.assertEqual(args.point_size, 8.0)
+        self.assertEqual(args.open3d_width, 1800)
+        self.assertEqual(args.open3d_height, 1100)
+
 
 if __name__ == "__main__":
     unittest.main()

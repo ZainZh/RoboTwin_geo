@@ -1126,5 +1126,6 @@
   - Added `script/real_zed_inference/preview_sam2_object_pointcloud.py`, a standalone live preview that does not load DP3 or connect to the robot.
   - The script reuses live ZED startup, workspace filtering, SAM2 runtime loading, and online `mask + depth` object point-cloud reconstruction.
   - Added Open3D live visualization for `{A}/{B}` object clouds, optional RGB camera preview, optional gray scene cloud, placeholder/RGB color modes, frame timing prints, and robot-base output-frame support.
+  - Added single-object CLI support through `--object_placeholders "{A}"`, headless FPS mode through `--no_open3d`, and larger/tunable Open3D display controls.
   - Added `script/test_real_sam2_object_pointcloud_preview.py` covering empty-row filtering and placeholder/RGB coloring without requiring Open3D or hardware.
   - Verified with `python -m unittest script.test_real_sam2_object_pointcloud_preview`, `python -m py_compile script/real_zed_inference/preview_sam2_object_pointcloud.py script/test_real_sam2_object_pointcloud_preview.py`, CLI help grep, and `python -c "import open3d as o3d; print(o3d.__version__)"`.
