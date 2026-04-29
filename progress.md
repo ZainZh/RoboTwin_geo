@@ -1089,3 +1089,13 @@
   - Verified syntax with `python -m py_compile script/real_zed_collection/sam2_tracking_utils.py script/real_zed_inference/real_dp3_inference.py policy/DP3/deploy_policy.py script/test_real_zed_collection_pipeline.py`.
   - Verified shell syntax with `bash -n policy/DP3/eval_objpc_sam2.sh policy/DP3/real_infer_semantic_pointwise_hybrid.sh policy/DP3/real_infer_baseline.sh`.
   - Verified no remaining hard-coded `/home/zheng` SAM2 or real semantic checkpoint paths with `rg -n "/home/zheng/.+sam2|/home/zheng/github/SAM2_streaming|/home/zheng/github/3d_semantic_train" script policy -g '*.py' -g '*.sh'`.
+
+### Phase 32: SAM2 Online BBox UI Robustness
+- **Status:** complete
+- Actions taken:
+  - Added a regression test for online SAM2 bbox helper behavior on single-click zero-area boxes and HD image display scaling.
+  - Verified the test failed before implementation because the helper functions did not exist.
+  - Added `_try_normalize_bbox_xyxy`, `_display_scale_for_image`, and `_display_to_image_point` to `sam2_pointcloud_utils.py`.
+  - Updated `select_bbox_for_image` to scale HD frames to a 1280x720 display canvas, map mouse coordinates back to original image coordinates, and show invalid-box status instead of raising on single clicks.
+  - Verified with `python -m unittest test_sam2_pointcloud_utils` from `policy/DP3/scripts`.
+  - Verified syntax with `python -m py_compile policy/DP3/scripts/sam2_pointcloud_utils.py policy/DP3/scripts/test_sam2_pointcloud_utils.py script/real_zed_inference/real_dp3_inference.py`.

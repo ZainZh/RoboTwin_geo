@@ -671,6 +671,9 @@
   - SAM2 root and checkpoint defaults now use `$SAM2_STREAMING_ROOT` / `$SAM2_CHECKPOINT` first, then repository/current-user candidates, instead of hard-coding one workstation username.
   - If a repository symlink is stale on another machine, the resolver falls back to the current user's `~/github/SAM2_streaming` and `~/Datasets/sam2/sam2.1_hiera_large.pt`.
   - The real semantic checkpoint default now also uses `$SEMANTIC_CKPT_A` or the current user's `~/github/3d_semantic_train/...` path.
+- SAM2 online bbox UI finding:
+  - The real inference bbox selector crashed on single clicks because it normalized zero-area boxes during preview.
+  - The online selector now treats zero-area boxes as invalid UI state instead of throwing, and it scales HD images down to a 1280x720 display canvas while mapping mouse coordinates back to the original image.
 
 ---
 *Update this file after every 2 view/browser/search operations.*

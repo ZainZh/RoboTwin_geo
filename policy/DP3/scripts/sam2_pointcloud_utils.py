@@ -199,37 +199,88 @@ def _normalize_bbox_xyxy(bbox_xyxy: Sequence[float], image_shape_hw: tuple[int, 
     return [int(lo_x), int(lo_y), int(hi_x), int(hi_y)]
 
 
+def _try_normalize_bbox_xyxy(bbox_xyxy: Sequence[float] | None, image_shape_hw: tuple[int, int]) -> List[int] | None:
+    if bbox_xyxy is None:
+        return None
+    try:
+        return _normalize_bbox_xyxy(bbox_xyxy, image_shape_hw)
+    except ValueError:
+        return None
+
+
+def _display_scale_for_image(image_shape_hw: tuple[int, int], *, max_width: int = 1280, max_height: int = 720) -> float:
+    height, width = int(image_shape_hw[0]), int(image_shape_hw[1])
+    if height <= 0 or width <= 0:
+        return 1.0
+    return float(min(1.0, float(max_width) / float(width), float(max_height) / float(height)))
+
+
+def _display_to_image_point(
+    x: int,
+    y: int,
+    *,
+    scale: float,
+    image_shape_hw: tuple[int, int],
+) -> tuple[int, int]:
+    height, width = int(image_shape_hw[0]), int(image_shape_hw[1])
+    safe_scale = max(float(scale), 1e-6)
+    image_x = int(round(float(x) / safe_scale))
+    image_y = int(round(float(y) / safe_scale))
+    image_x = max(0, min(image_x, max(0, width - 1)))
+    image_y = max(0, min(image_y, max(0, height - 1)))
+    return image_x, image_y
+
+
 def select_bbox_for_image(label: str, placeholder: str, image: np.ndarray) -> List[int]:
+    image = np.asarray(image, dtype=np.uint8)
     drawing = False
     start: tuple[int, int] | None = None
     current: tuple[int, int] | None = None
     bbox: tuple[int, int, int, int] | None = None
+    status = ""
     window = f"SAM2 eval bbox: {label} {placeholder}"
+    scale = _display_scale_for_image(image.shape[:2])
+    display_size = (
+        max(1, int(round(image.shape[1] * scale))),
+        max(1, int(round(image.shape[0] * scale))),
+    )
 
     def on_mouse(event, x, y, _flags, _param):
-        nonlocal drawing, start, current, bbox
-        current = (int(x), int(y))
+        nonlocal drawing, start, current, bbox, status
+        point = _display_to_image_point(int(x), int(y), scale=scale, image_shape_hw=image.shape[:2])
+        current = point
         if event == cv2.EVENT_LBUTTONDOWN:
             drawing = True
-            start = (int(x), int(y))
+            start = point
             bbox = None
+            status = ""
         elif event == cv2.EVENT_MOUSEMOVE and drawing:
-            current = (int(x), int(y))
+            current = point
         elif event == cv2.EVENT_LBUTTONUP and drawing and start is not None:
             drawing = False
-            bbox = (start[0], start[1], int(x), int(y))
+            candidate = (start[0], start[1], point[0], point[1])
+            if _try_normalize_bbox_xyxy(candidate, image.shape[:2]) is None:
+                bbox = None
+                status = "Invalid bbox: drag a non-zero area rectangle."
+            else:
+                bbox = candidate
+                status = ""
 
     cv2.namedWindow(window, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(window, display_size[0], display_size[1])
     cv2.setMouseCallback(window, on_mouse)
     while True:
         vis = image.copy()
         if drawing and start is not None and current is not None:
             cv2.rectangle(vis, start, current, (0, 255, 255), 2)
         if bbox is not None:
-            x0, y0, x1, y1 = _normalize_bbox_xyxy(bbox, image.shape[:2])
-            cv2.rectangle(vis, (x0, y0), (x1, y1), (0, 220, 255), 2)
+            normalized_bbox = _try_normalize_bbox_xyxy(bbox, image.shape[:2])
+            if normalized_bbox is not None:
+                x0, y0, x1, y1 = normalized_bbox
+                cv2.rectangle(vis, (x0, y0), (x1, y1), (0, 220, 255), 2)
+        display = cv2.resize(vis, display_size, interpolation=cv2.INTER_AREA) if scale < 1.0 else vis
         cv2.putText(
-            vis,
+            display,
             f"Draw {placeholder} in {label}; Enter/Space/s save, r reset, q/Esc abort",
             (10, 24),
             cv2.FONT_HERSHEY_SIMPLEX,
@@ -237,11 +288,24 @@ def select_bbox_for_image(label: str, placeholder: str, image: np.ndarray) -> Li
             (255, 255, 255),
             2,
         )
-        cv2.imshow(window, cv2.cvtColor(vis, cv2.COLOR_RGB2BGR))
+        if status:
+            cv2.putText(
+                display,
+                status,
+                (10, 50),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.52,
+                (255, 80, 80),
+                2,
+            )
+        cv2.imshow(window, cv2.cvtColor(display, cv2.COLOR_RGB2BGR))
         key = cv2.waitKey(20) & 0xFF
-        if key in (13, 32, ord("s")) and bbox is not None:
+        normalized_bbox = _try_normalize_bbox_xyxy(bbox, image.shape[:2])
+        if key in (13, 32, ord("s")) and normalized_bbox is not None:
             cv2.destroyWindow(window)
-            return _normalize_bbox_xyxy(bbox, image.shape[:2])
+            return normalized_bbox
+        if key in (13, 32, ord("s")) and normalized_bbox is None:
+            status = "No valid bbox yet: drag a rectangle before saving."
         if key in (27, ord("q")):
             cv2.destroyWindow(window)
             raise KeyboardInterrupt("SAM2 eval bbox selection aborted")

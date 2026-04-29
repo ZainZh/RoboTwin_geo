@@ -7,6 +7,9 @@ import numpy as np
 
 from sam2_pointcloud_utils import (
     Sam2CameraTrackingState,
+    _display_to_image_point,
+    _display_scale_for_image,
+    _try_normalize_bbox_xyxy,
     extract_placeholder_point_clouds_sam2_online,
     load_sam2_bbox_prompt_file,
 )
@@ -39,6 +42,12 @@ class FakeSam2Tracker:
 
 
 class Sam2PointcloudUtilsTest(unittest.TestCase):
+    def test_interactive_bbox_helpers_ignore_single_click_and_scale_hd_images(self):
+        self.assertIsNone(_try_normalize_bbox_xyxy((1387, 681, 1387, 681), (1080, 1920)))
+        self.assertEqual(_try_normalize_bbox_xyxy((100, 50, 200, 150), (1080, 1920)), [100, 50, 200, 150])
+        self.assertAlmostEqual(_display_scale_for_image((1080, 1920), max_width=1280, max_height=720), 2.0 / 3.0)
+        self.assertEqual(_display_to_image_point(640, 360, scale=2.0 / 3.0, image_shape_hw=(1080, 1920)), (960, 540))
+
     def _observation(self):
         pointcloud = np.array(
             [
