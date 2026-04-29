@@ -22,18 +22,26 @@ from script.real_zed_inference.real_dp3_inference import (  # noqa: E402
     DEFAULT_SAM2_CHECKPOINT,
     DEFAULT_SAM2_ROOT,
     DEFAULT_WORKSPACE_CALIBRATION,
-    add_sam2_object_pointclouds,
-    build_robotwin_observation,
+    camera_frame_to_output_pc,
     format_timings,
-    load_sam2_runtime,
     maybe_show_cameras,
     parse_placeholder_list,
     print_info,
-    profile_section,
+    rgb_to_depth_shape,
+    snapshot_frames,
     start_zed_cameras,
 )
-from script.real_zed_collection.real_zed_utils import deterministic_resample  # noqa: E402
+from script.real_zed_collection.real_zed_utils import deterministic_resample, merge_point_clouds  # noqa: E402
 from script.real_zed_collection.workspace_crop_utils import WorkspaceBounds, invert_transform  # noqa: E402
+from object_pointcloud_utils import merge_object_point_clouds, resample_point_cloud  # noqa: E402
+from sam2_pointcloud_utils import (  # noqa: E402
+    Sam2CameraTrackingState,
+    _scale_prompt_spec_to_image,
+    _select_depth_points_by_mask,
+    _resize_keep_aspect,
+    build_sam2_tracker_factory,
+    load_sam2_bbox_prompt_file,
+)
 
 
 PLACEHOLDER_COLORS = (
@@ -43,6 +51,35 @@ PLACEHOLDER_COLORS = (
     (0.95, 0.78, 0.18),
     (0.80, 0.35, 0.95),
 )
+
+
+class TimingRecorder:
+    def __init__(self, *, enabled: bool = False) -> None:
+        self.enabled = bool(enabled)
+        self.timings: dict[str, float] = {}
+
+    def add(self, name: str, seconds: float) -> None:
+        if self.enabled:
+            self.timings[str(name)] = self.timings.get(str(name), 0.0) + float(seconds)
+
+    def format(self) -> str:
+        return format_timings(self.timings)
+
+
+class timed_stage:
+    def __init__(self, timer: TimingRecorder, name: str) -> None:
+        self.timer = timer
+        self.name = str(name)
+        self.start = 0.0
+
+    def __enter__(self):
+        if self.timer.enabled:
+            self.start = time.perf_counter()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        if self.timer.enabled:
+            self.timer.add(self.name, time.perf_counter() - self.start)
 
 
 def valid_point_rows(point_cloud: np.ndarray) -> np.ndarray:
@@ -134,6 +171,208 @@ def output_from_workspace_transform(live) -> np.ndarray:
         np.asarray(live.t_output_from_cam_by_label[label], dtype=np.float64).reshape(4, 4)
         @ invert_transform(np.asarray(live.t_workspace_from_cam_by_label[label], dtype=np.float64).reshape(4, 4))
     ).astype(np.float32)
+
+
+def workspace_bounds_array(bounds: WorkspaceBounds | None) -> np.ndarray | None:
+    if bounds is None:
+        return None
+    return np.asarray(
+        [
+            bounds.x_min,
+            bounds.x_max,
+            bounds.y_min,
+            bounds.y_max,
+            bounds.z_min,
+            bounds.z_max,
+        ],
+        dtype=np.float32,
+    )
+
+
+def build_preview_observation(*, args: argparse.Namespace, live, timer: TimingRecorder) -> tuple[dict[str, Any], np.ndarray]:
+    with timed_stage(timer, "snapshot_frames"):
+        frames_by_label = snapshot_frames(live)
+    scene_chunks: list[np.ndarray] = []
+    camera_obs: dict[str, dict[str, Any]] = {}
+    bounds_arr = workspace_bounds_array(live.workspace_bounds)
+
+    for label in live.labels:
+        with timed_stage(timer, f"build_obs.{label}"):
+            calib = live.calibrations[live.label_to_calib[label]]
+            frame = frames_by_label[label]
+            with timed_stage(timer, f"build_obs.{label}.align"):
+                depth_m = np.asarray(frame["depth_m"], dtype=np.float32)
+                rgb_aligned = rgb_to_depth_shape(np.asarray(frame["rgb"], dtype=np.uint8), depth_m.shape)
+                camera_matrix = np.asarray(frame.get("camera_matrix", calib.camera_matrix), dtype=np.float32).reshape(3, 3)
+                t_output_from_cam = np.asarray(live.t_output_from_cam_by_label[label], dtype=np.float32).reshape(4, 4)
+                t_workspace_from_cam = np.asarray(live.t_workspace_from_cam_by_label[label], dtype=np.float32).reshape(4, 4)
+            with timed_stage(timer, f"build_obs.{label}.depth_to_pc"):
+                frame_for_pc = dict(frame)
+                frame_for_pc["rgb"] = rgb_aligned
+                scene_chunks.append(
+                    camera_frame_to_output_pc(
+                        camera_frame=frame_for_pc,
+                        camera_matrix=camera_matrix,
+                        t_workspace_from_cam=t_workspace_from_cam,
+                        workspace_bounds=live.workspace_bounds,
+                        t_output_from_cam=t_output_from_cam,
+                        min_depth_m=float(args.min_depth_m),
+                        max_depth_m=float(args.max_depth_m),
+                    )
+                )
+            camera_obs[label] = {
+                "rgb": rgb_aligned.astype(np.uint8),
+                "depth": depth_m.astype(np.float32),
+                "intrinsic_cv": camera_matrix.astype(np.float32),
+                "cam2world_gl": t_output_from_cam.astype(np.float32),
+                "t_workspace_from_cam": t_workspace_from_cam.astype(np.float32),
+                "workspace_bounds_m": bounds_arr,
+            }
+
+    with timed_stage(timer, "build_obs.merge_scene"):
+        dense_scene = merge_point_clouds(scene_chunks)
+    with timed_stage(timer, "build_obs.resample_scene"):
+        scene_point_cloud = deterministic_resample(dense_scene, int(args.scene_point_num))
+    observation = {
+        "joint_action": {"vector": np.zeros(14, dtype=np.float32)},
+        "pointcloud": scene_point_cloud.astype(np.float32),
+        "observation": camera_obs,
+    }
+    return observation, dense_scene.astype(np.float32)
+
+
+def load_preview_sam2_runtime(args: argparse.Namespace, placeholders: Sequence[str], camera_names: Sequence[str]):
+    tracker_factory = build_sam2_tracker_factory(
+        placeholders=placeholders,
+        sam2_root=args.sam2_root,
+        config=args.sam2_config,
+        checkpoint=args.sam2_checkpoint,
+        device=args.sam2_device,
+        autocast_dtype=args.sam2_autocast_dtype,
+    )
+    prompt_path = str(args.sam2_bbox_prompt_path or "").strip()
+    prompts = (
+        load_sam2_bbox_prompt_file(prompt_path, camera_names=camera_names, placeholders=placeholders)
+        if prompt_path
+        else {}
+    )
+    return tracker_factory, prompts
+
+
+def interactive_boxes_for_camera(camera_name: str, placeholders: Sequence[str], image: np.ndarray):
+    from sam2_pointcloud_utils import select_bbox_for_image
+
+    return {
+        str(placeholder): select_bbox_for_image(str(camera_name), str(placeholder), image)
+        for placeholder in placeholders
+    }
+
+
+def extract_preview_object_pointclouds_sam2(
+    observation: Mapping[str, Any],
+    *,
+    placeholders: Sequence[str],
+    camera_names: Sequence[str],
+    tracker_factory,
+    tracking_state_by_camera: dict[str, Sam2CameraTrackingState],
+    bbox_prompts_by_camera: dict[str, dict[str, object]],
+    target_num_points: int,
+    min_mask_points: int,
+    sam2_image_width: int,
+    min_depth_m: float,
+    max_depth_m: float,
+    interactive_init: bool,
+    timer: TimingRecorder,
+) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
+    placeholder_list = [str(item) for item in placeholders]
+    empty_clouds = {
+        placeholder: np.zeros((int(target_num_points), 6), dtype=np.float32)
+        for placeholder in placeholder_list
+    }
+    selected_by_placeholder: dict[str, list[np.ndarray]] = {placeholder: [] for placeholder in placeholder_list}
+    camera_meta: dict[str, Any] = {}
+    camera_obs = observation.get("observation", {}) if isinstance(observation, Mapping) else {}
+    active_camera_count = 0
+
+    for camera_name in camera_names:
+        camera_key = str(camera_name)
+        camera_info = camera_obs.get(camera_key)
+        if camera_info is None:
+            camera_meta[camera_key] = {"mode": "missing_camera"}
+            continue
+        image = np.asarray(camera_info.get("rgb"), dtype=np.uint8)
+        if image.ndim != 3:
+            camera_meta[camera_key] = {"mode": "missing_rgb"}
+            continue
+        with timed_stage(timer, f"sam2.{camera_key}.resize"):
+            tracker_image = _resize_keep_aspect(image, int(sam2_image_width))
+
+        state = tracking_state_by_camera.setdefault(camera_key, Sam2CameraTrackingState())
+        if state.tracker is None:
+            with timed_stage(timer, f"sam2.{camera_key}.create_tracker"):
+                state.tracker = tracker_factory(camera_key)
+        if not state.initialized:
+            boxes = dict(bbox_prompts_by_camera.get(camera_key, {}))
+            if not boxes and bool(interactive_init):
+                boxes = interactive_boxes_for_camera(camera_key, placeholder_list, tracker_image)
+                bbox_prompts_by_camera[camera_key] = boxes
+            missing = [placeholder for placeholder in placeholder_list if placeholder not in boxes]
+            if missing:
+                camera_meta[camera_key] = {"mode": "missing_bbox_prompts", "missing_placeholders": missing}
+                continue
+            boxes = {
+                placeholder: _scale_prompt_spec_to_image(prompt_spec, tracker_image.shape[:2])
+                for placeholder, prompt_spec in boxes.items()
+            }
+            with timed_stage(timer, f"sam2.{camera_key}.initialize"):
+                masks = state.tracker.initialize(tracker_image, boxes)
+            state.initialized = True
+            mode = "initialized"
+        else:
+            with timed_stage(timer, f"sam2.{camera_key}.track"):
+                masks = state.tracker.track(tracker_image)
+            mode = "tracked"
+
+        per_placeholder_meta: dict[str, Any] = {}
+        camera_selected = False
+        for placeholder in placeholder_list:
+            mask = np.asarray(masks.get(placeholder, np.zeros(tracker_image.shape[:2], dtype=bool))).astype(bool)
+            with timed_stage(timer, f"object_pc.{camera_key}.{placeholder}.lift_depth"):
+                points, meta = _select_depth_points_by_mask(
+                    mask=mask,
+                    depth=camera_info.get("depth"),
+                    rgb=image,
+                    intrinsic_cv=camera_info.get("intrinsic_cv"),
+                    cam2world_gl=camera_info.get("cam2world_gl"),
+                    t_workspace_from_cam=camera_info.get("t_workspace_from_cam"),
+                    workspace_bounds_m=camera_info.get("workspace_bounds_m"),
+                    min_depth_m=float(min_depth_m),
+                    max_depth_m=float(max_depth_m),
+                    min_points=int(min_mask_points),
+                )
+            if points is not None:
+                selected_by_placeholder[placeholder].append(points)
+                camera_selected = True
+            per_placeholder_meta[placeholder] = meta
+        camera_meta[camera_key] = {"mode": mode, "placeholders": per_placeholder_meta}
+        if camera_selected:
+            active_camera_count += 1
+
+    out: dict[str, np.ndarray] = {}
+    for placeholder, clouds in selected_by_placeholder.items():
+        if not clouds:
+            out[placeholder] = empty_clouds[placeholder]
+            continue
+        with timed_stage(timer, f"object_pc.{placeholder}.merge"):
+            merged = merge_object_point_clouds(clouds, target_num_points=int(target_num_points))
+        with timed_stage(timer, f"object_pc.{placeholder}.resample"):
+            out[placeholder] = resample_point_cloud(merged, int(target_num_points))
+
+    return out, {
+        "mode": "sam2_mask_depth_profiled",
+        "camera_count": int(active_camera_count),
+        "cameras": camera_meta,
+    }
 
 
 class Open3DLiveViewer:
@@ -302,7 +541,7 @@ def run_preview(args: argparse.Namespace) -> None:
         print(f"[INFO] robot_camera_calibration_path={args.robot_camera_calibration_path}")
 
     live = start_zed_cameras(args)
-    tracker_factory, extract_all_fn, loaded_prompts = load_sam2_runtime(args, placeholders, live.labels)
+    tracker_factory, loaded_prompts = load_preview_sam2_runtime(args, placeholders, live.labels)
     tracking_state_by_camera: dict[str, Any] = {}
     bbox_prompts_by_camera: dict[str, dict[str, object]] = dict(loaded_prompts)
     viewer: Open3DLiveViewer | None = None
@@ -317,35 +556,36 @@ def run_preview(args: argparse.Namespace) -> None:
     try:
         while int(args.max_frames) < 0 or frame_idx < int(args.max_frames):
             loop_start = time.perf_counter()
-            timings: dict[str, float] = {}
-            with profile_section(timings, "build_obs", bool(args.profile_timing)):
-                observation, dense_scene = build_robotwin_observation(
-                    args=args,
-                    live=live,
-                    joint_vector=np.zeros(14, dtype=np.float32),
-                )
-            with profile_section(timings, "sam2_object_pc", bool(args.profile_timing)):
-                observation = add_sam2_object_pointclouds(
-                    observation=observation,
-                    dense_scene_pointcloud=dense_scene,
-                    args=args,
+            timer = TimingRecorder(enabled=bool(args.profile_timing))
+            observation, dense_scene = build_preview_observation(args=args, live=live, timer=timer)
+            with timed_stage(timer, "sam2_object_pc.total"):
+                object_pointcloud, _meta = extract_preview_object_pointclouds_sam2(
+                    observation,
                     placeholders=placeholders,
                     camera_names=live.labels,
                     tracker_factory=tracker_factory,
-                    extract_all_fn=extract_all_fn,
                     tracking_state_by_camera=tracking_state_by_camera,
                     bbox_prompts_by_camera=bbox_prompts_by_camera,
+                    target_num_points=int(args.object_point_num),
+                    min_mask_points=int(args.sam2_min_mask_points),
+                    sam2_image_width=int(args.sam2_image_width),
+                    min_depth_m=float(args.min_depth_m),
+                    max_depth_m=float(args.max_depth_m),
+                    interactive_init=bool(args.sam2_interactive_init),
+                    timer=timer,
                 )
-            prepared = prepare_placeholder_clouds(
-                observation.get("object_pointcloud", {}),
-                placeholders=placeholders,
-                color_mode=str(args.color_mode),
-            )
-            scene_preview = (
-                deterministic_resample(dense_scene, int(args.scene_preview_num))
-                if bool(args.show_scene)
-                else None
-            )
+            with timed_stage(timer, "prepare_clouds"):
+                prepared = prepare_placeholder_clouds(
+                    object_pointcloud,
+                    placeholders=placeholders,
+                    color_mode=str(args.color_mode),
+                )
+            with timed_stage(timer, "scene_preview"):
+                scene_preview = (
+                    deterministic_resample(dense_scene, int(args.scene_preview_num))
+                    if bool(args.show_scene)
+                    else None
+                )
             if not bool(args.no_open3d):
                 if viewer is None:
                     viewer = Open3DLiveViewer(
@@ -358,21 +598,24 @@ def run_preview(args: argparse.Namespace) -> None:
                         coordinate_frame_size=float(args.coordinate_frame_size),
                         initial_zoom=float(args.open3d_initial_zoom),
                     )
-                if not viewer.update(
-                    object_clouds=prepared,
-                    scene_cloud=scene_preview,
-                    reset_view=bool(args.reset_view_each_frame),
-                ):
-                    break
+                with timed_stage(timer, "open3d_update"):
+                    if not viewer.update(
+                        object_clouds=prepared,
+                        scene_cloud=scene_preview,
+                        reset_view=bool(args.reset_view_each_frame),
+                    ):
+                        break
             if bool(args.show_img):
-                maybe_show_cameras(observation, live.labels)
+                with timed_stage(timer, "show_img"):
+                    maybe_show_cameras(observation, live.labels)
             frame_idx += 1
             if frame_idx == 1 or frame_idx % max(1, int(args.print_interval)) == 0:
                 elapsed = time.perf_counter() - loop_start
                 fps = 1.0 / max(elapsed, 1e-6)
                 msg = f"[PREVIEW {frame_idx:05d}] fps={fps:.2f} {describe_clouds(prepared)}"
                 if bool(args.profile_timing):
-                    msg += f" timings={format_timings(timings)}"
+                    timer.add("loop_total", elapsed)
+                    msg += f" timings={timer.format()}"
                 print_info(msg)
             elapsed = time.perf_counter() - loop_start
             if period > 0 and elapsed < period:

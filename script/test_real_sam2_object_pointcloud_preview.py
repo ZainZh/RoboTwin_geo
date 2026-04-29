@@ -94,6 +94,18 @@ class RealSam2ObjectPointcloudPreviewTest(unittest.TestCase):
         self.assertAlmostEqual(float(corners[:, 1].max()), 2.0)
         self.assertAlmostEqual(float(corners[:, 2].max()), 3.0)
 
+    def test_timing_recorder_formats_nested_stage_names(self):
+        from script.real_zed_inference.preview_sam2_object_pointcloud import TimingRecorder
+
+        timer = TimingRecorder(enabled=True)
+        timer.timings["build_obs.global_pc"] = 0.001
+        timer.timings["sam2.global.track"] = 0.002
+
+        formatted = timer.format()
+
+        self.assertIn("build_obs.global_pc=1.0ms", formatted)
+        self.assertIn("sam2.global.track=2.0ms", formatted)
+
 
 if __name__ == "__main__":
     unittest.main()
