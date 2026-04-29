@@ -67,6 +67,32 @@ class RealSam2ObjectPointcloudPreviewTest(unittest.TestCase):
         self.assertEqual(args.point_size, 8.0)
         self.assertEqual(args.open3d_width, 1800)
         self.assertEqual(args.open3d_height, 1100)
+        self.assertTrue(args.show_workspace_box)
+
+    def test_workspace_box_corners_are_transformed_to_output_frame(self):
+        from script.real_zed_collection.workspace_crop_utils import WorkspaceBounds
+        from script.real_zed_inference.preview_sam2_object_pointcloud import workspace_box_corners_in_output_frame
+
+        transform = np.eye(4, dtype=np.float32)
+        transform[0, 3] = 10.0
+
+        corners = workspace_box_corners_in_output_frame(
+            WorkspaceBounds(
+                x_min=0.0,
+                x_max=1.0,
+                y_min=0.0,
+                y_max=2.0,
+                z_min=0.0,
+                z_max=3.0,
+            ),
+            t_output_from_workspace=transform,
+        )
+
+        self.assertEqual(corners.shape, (8, 3))
+        self.assertAlmostEqual(float(corners[:, 0].min()), 10.0)
+        self.assertAlmostEqual(float(corners[:, 0].max()), 11.0)
+        self.assertAlmostEqual(float(corners[:, 1].max()), 2.0)
+        self.assertAlmostEqual(float(corners[:, 2].max()), 3.0)
 
 
 if __name__ == "__main__":

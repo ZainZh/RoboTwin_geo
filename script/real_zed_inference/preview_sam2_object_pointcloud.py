@@ -33,6 +33,7 @@ from script.real_zed_inference.real_dp3_inference import (  # noqa: E402
     start_zed_cameras,
 )
 from script.real_zed_collection.real_zed_utils import deterministic_resample  # noqa: E402
+from script.real_zed_collection.workspace_crop_utils import WorkspaceBounds, invert_transform  # noqa: E402
 
 
 PLACEHOLDER_COLORS = (
@@ -94,16 +95,59 @@ def describe_clouds(clouds: Mapping[str, np.ndarray]) -> str:
     return " | ".join(parts)
 
 
+def workspace_box_corners_in_output_frame(
+    bounds: WorkspaceBounds,
+    *,
+    t_output_from_workspace: np.ndarray,
+) -> np.ndarray:
+    xs = [float(bounds.x_min), float(bounds.x_max)]
+    ys = [float(bounds.y_min), float(bounds.y_max)]
+    zs = [float(bounds.z_min), float(bounds.z_max)]
+    corners = np.asarray([[x, y, z] for x in xs for y in ys for z in zs], dtype=np.float64)
+    tf = np.asarray(t_output_from_workspace, dtype=np.float64).reshape(4, 4)
+    corners_h = np.concatenate([corners, np.ones((8, 1), dtype=np.float64)], axis=1)
+    return (tf @ corners_h.T).T[:, :3].astype(np.float32)
+
+
+def workspace_box_edges() -> list[tuple[int, int]]:
+    return [
+        (0, 1),
+        (0, 2),
+        (0, 4),
+        (3, 1),
+        (3, 2),
+        (3, 7),
+        (5, 1),
+        (5, 4),
+        (5, 7),
+        (6, 2),
+        (6, 4),
+        (6, 7),
+    ]
+
+
+def output_from_workspace_transform(live) -> np.ndarray:
+    if not live.labels:
+        return np.eye(4, dtype=np.float32)
+    label = live.labels[0]
+    return (
+        np.asarray(live.t_output_from_cam_by_label[label], dtype=np.float64).reshape(4, 4)
+        @ invert_transform(np.asarray(live.t_workspace_from_cam_by_label[label], dtype=np.float64).reshape(4, 4))
+    ).astype(np.float32)
+
+
 class Open3DLiveViewer:
     def __init__(
         self,
         *,
         placeholders: Sequence[str],
         show_scene: bool,
+        workspace_box_points: np.ndarray | None,
         point_size: float,
         window_width: int,
         window_height: int,
         coordinate_frame_size: float,
+        initial_zoom: float,
     ) -> None:
         import open3d as o3d
 
@@ -128,7 +172,17 @@ class Open3DLiveViewer:
         self.scene_geometry = o3d.geometry.PointCloud() if self.show_scene else None
         if self.scene_geometry is not None:
             self.vis.add_geometry(self.scene_geometry)
+        self.workspace_box = None
+        if workspace_box_points is not None and len(workspace_box_points) == 8:
+            self.workspace_box = o3d.geometry.LineSet()
+            self.workspace_box.points = o3d.utility.Vector3dVector(np.asarray(workspace_box_points, dtype=np.float64))
+            self.workspace_box.lines = o3d.utility.Vector2iVector(np.asarray(workspace_box_edges(), dtype=np.int32))
+            colors = np.tile(np.asarray([[0.9, 0.9, 0.9]], dtype=np.float64), (12, 1))
+            self.workspace_box.colors = o3d.utility.Vector3dVector(colors)
+            self.vis.add_geometry(self.workspace_box)
         self.vis.add_geometry(o3d.geometry.TriangleMesh.create_coordinate_frame(size=float(coordinate_frame_size)))
+        if float(initial_zoom) > 0:
+            self.vis.get_view_control().set_zoom(float(initial_zoom))
 
     def _set_cloud(self, pcd, cloud: np.ndarray, *, scene: bool = False) -> None:
         pc = valid_point_rows(cloud)
@@ -220,6 +274,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--open3d_width", type=int, default=1600)
     parser.add_argument("--open3d_height", type=int, default=1000)
     parser.add_argument("--coordinate_frame_size", type=float, default=0.12)
+    parser.add_argument("--open3d_initial_zoom", type=float, default=0.55)
+    parser.add_argument("--show_workspace_box", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--reset_view_each_frame", action="store_true")
     parser.add_argument("--show_scene", action="store_true")
     parser.add_argument("--show_img", action="store_true")
@@ -250,6 +306,12 @@ def run_preview(args: argparse.Namespace) -> None:
     tracking_state_by_camera: dict[str, Any] = {}
     bbox_prompts_by_camera: dict[str, dict[str, object]] = dict(loaded_prompts)
     viewer: Open3DLiveViewer | None = None
+    workspace_box_points = None
+    if bool(args.show_workspace_box) and live.workspace_bounds is not None:
+        workspace_box_points = workspace_box_corners_in_output_frame(
+            live.workspace_bounds,
+            t_output_from_workspace=output_from_workspace_transform(live),
+        )
     frame_idx = 0
     period = 0.0 if float(args.preview_hz) <= 0 else 1.0 / float(args.preview_hz)
     try:
@@ -289,10 +351,12 @@ def run_preview(args: argparse.Namespace) -> None:
                     viewer = Open3DLiveViewer(
                         placeholders=placeholders,
                         show_scene=bool(args.show_scene),
+                        workspace_box_points=workspace_box_points,
                         point_size=float(args.point_size),
                         window_width=int(args.open3d_width),
                         window_height=int(args.open3d_height),
                         coordinate_frame_size=float(args.coordinate_frame_size),
+                        initial_zoom=float(args.open3d_initial_zoom),
                     )
                 if not viewer.update(
                     object_clouds=prepared,
