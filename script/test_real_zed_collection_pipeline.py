@@ -198,6 +198,96 @@ class RealZedCollectionPipelineTest(unittest.TestCase):
                 self.assertEqual(root_h5["/pointcloud"].shape, (3, 8, 6))
                 self.assertEqual(root_h5["/object_pointcloud/{A}"].shape, (3, 4, 6))
 
+    def test_postprocess_can_write_pointclouds_in_left_base_frame(self):
+        from script.real_zed_collection.postprocess.postprocess_raw_to_robotwin_hdf5 import postprocess_episode
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw_episode = root / "raw" / "episode_000000"
+            raw_episode.mkdir(parents=True)
+            out_dir = root / "out"
+            calib_path = root / "calibration.yaml"
+            robot_camera_path = root / "robot_camera_left.yaml"
+
+            calib_path.write_text(
+                "\n".join(
+                    [
+                        "type: three_camera_charuco_extrinsics",
+                        "reference_camera: global",
+                        "cameras:",
+                        "  global:",
+                        "    serial_number: 1",
+                        "    camera_matrix: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]",
+                        "relative_to_reference:",
+                        "  global:",
+                        "    t_ref_from_cam: [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            robot_camera_path.write_text(
+                "\n".join(
+                    [
+                        "format: robot_camera_apriltag_calibration_v1",
+                        "arm: left",
+                        "camera_label: global",
+                        "t_base_from_camera: [[1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 2.0], [0.0, 0.0, 1.0, 3.0], [0.0, 0.0, 0.0, 1.0]]",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            robot_path = raw_episode / "robot_000000.npz"
+            np.savez(robot_path, joint_vector=np.zeros((14,), dtype=np.float32))
+            camera_path = raw_episode / "global_000000.npz"
+            np.savez(
+                camera_path,
+                rgb=np.zeros((1, 1, 3), dtype=np.uint8),
+                depth_m=np.ones((1, 1), dtype=np.float32),
+            )
+            (raw_episode / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "frames": [
+                            {
+                                "frame_index": 0,
+                                "robot": robot_path.name,
+                                "cameras": {"global": camera_path.name},
+                            }
+                        ],
+                        "camera_labels": ["global"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            hdf5_path = postprocess_episode(
+                raw_episode_dir=raw_episode,
+                output_dir=out_dir,
+                episode_index=0,
+                calibration_path=calib_path,
+                camera_labels=["global"],
+                object_prompts={},
+                mask_root=None,
+                scene_point_num=1,
+                object_point_num=1,
+                min_depth_m=0.1,
+                max_depth_m=2.0,
+                output_frame="left_base",
+                robot_camera_calibration_path=robot_camera_path,
+            )
+
+            with h5py.File(hdf5_path, "r") as root_h5:
+                np.testing.assert_allclose(root_h5["/pointcloud"][0, 0, :3], np.array([1.0, 2.0, 4.0]))
+                np.testing.assert_allclose(
+                    root_h5["/observation/global/cam2world_gl"][:3, 3],
+                    np.array([1.0, 2.0, 3.0]),
+                )
+                np.testing.assert_allclose(
+                    root_h5["/observation/global/extrinsic_cv"][:3, 3],
+                    np.array([-1.0, -2.0, -3.0]),
+                )
+
     def test_load_three_zed_calibration_can_return_workspace_frame(self):
         from script.real_zed_collection.real_zed_utils import load_three_zed_calibration
 
@@ -367,6 +457,28 @@ class RealZedCollectionPipelineTest(unittest.TestCase):
             self.assertEqual(records["global"]["{A}"]["prompt_type"], "point")
             self.assertEqual(records["global"]["{A}"]["points_xy"], [[9, 8], [1, 2]])
             self.assertEqual(records["global"]["{A}"]["point_labels"], [1, 0])
+
+    def test_sam2_bbox_selector_direct_script_help_from_non_repo_cwd(self):
+        import os
+        import subprocess
+
+        repo_root = Path(__file__).resolve().parents[1]
+        script_path = repo_root / "script" / "real_zed_collection" / "select_sam2_bboxes.py"
+        env = os.environ.copy()
+        env.pop("PYTHONPATH", None)
+
+        result = subprocess.run(
+            [sys.executable, str(script_path), "--help"],
+            cwd=tempfile.gettempdir(),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=20,
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("SAM2", result.stdout)
 
     def test_sam2_selector_preview_mask_is_rendered_on_canvas(self):
         from script.real_zed_collection.select_sam2_bboxes import DISPLAY_HEADER_HEIGHT, _render_selection_canvas

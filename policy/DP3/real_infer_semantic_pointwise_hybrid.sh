@@ -11,14 +11,43 @@ semantic_device=${8:-cuda:0}
 object_placeholders=${9:-\{A\},\{B\}}
 checkpoint_num=${10:-3000}
 semantic_point_num=${11:-128}
-extra_flags=("${@:12}")
+
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+repo_root=$(cd "${script_dir}/../.." && pwd)
+source "${script_dir}/real_infer_arg_utils.sh"
+
+if [[ "${12:-}" == --* ]]; then
+    output_frame_arg=auto
+    robot_camera_calibration_path_arg=auto
+    extra_flags=("${@:12}")
+else
+    output_frame_arg=${12:-auto}
+    robot_camera_calibration_path_arg=${13:-auto}
+    extra_flags=("${@:14}")
+fi
+
+output_frame=$(resolve_real_zed_output_frame "${repo_root}" "${task_name}" "${task_config}" "${output_frame_arg}")
+robot_camera_calibration_path=$(
+    resolve_real_zed_robot_camera_calibration_path \
+        "${repo_root}" \
+        "${output_frame}" \
+        "${robot_camera_calibration_path_arg}"
+)
+
+frame_overrides=(--output_frame "${output_frame}")
+if [ -n "${robot_camera_calibration_path}" ]; then
+    frame_overrides+=(--robot_camera_calibration_path "${robot_camera_calibration_path}")
+fi
 
 export CUDA_VISIBLE_DEVICES=${gpu_id}
 export HYDRA_FULL_ERROR=1
 echo -e "\033[33mgpu id (to use): ${gpu_id}\033[0m"
+echo -e "\033[33mreal zed output_frame: ${output_frame}\033[0m"
+if [ -n "${robot_camera_calibration_path}" ]; then
+    echo -e "\033[33mrobot-camera calibration: ${robot_camera_calibration_path}\033[0m"
+fi
 
-script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-cd "${script_dir}/../.."
+cd "${repo_root}"
 
 PYTHONWARNINGS=ignore::UserWarning \
 python script/real_zed_inference/real_dp3_inference.py \
@@ -36,4 +65,5 @@ python script/real_zed_inference/real_dp3_inference.py \
     --semantic_point_num "${semantic_point_num}" \
     --object_placeholders "${object_placeholders}" \
     --enable_sam2_objpc \
+    "${frame_overrides[@]}" \
     "${extra_flags[@]}"

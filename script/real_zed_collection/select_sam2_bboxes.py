@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 import cv2
 import numpy as np
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from script.real_zed_collection.real_zed_utils import ensure_dir, read_json, write_json
 from script.real_zed_collection.sam2_tracking_utils import (
@@ -19,8 +24,8 @@ from script.real_zed_collection.sam2_tracking_utils import (
 from script.real_zed_collection.select_camera_workspace_masks import _load_rgb, _resolve_raw_episode
 
 
-DEFAULT_RAW_ROOT = "/media/zheng/Extreme SSD/geo_mani_data/grasp_mug/real_zed_raw"
-DEFAULT_OUTPUT_ROOT = "/media/zheng/Extreme SSD/geo_mani_data/grasp_mug/sam2_bbox_prompts"
+DEFAULT_RAW_ROOT = "/media/zheng/Extreme SSD/geo_mani_data/grasp_mug_new/real_zed_raw"
+DEFAULT_OUTPUT_ROOT = "/media/zheng/Extreme SSD/geo_mani_data/grasp_mug_new/sam2_bbox_prompts"
 DISPLAY_HEADER_HEIGHT = 104
 DEFAULT_DISPLAY_SCALE = 1.8
 

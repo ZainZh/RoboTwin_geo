@@ -20,6 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DP3_ROOT = REPO_ROOT / "policy" / "DP3"
 DP3_SCRIPTS_ROOT = DP3_ROOT / "scripts"
 DEFAULT_WORKSPACE_CALIBRATION = REPO_ROOT / "script" / "real_zed_collection" / "calibration" / "three_camera_workspace_extrinsics.yaml"
+DEFAULT_ROBOT_CAMERA_CALIBRATION_DIR = REPO_ROOT / "script" / "real_zed_collection" / "calibration"
 DEFAULT_SAM2_ROOT = REPO_ROOT / "include" / "SAM2_streaming"
 DEFAULT_SAM2_CHECKPOINT = Path("/home/zheng/Datasets/sam2/sam2.1_hiera_large.pt")
 DEFAULT_SEMANTIC_CKPT_A = Path("/home/zheng/github/3d_semantic_train/outputs/utonia_universal_field/Mug_semantic/mug.pt")
@@ -41,6 +42,10 @@ from script.real_zed_collection.real_zed_utils import (  # noqa: E402
     load_three_zed_calibration,
     merge_point_clouds,
     transform_point_cloud,
+)
+from script.real_zed_collection.postprocess.postprocess_raw_to_robotwin_hdf5 import (  # noqa: E402
+    _load_yaml_mapping,
+    _output_frame_transforms,
 )
 from script.real_zed_collection.workspace_crop_utils import WorkspaceBounds, invert_transform  # noqa: E402
 
@@ -132,6 +137,9 @@ class LiveZedCameras:
     calibrations: dict[str, Any]
     label_to_calib: dict[str, str]
     workspace_bounds: WorkspaceBounds | None
+    pointcloud_crop_bounds: WorkspaceBounds | None
+    output_frame: str
+    t_output_from_cam_by_label: dict[str, np.ndarray]
     shared_by_label: dict[str, SharedZedFrame]
     stop_event: threading.Event
     threads: list[threading.Thread]
@@ -179,6 +187,15 @@ def start_zed_cameras(args: argparse.Namespace) -> LiveZedCameras:
         raise ValueError(f"Calibration is missing labels required by live cameras: {missing}")
 
     workspace_bounds = make_workspace_bounds(args) if bool(args.workspace_crop_enabled) else None
+    robot_camera_calibration = load_robot_camera_calibration_for_output_frame(args)
+    output_frame, t_output_from_cam_by_label = _output_frame_transforms(
+        calib=calibrations,
+        labels=labels,
+        label_to_calib=label_to_calib,
+        output_frame=args.output_frame,
+        robot_camera_calibration=robot_camera_calibration,
+    )
+    pointcloud_crop_bounds = workspace_bounds if output_frame in {"source", "workspace"} else None
     shared_by_label = {label: SharedZedFrame() for label in labels}
     stop_event = threading.Event()
     threads: list[threading.Thread] = []
@@ -224,12 +241,40 @@ def start_zed_cameras(args: argparse.Namespace) -> LiveZedCameras:
         calibrations=calibrations,
         label_to_calib=label_to_calib,
         workspace_bounds=workspace_bounds,
+        pointcloud_crop_bounds=pointcloud_crop_bounds,
+        output_frame=output_frame,
+        t_output_from_cam_by_label=t_output_from_cam_by_label,
         shared_by_label=shared_by_label,
         stop_event=stop_event,
         threads=threads,
     )
+    print(f"[INFO] Live point cloud output_frame={output_frame}")
     wait_for_cameras(live, timeout_sec=float(args.camera_warmup_timeout_sec))
     return live
+
+
+def load_robot_camera_calibration_for_output_frame(args: argparse.Namespace) -> dict[str, Any] | None:
+    output_frame = str(args.output_frame)
+    if output_frame in {"source", "workspace"}:
+        return None
+    if output_frame not in {"left_base", "right_base"}:
+        raise ValueError("output_frame must be one of: source, workspace, left_base, right_base")
+    arm = output_frame.split("_", 1)[0]
+    if str(args.robot_camera_calibration_path).strip():
+        path = resolve_path(args.robot_camera_calibration_path)
+    else:
+        path = DEFAULT_ROBOT_CAMERA_CALIBRATION_DIR / f"robot_camera_apriltag_{arm}_global.yaml"
+    if not path.exists():
+        raise FileNotFoundError(
+            f"output_frame={output_frame!r} requires robot-camera calibration, but file does not exist: {path}"
+        )
+    data = _load_yaml_mapping(path)
+    if str(data.get("arm", "")).strip() != arm:
+        raise ValueError(f"Robot-camera calibration arm mismatch: expected {arm}, got {data.get('arm')} from {path}")
+    data = dict(data)
+    data["_path"] = str(path)
+    print(f"[INFO] Using robot-camera calibration for {output_frame}: {path}")
+    return data
 
 
 def wait_for_cameras(live: LiveZedCameras, timeout_sec: float) -> None:
@@ -272,7 +317,7 @@ def build_robotwin_observation(
         depth_m = np.asarray(frame["depth_m"], dtype=np.float32)
         rgb_aligned = rgb_to_depth_shape(np.asarray(frame["rgb"], dtype=np.uint8), depth_m.shape)
         camera_matrix = np.asarray(frame.get("camera_matrix", calib.camera_matrix), dtype=np.float32).reshape(3, 3)
-        t_world_from_cam = np.asarray(calib.t_world_from_cam, dtype=np.float32).reshape(4, 4)
+        t_output_from_cam = np.asarray(live.t_output_from_cam_by_label[label], dtype=np.float32).reshape(4, 4)
 
         frame_for_pc = dict(frame)
         frame_for_pc["rgb"] = rgb_aligned
@@ -280,7 +325,7 @@ def build_robotwin_observation(
             camera_frame_to_world_pc(
                 camera_frame=frame_for_pc,
                 camera_matrix=camera_matrix,
-                t_world_from_cam=t_world_from_cam,
+                t_world_from_cam=t_output_from_cam,
                 min_depth_m=float(args.min_depth_m),
                 max_depth_m=float(args.max_depth_m),
             )
@@ -290,11 +335,11 @@ def build_robotwin_observation(
             "depth": depth_m.astype(np.float32),
             "intrinsic_cv": camera_matrix.astype(np.float32),
             # SAM2 projection utilities expect world -> camera here.
-            "extrinsic_cv": invert_transform(t_world_from_cam).astype(np.float32),
-            "cam2world_gl": t_world_from_cam.astype(np.float32),
+            "extrinsic_cv": invert_transform(t_output_from_cam).astype(np.float32),
+            "cam2world_gl": t_output_from_cam.astype(np.float32),
         }
 
-    dense_scene = crop_point_cloud_by_bounds(merge_point_clouds(scene_chunks), live.workspace_bounds)
+    dense_scene = crop_point_cloud_by_bounds(merge_point_clouds(scene_chunks), live.pointcloud_crop_bounds)
     scene_point_cloud = deterministic_resample(dense_scene, int(args.scene_point_num))
     observation = {
         "joint_action": {"vector": np.asarray(joint_vector, dtype=np.float32).reshape(14)},
@@ -717,6 +762,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--calibration_path", default=str(DEFAULT_WORKSPACE_CALIBRATION))
     parser.add_argument("--frame_mode", choices=["reference_camera", "workspace"], default="workspace")
+    parser.add_argument("--output_frame", choices=["source", "workspace", "left_base", "right_base"], default="source")
+    parser.add_argument("--robot_camera_calibration_path", default="")
     parser.add_argument("--serial_remap", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--camera_labels", default="global,left,right")
     parser.add_argument("--zed_serials", default="")

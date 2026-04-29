@@ -5,12 +5,17 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+import sys
 from pathlib import Path
 from typing import Any
 
 import h5py
 import numpy as np
 import yaml
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from script.real_zed_collection.postprocess.postprocess_raw_to_robotwin_hdf5 import parse_object_prompts, postprocess_episode
 from script.real_zed_collection.real_zed_utils import ensure_dir, write_json
@@ -26,7 +31,7 @@ from script.real_zed_collection.select_sam2_bboxes import load_sam2_prompt_recor
 from script.real_zed_collection.workspace_crop_utils import WorkspaceBounds
 
 
-DEFAULT_TASK_NAME = "grasp_mug"
+DEFAULT_TASK_NAME = "grasp_mug_new"
 DEFAULT_TASK_CONFIG = "demo_real_zed_sam2_objpc"
 DEFAULT_OBJECT_PROMPTS = "{A}:cup,{B}:box"
 DEFAULT_CAMERA_LABELS = "global,left,right"
@@ -417,6 +422,8 @@ def process_dataset(args: argparse.Namespace) -> dict[str, Any]:
                 max_frames=int(args.max_frames_per_episode),
                 store_observations=bool(args.store_observations),
                 camera_workspace_mask_root=camera_workspace_mask_root,
+                output_frame=args.output_frame,
+                robot_camera_calibration_path=args.robot_camera_calibration_path,
             )
             print(f"wrote {hdf5_path}")
 
@@ -459,6 +466,8 @@ def process_dataset(args: argparse.Namespace) -> dict[str, Any]:
         "scene_point_num": int(args.scene_point_num),
         "object_point_num": int(args.object_point_num),
         "frame_mode": str(args.frame_mode),
+        "output_frame": str(args.output_frame),
+        "robot_camera_calibration_path": str(args.robot_camera_calibration_path),
         "calibration_path": str(Path(args.calibration_path).expanduser().resolve()),
         "workspace_crop_bounds_m": None if workspace_bounds is None else workspace_bounds.as_dict(),
         "camera_workspace_mask_root": None if camera_workspace_mask_root is None else str(camera_workspace_mask_root),
@@ -484,6 +493,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--require_per_episode_bboxes", action="store_true", default=False)
     parser.add_argument("--calibration_path", default=str(DEFAULT_CALIBRATION_PATH))
     parser.add_argument("--frame_mode", default="workspace", choices=["reference_camera", "workspace"])
+    parser.add_argument("--output_frame", default="source", choices=["source", "workspace", "left_base", "right_base"])
+    parser.add_argument("--robot_camera_calibration_path", default="")
     parser.add_argument("--start_episode", type=int, default=0)
     parser.add_argument("--max_episodes", type=int, default=-1)
     parser.add_argument("--episode_index_offset", type=int, default=0)

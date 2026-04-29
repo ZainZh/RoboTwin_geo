@@ -1028,3 +1028,39 @@
   - Added `LatestCameraDetection`, `CameraDetectionSnapshot`, and `start_camera_detection_worker` with a unit test using fake capture/detection functions.
   - Sample metadata now records `camera_timestamp_unix_sec` and `camera_frame_age_sec` so asynchronous capture latency can be inspected.
   - Re-verified with `python -m unittest script.test_robot_camera_apriltag_calibration`, `python -m py_compile script/real_zed_collection/calibrate_robot_camera_apriltag.py script/test_robot_camera_apriltag_calibration.py`, and `python script/real_zed_collection/calibrate_robot_camera_apriltag.py --help`.
+
+### Phase 27: Robot-Base-Frame Real Point Clouds
+- **Status:** complete with hardware/postprocess run pending
+- Actions taken:
+  - Added `--output_frame source|workspace|left_base|right_base` and `--robot_camera_calibration_path` to `postprocess_raw_to_robotwin_hdf5.py`.
+  - Added the same `--output_frame` and robot-camera calibration path support to the SAM2 dataset postprocess driver.
+  - Added matching `--output_frame` support to `script/real_zed_inference/real_dp3_inference.py`.
+  - Implemented composition from multi-camera source/workspace frame into selected arm base frame using the robot-camera calibration YAML.
+  - Updated HDF5 `cam2world_gl` and `extrinsic_cv` so projection metadata matches the transformed training point-cloud frame.
+  - Added a synthetic test proving that `output_frame=left_base` shifts `/pointcloud` and camera metadata into the left-base transform.
+  - Verified with targeted postprocess tests:
+    `python -m unittest script.test_real_zed_collection_pipeline.RealZedCollectionPipelineTest.test_postprocess_can_write_pointclouds_in_left_base_frame script.test_real_zed_collection_pipeline.RealZedCollectionPipelineTest.test_postprocess_writes_robotwin_hdf5_from_raw_episode_and_masks`.
+  - Verified syntax with `python -m py_compile script/real_zed_collection/postprocess/postprocess_raw_to_robotwin_hdf5.py script/real_zed_collection/postprocess/postprocess_real_zed_sam2_objpc_dataset.py script/real_zed_inference/real_dp3_inference.py script/test_real_zed_collection_pipeline.py`.
+  - Verified CLI wiring with `python script/real_zed_collection/postprocess/postprocess_real_zed_sam2_objpc_dataset.py --help` and `python script/real_zed_inference/real_dp3_inference.py --help`.
+  - Full `python -m unittest script.test_real_zed_collection_pipeline` still cannot complete in the current shell because `policy/DP/process_data_real_zed.py` imports missing dependency `zarr`.
+
+### Phase 28: Real-ZED Direct Script Import Bootstrap
+- **Status:** complete
+- Actions taken:
+  - Reproduced `ModuleNotFoundError: No module named 'script'` by running `select_sam2_bboxes.py --help` from a non-repository cwd in a regression test.
+  - Added repo-root `sys.path` bootstrap to the direct-run real-ZED collection entry scripts before their `script.real_zed_collection.*` imports.
+  - Removed the stale duplicate `REPO_ROOT = parents[3]` assignment in `segment_objects_sam2.py` so repo data links continue to resolve under this repository.
+  - Verified with `python -m unittest script.test_real_zed_collection_pipeline.RealZedCollectionPipelineTest.test_sam2_bbox_selector_direct_script_help_from_non_repo_cwd`.
+  - Verified syntax with `python -m py_compile` across the patched real-ZED entry scripts and test file.
+  - Verified direct launch from `/tmp` with `python /home/zheng/github/RoboTwin_geo/script/real_zed_collection/select_sam2_bboxes.py --help`.
+
+### Phase 29: Real-ZED Inference Coordinate-Frame Interface
+- **Status:** complete
+- Actions taken:
+  - Added `policy/DP3/real_infer_arg_utils.sh` to resolve `output_frame` from explicit args, dataset meta, or task-config naming fallback.
+  - Updated baseline and semantic real inference scripts so `output_frame` and robot-camera calibration are explicit positional interface fields before passthrough flags.
+  - Kept backward-compatible passthrough behavior when the first optional argument starts with `--`.
+  - Added `policy/DP3/scripts/test_real_infer_script_interfaces.sh` with fake-Python argument capture for baseline, semantic, explicit workspace override, and task-config-name fallback.
+  - Verified with `bash policy/DP3/scripts/test_real_infer_script_interfaces.sh`.
+  - Verified shell syntax with `bash -n policy/DP3/real_infer_arg_utils.sh policy/DP3/real_infer_baseline.sh policy/DP3/real_infer_semantic_pointwise_hybrid.sh policy/DP3/scripts/test_real_infer_script_interfaces.sh`.
+  - Verified `demo_real_zed_sam2_objpc_rightbase` auto-resolves to `right_base` and the default right-arm robot-camera calibration path.

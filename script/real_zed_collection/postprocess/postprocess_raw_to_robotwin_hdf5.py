@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 from typing import Mapping
 
 import h5py
 import numpy as np
+import yaml
 
 try:
     import cv2
 except Exception:
     cv2 = None
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from script.real_zed_collection.real_zed_utils import (
     calibration_label_map_from_manifest,
@@ -25,7 +31,7 @@ from script.real_zed_collection.real_zed_utils import (
     transform_point_cloud,
     write_json,
 )
-from script.real_zed_collection.workspace_crop_utils import WorkspaceBounds, apply_workspace_crop_to_camera_frame
+from script.real_zed_collection.workspace_crop_utils import WorkspaceBounds, apply_workspace_crop_to_camera_frame, invert_transform
 
 
 def parse_object_prompts(text: str) -> dict[str, str]:
@@ -197,6 +203,116 @@ def _rgb_to_depth_shape(rgb: np.ndarray, depth_shape: tuple[int, int]) -> np.nda
     return cv2.resize(rgb_arr, (int(depth_shape[1]), int(depth_shape[0])), interpolation=cv2.INTER_LINEAR)
 
 
+def _matrix4(value, name: str) -> np.ndarray:
+    mat = np.asarray(value, dtype=np.float64)
+    if mat.shape != (4, 4):
+        raise ValueError(f"{name} must have shape (4, 4), got {mat.shape}")
+    return mat
+
+
+def _load_yaml_mapping(path: str | Path) -> dict:
+    with Path(path).expanduser().open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"Expected YAML mapping: {path}")
+    return data
+
+
+def _robot_camera_calibration_candidates(
+    *,
+    raw_episode_dir: Path,
+    manifest: dict,
+    explicit_path: str | Path | None,
+) -> list[Path]:
+    if explicit_path is not None and str(explicit_path).strip():
+        return [Path(explicit_path).expanduser().resolve()]
+    candidates: list[Path] = []
+    for item in manifest.get("robot_camera_calibration_snapshots", []) or []:
+        if isinstance(item, dict) and str(item.get("snapshot_path", "")).strip():
+            candidates.append((raw_episode_dir / str(item["snapshot_path"])).resolve())
+    for item in manifest.get("robot_camera_calibration_paths", []) or []:
+        if str(item).strip():
+            candidates.append(Path(item).expanduser().resolve())
+    return candidates
+
+
+def _select_robot_camera_calibration(
+    *,
+    raw_episode_dir: Path,
+    manifest: dict,
+    output_frame: str,
+    explicit_path: str | Path | None,
+) -> dict | None:
+    frame = str(output_frame)
+    if frame not in {"left_base", "right_base"}:
+        return None
+    target_arm = frame.split("_", 1)[0]
+    candidates = _robot_camera_calibration_candidates(
+        raw_episode_dir=raw_episode_dir,
+        manifest=manifest,
+        explicit_path=explicit_path,
+    )
+    if not candidates:
+        raise ValueError(
+            f"output_frame={frame!r} requires a robot-camera calibration. "
+            "Pass --robot_camera_calibration_path or record raw data with robot_camera_calibration_paths configured."
+        )
+    available = []
+    for path in candidates:
+        if not path.exists():
+            raise FileNotFoundError(f"Robot-camera calibration file does not exist: {path}")
+        data = _load_yaml_mapping(path)
+        arm = str(data.get("arm", "")).strip()
+        available.append(f"{path} arm={arm}")
+        if arm == target_arm:
+            data = dict(data)
+            data["_path"] = str(path)
+            return data
+    raise ValueError(f"No robot-camera calibration for arm={target_arm!r}. Available: {available}")
+
+
+def _output_frame_transforms(
+    *,
+    calib: dict,
+    labels: list[str],
+    label_to_calib: dict[str, str],
+    output_frame: str,
+    robot_camera_calibration: dict | None,
+) -> tuple[str, dict[str, np.ndarray]]:
+    frame = str(output_frame)
+    if frame == "workspace":
+        return "workspace", {
+            label: np.asarray(calib[label_to_calib[label]].t_world_from_cam, dtype=np.float64).reshape(4, 4)
+            for label in labels
+        }
+    if frame == "source":
+        return "source", {
+            label: np.asarray(calib[label_to_calib[label]].t_world_from_cam, dtype=np.float64).reshape(4, 4)
+            for label in labels
+        }
+    if frame not in {"left_base", "right_base"}:
+        raise ValueError("output_frame must be one of: source, workspace, left_base, right_base")
+    if robot_camera_calibration is None:
+        raise ValueError(f"output_frame={frame!r} requires robot_camera_calibration.")
+
+    robot_camera_label = str(robot_camera_calibration.get("camera_label", "")).strip()
+    if not robot_camera_label:
+        raise ValueError("Robot-camera calibration missing camera_label.")
+    robot_calib_label = label_to_calib.get(robot_camera_label, robot_camera_label)
+    if robot_calib_label not in calib:
+        raise ValueError(
+            f"Robot-camera calibration camera_label={robot_camera_label!r} is not available in camera calibration labels."
+        )
+
+    t_base_from_robot_camera = _matrix4(robot_camera_calibration["t_base_from_camera"], "t_base_from_camera")
+    t_source_from_robot_camera = np.asarray(calib[robot_calib_label].t_world_from_cam, dtype=np.float64).reshape(4, 4)
+    t_base_from_source = t_base_from_robot_camera @ invert_transform(t_source_from_robot_camera)
+    return frame, {
+        label: t_base_from_source @ np.asarray(calib[label_to_calib[label]].t_world_from_cam, dtype=np.float64).reshape(4, 4)
+        for label in labels
+    }
+
+
 def postprocess_episode(
     *,
     raw_episode_dir: str | Path,
@@ -219,6 +335,8 @@ def postprocess_episode(
     max_frames: int = -1,
     store_observations: bool = True,
     camera_workspace_mask_root: str | Path | None = None,
+    output_frame: str = "source",
+    robot_camera_calibration_path: str | Path | None = None,
 ) -> Path:
     raw_episode_dir = Path(raw_episode_dir).expanduser().resolve()
     output_dir = ensure_dir(output_dir)
@@ -244,6 +362,20 @@ def postprocess_episode(
     missing = [calib_label for calib_label in label_to_calib.values() if calib_label not in calib]
     if missing:
         raise ValueError(f"Camera labels missing from calibration: {missing}")
+    robot_camera_calibration = _select_robot_camera_calibration(
+        raw_episode_dir=raw_episode_dir,
+        manifest=manifest,
+        output_frame=output_frame,
+        explicit_path=robot_camera_calibration_path,
+    )
+    output_frame_name, t_output_from_cam_by_label = _output_frame_transforms(
+        calib=calib,
+        labels=labels,
+        label_to_calib=label_to_calib,
+        output_frame=output_frame,
+        robot_camera_calibration=robot_camera_calibration,
+    )
+    pointcloud_crop_bounds = workspace_crop_bounds if output_frame_name in {"source", "workspace"} else None
 
     mask_root_path = None if mask_root is None or str(mask_root) == "" else Path(mask_root).expanduser().resolve()
     camera_workspace_mask_root_path = (
@@ -322,7 +454,7 @@ def postprocess_episode(
                 _camera_frame_to_world_pc(
                     camera_frame=camera_frame,
                     camera_matrix=camera_matrix,
-                    t_world_from_cam=calib[calib_label].t_world_from_cam,
+                    t_world_from_cam=t_output_from_cam_by_label[label],
                     mask=camera_domain_mask,
                     min_depth_m=min_depth_m,
                     max_depth_m=max_depth_m,
@@ -340,7 +472,7 @@ def postprocess_episode(
                     _camera_frame_to_world_pc(
                         camera_frame=camera_frame,
                         camera_matrix=camera_matrix,
-                        t_world_from_cam=calib[calib_label].t_world_from_cam,
+                        t_world_from_cam=t_output_from_cam_by_label[label],
                         mask=mask,
                         min_depth_m=min_depth_m,
                         max_depth_m=max_depth_m,
@@ -349,7 +481,7 @@ def postprocess_episode(
 
         scene_point_clouds.append(
             deterministic_resample(
-                _crop_point_cloud_by_bounds(merge_point_clouds(scene_chunks), workspace_crop_bounds),
+                _crop_point_cloud_by_bounds(merge_point_clouds(scene_chunks), pointcloud_crop_bounds),
                 int(scene_point_num),
             )
         )
@@ -358,7 +490,7 @@ def postprocess_episode(
                 deterministic_resample(
                     _crop_point_cloud_by_bounds(
                         merge_point_clouds(object_chunks_by_placeholder[placeholder]),
-                        workspace_crop_bounds,
+                        pointcloud_crop_bounds,
                     ),
                     int(object_point_num),
                 )
@@ -386,8 +518,9 @@ def postprocess_episode(
                     "intrinsic_cv",
                     data=np.asarray(intrinsic_by_camera.get(label, calib[label_to_calib[label]].camera_matrix), dtype=np.float32),
                 )
-                cam_group.create_dataset("extrinsic_cv", data=calib[label_to_calib[label]].t_world_from_cam.astype(np.float32))
-                cam_group.create_dataset("cam2world_gl", data=calib[label_to_calib[label]].t_world_from_cam.astype(np.float32))
+                t_output_from_cam = t_output_from_cam_by_label[label].astype(np.float32)
+                cam_group.create_dataset("extrinsic_cv", data=invert_transform(t_output_from_cam).astype(np.float32))
+                cam_group.create_dataset("cam2world_gl", data=t_output_from_cam)
 
         if placeholders:
             obj_group = root.create_group("object_pointcloud")
@@ -412,6 +545,10 @@ def postprocess_episode(
             "raw_episode": str(raw_episode_dir),
             "calibration_path": str(calib_path),
             "frame_mode": str(frame_mode),
+            "output_frame": str(output_frame_name),
+            "robot_camera_calibration_path": (
+                "" if robot_camera_calibration is None else str(robot_camera_calibration.get("_path", ""))
+            ),
             "workspace_crop_bounds_m": {} if workspace_crop_bounds is None else workspace_crop_bounds.as_dict(),
             "camera_label_to_calibration_label": label_to_calib,
             "intrinsics_source": str(intrinsics_source),
@@ -454,6 +591,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_frames", type=int, default=-1)
     parser.add_argument("--no_store_observations", action="store_true", default=False)
     parser.add_argument("--camera_workspace_mask_root", default="")
+    parser.add_argument("--output_frame", default="source", choices=["source", "workspace", "left_base", "right_base"])
+    parser.add_argument("--robot_camera_calibration_path", default="")
     return parser.parse_args()
 
 
@@ -503,6 +642,8 @@ def main() -> None:
         max_frames=args.max_frames,
         store_observations=not bool(args.no_store_observations),
         camera_workspace_mask_root=args.camera_workspace_mask_root,
+        output_frame=args.output_frame,
+        robot_camera_calibration_path=args.robot_camera_calibration_path,
     )
     print(hdf5_path)
 

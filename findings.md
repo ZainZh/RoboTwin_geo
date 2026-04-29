@@ -53,6 +53,8 @@
 - The marker detector now accepts `--marker_dictionary`, including explicit dictionaries such as `DICT_4X4_50` and an `auto` mode that tries common ArUco and AprilTag dictionaries. For the user's single-face ArUco marker with id 4, run with `--tag_id 4` and either the known dictionary or `--marker_dictionary auto`.
 - Three-ZED extrinsic calibration and robot-camera calibration now default to `script/real_zed_collection/configs/real_zed_collection.yaml` for `camera_labels`/`zed_serials`. Explicit `--serials` in three-ZED calibration and explicit `--zed_serial` in robot-camera calibration still override this config.
 - Robot-camera calibration now runs ZED frame capture and marker detection in a background worker thread. The robot control loop reads the latest camera snapshot and records `camera_frame_age_sec` for every captured sample, so image processing latency is visible without blocking servo control.
+- Real-ZED HDF5 postprocessing and real DP3 inference now support `output_frame` values `source`, `workspace`, `left_base`, and `right_base`. For `left_base/right_base`, the code composes each camera transform as `T_base_from_robot_camera @ inverse(T_source_from_robot_camera) @ T_source_from_camera_i`, so scene and object point clouds plus `cam2world_gl/extrinsic_cv` are expressed in the selected arm base frame.
+- When postprocessing outputs to a robot base frame, workspace 3D crop bounds are not applied after the frame transform, because those bounds live in workspace/source coordinates. Use collection-time workspace crop or 2D workspace masks when training in base frame.
 
 ### Existing DP3 training data expectations
 - `policy/DP3/scripts/process_data.py` expects RoboTwin-style HDF5 episodes under `data/<task>/<task_config>/data/episode{i}.hdf5`.
@@ -649,6 +651,17 @@
   - The tracker was already recreated inside `segment_episode_sam2(...)`, but the batch driver initially loaded one global `sam2_bbox_prompts.json` and reused it for every raw episode.
   - That global prompt reuse is only safe if every episode starts with the same image-space object pose. For randomized real data, each raw episode needs its own first-frame `{A}/{B}` bboxes.
   - The batch driver now prefers `sam2_bbox_prompts/<raw_episode_name>/sam2_bbox_prompts.json`, then `episode<index>/sam2_bbox_prompts.json`, then `episode_<index:06d>/sam2_bbox_prompts.json`, with global `sam2_bbox_prompts.json` only as fallback unless `--require_per_episode_bboxes` is set.
+- Real-ZED direct-run import finding:
+  - Running `python script/real_zed_collection/select_sam2_bboxes.py` can omit the repository root from `sys.path`, so absolute imports like `from script.real_zed_collection...` fail with `ModuleNotFoundError: No module named 'script'`.
+  - Direct-run real-ZED entry scripts should insert `Path(__file__).resolve().parents[2]` or `parents[3]` for postprocess scripts before importing `script.*`.
+- Real-ZED right-base task-config finding:
+  - The current `grasp_mug_new` processed HDF5 data is linked at `data/grasp_mug_new/demo_real_zed_sam2_objpc`, and its meta records `output_frame=right_base`.
+  - Training with `task_config=demo_real_zed_sam2_objectpc_rightbase` fails because no repo data link exists at `data/grasp_mug_new/demo_real_zed_sam2_objectpc_rightbase`.
+  - A failed baseline preprocessing run can leave an empty zarr directory under `policy/DP3/data`, so reusing that exact wrong config can skip preprocessing unless the zarr is rebuilt.
+- Real-ZED inference frame-interface finding:
+  - Real inference scripts now expose `output_frame` and robot-camera calibration as positional optional args rather than hiding them in passthrough flags.
+  - `auto` resolution first reads `data/<task>/<task_config>/real_zed_sam2_objpc_meta.json`; if that file is unavailable, it infers `right_base`, `left_base`, or `workspace` from the `task_config` name.
+  - For `right_base` or `left_base`, `auto` calibration resolves to the default `robot_camera_apriltag_<arm>_global.yaml` under `script/real_zed_collection/calibration`.
 
 ---
 *Update this file after every 2 view/browser/search operations.*

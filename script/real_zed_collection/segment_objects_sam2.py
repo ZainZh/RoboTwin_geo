@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 import cv2
 import numpy as np
 import os
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from script.real_zed_collection.real_zed_utils import ensure_dir, read_json, write_json
 from script.real_zed_collection.sam2_tracking_utils import (
     DEFAULT_SAM2_CHECKPOINT,
@@ -34,7 +40,6 @@ def default_output_dir(task_name: str = DEFAULT_TASK_NAME, task_config: str | No
     resolved_user = user or os.environ.get("USER") or os.environ.get("USERNAME") or "zheng"
     return Path("/media") / resolved_user / "Extreme SSD" / "geo_mani_data" / str(task_name) / "robotwin_objpc" / str(task_config)
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
 
 def repo_data_link_path(task_name: str, task_config: str) -> Path:
     return REPO_ROOT / "data" / str(task_name) / str(task_config)
