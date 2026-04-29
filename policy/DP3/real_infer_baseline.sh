@@ -54,5 +54,7 @@ python script/real_zed_inference/real_dp3_inference.py \
     --seed "${seed}" \
     --gpu_id "${gpu_id}" \
     --checkpoint_num "${checkpoint_num}" \
+    --profile_timing \
+    --execute \
     "${frame_overrides[@]}" \
     "${extra_flags[@]}"

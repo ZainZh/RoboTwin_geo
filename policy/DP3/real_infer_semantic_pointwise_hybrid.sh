@@ -5,7 +5,7 @@ task_config=${2:-demo_real_zed_sam2_objpc_rightbase}
 expert_data_num=${3:-32}
 seed=${4:-0}
 gpu_id=${5:-0}
-semantic_ckpt_A=${6:-${SEMANTIC_CKPT_A:-${HOME}/github/3d_semantic_train/outputs/utonia_universal_field/Mug_semantic/mug.pt}}
+semantic_ckpt_A=${6:-${SEMANTIC_CKPT_A:-${HOME}/DataModel/semantic/mug.pt}}
 semantic_ckpt_B=${7:-none}
 semantic_device=${8:-cuda:0}
 object_placeholders=${9:-\{A\},\{B\}}
@@ -65,5 +65,7 @@ python script/real_zed_inference/real_dp3_inference.py \
     --semantic_point_num "${semantic_point_num}" \
     --object_placeholders "${object_placeholders}" \
     --enable_sam2_objpc \
+    --profile_timing \
+    --execute \
     "${frame_overrides[@]}" \
     "${extra_flags[@]}"

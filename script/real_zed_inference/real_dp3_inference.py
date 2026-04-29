@@ -23,7 +23,8 @@ DEFAULT_WORKSPACE_CALIBRATION = REPO_ROOT / "script" / "real_zed_collection" / "
 DEFAULT_ROBOT_CAMERA_CALIBRATION_DIR = REPO_ROOT / "script" / "real_zed_collection" / "calibration"
 DEFAULT_SAM2_ROOT = Path(os.environ.get("SAM2_STREAMING_ROOT", str(REPO_ROOT / "include" / "SAM2_streaming"))).expanduser()
 DEFAULT_SAM2_CHECKPOINT = Path(
-    os.environ.get("SAM2_CHECKPOINT", str(Path.home() / "Datasets" / "sam2" / "sam2.1_hiera_large.pt"))
+    # os.environ.get("SAM2_CHECKPOINT", str(Path.home() / "DataModel" / "sam2.1" / "sam2.1_hiera_large.pt"))
+    os.environ.get("SAM2_CHECKPOINT", str(Path.home() / "DataModel" / "sam2.1" / "sam2.1_hiera_base_plus.pt"))
 ).expanduser()
 DEFAULT_SEMANTIC_CKPT_A = Path(
     os.environ.get(
@@ -31,6 +32,49 @@ DEFAULT_SEMANTIC_CKPT_A = Path(
         str(Path.home() / "github" / "3d_semantic_train" / "outputs" / "utonia_universal_field" / "Mug_semantic" / "mug.pt"),
     )
 ).expanduser()
+
+def _preprocess_print(*args):
+    """Preprocess the input for colorful printing.
+
+    Args:
+        args (Any|None): One or more any type arguments to print.
+
+    Returns:
+        str Msg to print.
+    """
+    str_args = ""
+    for a in args:
+        if isinstance(a, np.ndarray):
+            str_args += "\n" + np.array2string(a, separator=", ")
+        else:
+            str_args += " " + str(a)
+    separate_with_newline = str_args.split("\n")
+    extra_whitespaces_removed = []
+    for b in separate_with_newline:
+        extra_whitespaces_removed.append(" ".join(b.split()))
+    return "\n".join(extra_whitespaces_removed)
+
+
+def print_debug(*args):
+    """Print information with green."""
+    print("".join(["\033[1m\033[92m", _preprocess_print(*args), "\033[0m"]))
+
+
+def print_info(*args):
+    """Print information with sky blue."""
+    print("".join(["\033[1m\033[94m", _preprocess_print(*args), "\033[0m"]))
+
+
+def print_warning(*args):
+    """Print a warning with yellow."""
+    print("".join(["\033[1m\033[93m", _preprocess_print(*args), "\033[0m"]))
+
+
+def print_error(*args):
+    """Print error with red."""
+    print("".join(["\033[1m\033[91m", _preprocess_print(*args), "\033[0m"]))
+
+
 
 for path in (REPO_ROOT, DP3_ROOT, DP3_SCRIPTS_ROOT):
     if str(path) not in sys.path:
@@ -445,6 +489,35 @@ def pushd(path: Path):
         os.chdir(old_cwd)
 
 
+@contextmanager
+def profile_section(timings: dict[str, float], name: str, enabled: bool):
+    if not enabled:
+        yield
+        return
+    start = time.perf_counter()
+    try:
+        yield
+    finally:
+        timings[name] = timings.get(name, 0.0) + (time.perf_counter() - start)
+
+
+def format_timings(timings: Mapping[str, float]) -> str:
+    return " ".join(f"{name}={seconds * 1000.0:.1f}ms" for name, seconds in timings.items())
+
+
+def should_print_step_timing(args: argparse.Namespace, step: int) -> bool:
+    if not bool(args.profile_timing):
+        return False
+    interval = max(1, int(args.profile_timing_interval))
+    return int(step) == 1 or int(step) % interval == 0
+
+
+def encoded_obs_with_joint_vector(encoded_obs: Mapping[str, Any], joint_vector: np.ndarray) -> dict[str, Any]:
+    out = dict(encoded_obs)
+    out["agent_pos"] = np.asarray(joint_vector, dtype=np.float32).reshape(14)
+    return out
+
+
 def derive_dp3_settings(args: argparse.Namespace) -> tuple[str, str]:
     if args.config_name:
         config_name = str(args.config_name)
@@ -594,6 +667,16 @@ def limit_action_delta_for_execution(
     return clamp_action(out)
 
 
+def action_delta_summary(action: np.ndarray, last_action: np.ndarray) -> tuple[float, float]:
+    current = np.asarray(action, dtype=np.float32).reshape(14)
+    last = np.asarray(last_action, dtype=np.float32).reshape(14)
+    arm_indices = np.asarray([0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12], dtype=np.int64)
+    gripper_indices = np.asarray([6, 13], dtype=np.int64)
+    arm_delta = float(np.max(np.abs(current[arm_indices] - last[arm_indices])))
+    gripper_delta = float(np.max(np.abs(current[gripper_indices] - last[gripper_indices])))
+    return arm_delta, gripper_delta
+
+
 def maybe_check_action_safety(action: np.ndarray, last_action: np.ndarray, args: argparse.Namespace, *, first_action: bool) -> None:
     if bool(args.disable_action_delta_safety):
         return
@@ -698,55 +781,16 @@ def run_real_inference(args: argparse.Namespace) -> None:
         first_action = True
         rate_sec = 0.0 if float(args.control_hz) <= 0 else 1.0 / float(args.control_hz)
         while action_step < int(args.max_steps):
-            loop_start = time.time()
-            joints = current_joint_vector(env, last_action)
+            chunk_timings: dict[str, float] = {}
+            with profile_section(chunk_timings, "robot_obs_pre", bool(args.profile_timing)):
+                joints = current_joint_vector(env, last_action)
             print("[TRACE] Building live point-cloud observation ...", flush=True)
-            observation, dense_scene = build_robotwin_observation(args=args, live=live, joint_vector=joints)
+            with profile_section(chunk_timings, "build_obs_pre", bool(args.profile_timing)):
+                observation, dense_scene = build_robotwin_observation(args=args, live=live, joint_vector=joints)
             if needs_sam2_objpc:
                 print("[TRACE] Updating SAM2 object point clouds ...", flush=True)
                 tracker_factory, extract_all_fn, _ = sam2_runtime
-                observation = add_sam2_object_pointclouds(
-                    observation=observation,
-                    dense_scene_pointcloud=dense_scene,
-                    args=args,
-                    placeholders=placeholders,
-                    camera_names=live.labels,
-                    tracker_factory=tracker_factory,
-                    extract_all_fn=extract_all_fn,
-                    tracking_state_by_camera=sam2_tracking_state_by_camera,
-                    bbox_prompts_by_camera=sam2_bbox_prompts_by_camera,
-                )
-            if bool(args.show_img):
-                maybe_show_cameras(observation, live.labels)
-
-            encoded_obs = encode_obs(observation, model)
-            if len(model.env_runner.obs) == 0:
-                model.update_obs(encoded_obs)
-            print("[TRACE] Running DP3 policy inference ...", flush=True)
-            actions = np.asarray(model.get_action(), dtype=np.float32).reshape(-1, 14)
-
-            for action in actions:
-                if action_step >= int(args.max_steps):
-                    break
-                last_action = execute_action(
-                    env=env,
-                    action=action,
-                    last_action=last_action,
-                    args=args,
-                    first_action=first_action,
-                )
-                first_action = False
-                action_step += 1
-                print(
-                    f"[STEP {action_step:04d}] "
-                    f"left_gripper={last_action[6]:.3f} right_gripper={last_action[13]:.3f} "
-                    f"execute={bool(args.execute)}"
-                )
-
-                joints = current_joint_vector(env, last_action)
-                observation, dense_scene = build_robotwin_observation(args=args, live=live, joint_vector=joints)
-                if needs_sam2_objpc:
-                    tracker_factory, extract_all_fn, _ = sam2_runtime
+                with profile_section(chunk_timings, "sam2_pre", bool(args.profile_timing)):
                     observation = add_sam2_object_pointclouds(
                         observation=observation,
                         dense_scene_pointcloud=dense_scene,
@@ -758,14 +802,91 @@ def run_real_inference(args: argparse.Namespace) -> None:
                         tracking_state_by_camera=sam2_tracking_state_by_camera,
                         bbox_prompts_by_camera=sam2_bbox_prompts_by_camera,
                     )
+            if bool(args.show_img):
+                with profile_section(chunk_timings, "show_img_pre", bool(args.profile_timing)):
+                    maybe_show_cameras(observation, live.labels)
+
+            with profile_section(chunk_timings, "encode_pre", bool(args.profile_timing)):
                 encoded_obs = encode_obs(observation, model)
+            model.update_obs(encoded_obs)
+            print("[TRACE] Running DP3 policy inference ...", flush=True)
+            with profile_section(chunk_timings, "dp3_policy", bool(args.profile_timing)):
+                actions = np.asarray(model.get_action(), dtype=np.float32).reshape(-1, 14)
+            if bool(args.profile_timing):
+                chunk_timings["chunk_total"] = sum(chunk_timings.values())
+                print_info(
+                    f"[TIMING chunk@step {action_step + 1:04d}] "
+                    f"{format_timings(chunk_timings)} actions={len(actions)} "
+                    f"reobserve_each_action={bool(args.reobserve_each_action)}",
+                )
+
+            for action in actions:
+                if action_step >= int(args.max_steps):
+                    break
+                action_loop_start = time.time()
+                step_timings: dict[str, float] = {}
+                step_wall_start = time.perf_counter()
+                last_action_before_step = last_action.copy()
+                pred_arm_delta, pred_gripper_delta = action_delta_summary(action, last_action_before_step)
+                with profile_section(step_timings, "execute", bool(args.profile_timing)):
+                    last_action = execute_action(
+                        env=env,
+                        action=action,
+                        last_action=last_action_before_step,
+                        args=args,
+                        first_action=first_action,
+                    )
+                exec_arm_delta, exec_gripper_delta = action_delta_summary(last_action, last_action_before_step)
+                first_action = False
+                action_step += 1
+                print(
+                    f"[STEP {action_step:04d}] "
+                    f"left_gripper={last_action[6]:.3f} right_gripper={last_action[13]:.3f} "
+                    f"pred_arm_delta={pred_arm_delta:.4f} exec_arm_delta={exec_arm_delta:.4f} "
+                    f"pred_gripper_delta={pred_gripper_delta:.3f} exec_gripper_delta={exec_gripper_delta:.3f} "
+                    f"execute={bool(args.execute)}"
+                )
+
+                if bool(args.reobserve_each_action):
+                    with profile_section(step_timings, "robot_obs", bool(args.profile_timing)):
+                        joints = current_joint_vector(env, last_action)
+                    with profile_section(step_timings, "build_obs", bool(args.profile_timing)):
+                        observation, dense_scene = build_robotwin_observation(args=args, live=live, joint_vector=joints)
+                    if needs_sam2_objpc:
+                        tracker_factory, extract_all_fn, _ = sam2_runtime
+                        with profile_section(step_timings, "sam2", bool(args.profile_timing)):
+                            observation = add_sam2_object_pointclouds(
+                                observation=observation,
+                                dense_scene_pointcloud=dense_scene,
+                                args=args,
+                                placeholders=placeholders,
+                                camera_names=live.labels,
+                                tracker_factory=tracker_factory,
+                                extract_all_fn=extract_all_fn,
+                                tracking_state_by_camera=sam2_tracking_state_by_camera,
+                                bbox_prompts_by_camera=sam2_bbox_prompts_by_camera,
+                            )
+                    with profile_section(step_timings, "encode", bool(args.profile_timing)):
+                        encoded_obs = encode_obs(observation, model)
+                else:
+                    with profile_section(step_timings, "reuse_obs", bool(args.profile_timing)):
+                        encoded_obs = encoded_obs_with_joint_vector(encoded_obs, last_action)
                 model.update_obs(encoded_obs)
                 if bool(args.show_img):
-                    maybe_show_cameras(observation, live.labels)
-                elapsed = time.time() - loop_start
-                if rate_sec > 0 and elapsed < rate_sec:
-                    time.sleep(rate_sec - elapsed)
-                loop_start = time.time()
+                    with profile_section(step_timings, "show_img", bool(args.profile_timing)):
+                        maybe_show_cameras(observation, live.labels)
+                elapsed = time.time() - action_loop_start
+                with profile_section(step_timings, "sleep", bool(args.profile_timing)):
+                    if rate_sec > 0 and elapsed < rate_sec:
+                        time.sleep(rate_sec - elapsed)
+                if bool(args.profile_timing):
+                    step_timings["step_total"] = time.perf_counter() - step_wall_start
+                    if should_print_step_timing(args, action_step):
+                        overrun = max(0.0, elapsed - rate_sec) if rate_sec > 0 else 0.0
+                        print_info(
+                            f"[TIMING step {action_step:04d}] {format_timings(step_timings)} "
+                            f"target_period={rate_sec * 1000.0:.1f}ms overrun={overrun * 1000.0:.1f}ms",
+                        )
     finally:
         live.stop()
         if bool(args.show_img):
@@ -821,7 +942,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--enable_sam2_objpc", action="store_true")
     parser.add_argument("--sam2_root", default=str(DEFAULT_SAM2_ROOT))
-    parser.add_argument("--sam2_config", default="sam2.1/sam2.1_hiera_l.yaml")
+    # parser.add_argument("--sam2_config", default="sam2.1/sam2.1_hiera_l.yaml")
+    parser.add_argument("--sam2_config", default="sam2.1/sam2.1_hiera_b+.yaml")
     parser.add_argument("--sam2_checkpoint", default=str(DEFAULT_SAM2_CHECKPOINT))
     parser.add_argument("--sam2_device", default="cuda:0")
     parser.add_argument("--sam2_autocast_dtype", default="bfloat16")
@@ -846,6 +968,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--disable_action_delta_safety", action="store_true")
     parser.add_argument("--disable_xyz_safety", action="store_true")
     parser.add_argument("--show_img", action="store_true")
+    parser.add_argument("--reobserve_each_action", action="store_true")
+    parser.add_argument("--profile_timing", action="store_true")
+    parser.add_argument("--profile_timing_interval", type=int, default=1)
     return parser
 
 
