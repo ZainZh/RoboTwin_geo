@@ -21,9 +21,16 @@ DP3_ROOT = REPO_ROOT / "policy" / "DP3"
 DP3_SCRIPTS_ROOT = DP3_ROOT / "scripts"
 DEFAULT_WORKSPACE_CALIBRATION = REPO_ROOT / "script" / "real_zed_collection" / "calibration" / "three_camera_workspace_extrinsics.yaml"
 DEFAULT_ROBOT_CAMERA_CALIBRATION_DIR = REPO_ROOT / "script" / "real_zed_collection" / "calibration"
-DEFAULT_SAM2_ROOT = REPO_ROOT / "include" / "SAM2_streaming"
-DEFAULT_SAM2_CHECKPOINT = Path("/home/zheng/Datasets/sam2/sam2.1_hiera_large.pt")
-DEFAULT_SEMANTIC_CKPT_A = Path("/home/zheng/github/3d_semantic_train/outputs/utonia_universal_field/Mug_semantic/mug.pt")
+DEFAULT_SAM2_ROOT = Path(os.environ.get("SAM2_STREAMING_ROOT", str(REPO_ROOT / "include" / "SAM2_streaming"))).expanduser()
+DEFAULT_SAM2_CHECKPOINT = Path(
+    os.environ.get("SAM2_CHECKPOINT", str(Path.home() / "Datasets" / "sam2" / "sam2.1_hiera_large.pt"))
+).expanduser()
+DEFAULT_SEMANTIC_CKPT_A = Path(
+    os.environ.get(
+        "SEMANTIC_CKPT_A",
+        str(Path.home() / "github" / "3d_semantic_train" / "outputs" / "utonia_universal_field" / "Mug_semantic" / "mug.pt"),
+    )
+).expanduser()
 
 for path in (REPO_ROOT, DP3_ROOT, DP3_SCRIPTS_ROOT):
     if str(path) not in sys.path:

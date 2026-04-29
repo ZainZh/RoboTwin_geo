@@ -577,7 +577,15 @@ def get_model(usr_args):
             placeholders=object_placeholders,
             sam2_root=str(usr_args.get("sam2_root", repo_root / "include" / "SAM2_streaming")),
             config=str(usr_args.get("sam2_config", "sam2.1/sam2.1_hiera_l.yaml")),
-            checkpoint=str(usr_args.get("sam2_checkpoint", "/home/zheng/Datasets/sam2/sam2.1_hiera_large.pt")),
+            checkpoint=str(
+                usr_args.get(
+                    "sam2_checkpoint",
+                    os.environ.get(
+                        "SAM2_CHECKPOINT",
+                        str(pathlib.Path.home() / "Datasets" / "sam2" / "sam2.1_hiera_large.pt"),
+                    ),
+                )
+            ),
             device=str(usr_args.get("sam2_device", "cuda:0")),
             autocast_dtype=str(usr_args.get("sam2_autocast_dtype", "bfloat16")),
         )
