@@ -1075,3 +1075,17 @@
   - Verified with `python -m unittest script.test_real_zed_inference_actions`.
   - Verified syntax with `python -m py_compile script/real_zed_inference/real_dp3_inference.py script/test_real_zed_inference_actions.py`.
   - Verified CLI visibility with `python script/real_zed_inference/real_dp3_inference.py --help | rg "max_executed|max_action_delta|disable_action_delta"`.
+
+### Phase 31: Portable SAM2 Paths
+- **Status:** complete
+- Actions taken:
+  - Added a failing regression test for SAM2 root/checkpoint fallback when the requested path is machine-specific or missing.
+  - Added SAM2 path resolvers that prefer `$SAM2_STREAMING_ROOT` and `$SAM2_CHECKPOINT`, then repository/current-user defaults.
+  - Updated real-ZED SAM2 tracker loading to use the resolvers for both root and checkpoint paths.
+  - Updated real DP3 inference defaults and the DP3 SAM2 deploy path to avoid hard-coded `/home/zheng` SAM2 checkpoint defaults.
+  - Updated `eval_objpc_sam2.sh` to default through `$SAM2_CHECKPOINT` and `$SAM2_STREAMING_ROOT`.
+  - Updated real semantic inference defaults to use `$SEMANTIC_CKPT_A` or the current user's `~/github/3d_semantic_train/...` path.
+  - Verified with `python -m unittest script.test_real_zed_collection_pipeline.RealZedCollectionPipelineTest.test_sam2_paths_can_fallback_from_machine_specific_paths`.
+  - Verified syntax with `python -m py_compile script/real_zed_collection/sam2_tracking_utils.py script/real_zed_inference/real_dp3_inference.py policy/DP3/deploy_policy.py script/test_real_zed_collection_pipeline.py`.
+  - Verified shell syntax with `bash -n policy/DP3/eval_objpc_sam2.sh policy/DP3/real_infer_semantic_pointwise_hybrid.sh policy/DP3/real_infer_baseline.sh`.
+  - Verified no remaining hard-coded `/home/zheng` SAM2 or real semantic checkpoint paths with `rg -n "/home/zheng/.+sam2|/home/zheng/github/SAM2_streaming|/home/zheng/github/3d_semantic_train" script policy -g '*.py' -g '*.sh'`.

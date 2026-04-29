@@ -526,6 +526,35 @@ class RealZedCollectionPipelineTest(unittest.TestCase):
         self.assertEqual(int(masks["{A}"].sum()), 4)
         self.assertEqual(int(masks["{B}"].sum()), 6)
 
+    def test_sam2_paths_can_fallback_from_machine_specific_paths(self):
+        from script.real_zed_collection.sam2_tracking_utils import (
+            resolve_existing_sam2_checkpoint,
+            resolve_existing_sam2_root,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fallback_root = root / "github" / "SAM2_streaming"
+            fallback_root.mkdir(parents=True)
+            fallback_checkpoint = root / "Datasets" / "sam2" / "sam2.1_hiera_large.pt"
+            fallback_checkpoint.parent.mkdir(parents=True)
+            fallback_checkpoint.write_bytes(b"unit")
+
+            self.assertEqual(
+                resolve_existing_sam2_root(
+                    root / "missing" / "SAM2_streaming",
+                    fallback_roots=[fallback_root],
+                ),
+                fallback_root.resolve(),
+            )
+            self.assertEqual(
+                resolve_existing_sam2_checkpoint(
+                    root / "missing" / "sam2.1_hiera_large.pt",
+                    fallback_paths=[fallback_checkpoint],
+                ),
+                fallback_checkpoint.resolve(),
+            )
+
     def test_sam2_tracker_runs_predictor_calls_under_autocast(self):
         from script.real_zed_collection.sam2_tracking_utils import SAM2StreamingObjectTracker
 

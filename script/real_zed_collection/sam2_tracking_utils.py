@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import os
 import sys
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
@@ -12,15 +13,73 @@ import numpy as np
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_SAM2_ROOT = REPO_ROOT / "include" / "SAM2_streaming"
-DEFAULT_SAM2_CHECKPOINT = Path("/home/zheng/Datasets/sam2/sam2.1_hiera_large.pt")
 DEFAULT_SAM2_CONFIG = "sam2.1/sam2.1_hiera_l.yaml"
 
 
+def _env_path(name: str) -> Path | None:
+    value = os.environ.get(name, "").strip()
+    return Path(value).expanduser() if value else None
+
+
+def default_sam2_root_candidates() -> list[Path]:
+    candidates = [
+        _env_path("SAM2_STREAMING_ROOT"),
+        REPO_ROOT / "include" / "SAM2_streaming",
+        Path.home() / "github" / "SAM2_streaming",
+        Path.home() / "SAM2_streaming",
+    ]
+    return [path for path in candidates if path is not None]
+
+
+def default_sam2_checkpoint_candidates() -> list[Path]:
+    candidates = [
+        _env_path("SAM2_CHECKPOINT"),
+        Path.home() / "Datasets" / "sam2" / "sam2.1_hiera_large.pt",
+        Path.home() / "github" / "SAM2_streaming" / "checkpoints" / "sam2.1_hiera_large.pt",
+    ]
+    return [path for path in candidates if path is not None]
+
+
+DEFAULT_SAM2_ROOT = default_sam2_root_candidates()[0]
+DEFAULT_SAM2_CHECKPOINT = default_sam2_checkpoint_candidates()[0]
+
+
+def _resolve_first_existing_path(paths: Sequence[str | Path], *, description: str) -> Path:
+    checked: list[str] = []
+    for path in paths:
+        candidate = Path(path).expanduser()
+        checked.append(str(candidate))
+        try:
+            resolved = candidate.resolve(strict=True)
+        except FileNotFoundError:
+            continue
+        if resolved.exists():
+            return resolved
+    raise FileNotFoundError(f"{description} does not exist. Checked: {checked}")
+
+
+def resolve_existing_sam2_root(
+    sam2_root: str | Path = DEFAULT_SAM2_ROOT,
+    *,
+    fallback_roots: Sequence[str | Path] | None = None,
+) -> Path:
+    candidates = [Path(sam2_root).expanduser()]
+    candidates.extend(fallback_roots if fallback_roots is not None else default_sam2_root_candidates())
+    return _resolve_first_existing_path(candidates, description="SAM2 streaming root")
+
+
+def resolve_existing_sam2_checkpoint(
+    checkpoint: str | Path = DEFAULT_SAM2_CHECKPOINT,
+    *,
+    fallback_paths: Sequence[str | Path] | None = None,
+) -> Path:
+    candidates = [Path(checkpoint).expanduser()]
+    candidates.extend(fallback_paths if fallback_paths is not None else default_sam2_checkpoint_candidates())
+    return _resolve_first_existing_path(candidates, description="SAM2 checkpoint")
+
+
 def ensure_sam2_root_on_path(sam2_root: str | Path = DEFAULT_SAM2_ROOT) -> Path:
-    root = Path(sam2_root).expanduser().resolve()
-    if not root.exists():
-        raise FileNotFoundError(f"SAM2 streaming root does not exist: {root}")
+    root = resolve_existing_sam2_root(sam2_root)
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
     return root
@@ -161,9 +220,7 @@ class SAM2StreamingObjectTracker:
                 "SAM2 streaming predictor currently requires CUDA because the upstream "
                 "SAM2CameraPredictor stores tracking state on cuda."
             )
-        checkpoint_path = Path(checkpoint).expanduser().resolve()
-        if not checkpoint_path.exists():
-            raise FileNotFoundError(f"SAM2 checkpoint does not exist: {checkpoint_path}")
+        checkpoint_path = resolve_existing_sam2_checkpoint(checkpoint)
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
         if hasattr(torch.backends.cuda, "enable_flash_sdp"):

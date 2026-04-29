@@ -666,6 +666,11 @@
   - The `Action delta safety stop` is triggered by a large joint-space action jump between consecutive commands, not by the camera pipeline.
   - Before the fix, only the first action was interpolated; later DP3 actions were sent directly via `env.step(action)`.
   - Real inference now clips the actually executed arm-joint delta and gripper delta before safety checking, keeping `--max_action_delta` as a hard stop rather than the mechanism for smoothing.
+- SAM2 path portability finding:
+  - The control-machine traceback came from resolving `include/SAM2_streaming` through a machine-specific symlink target `/home/zheng/github/SAM2_streaming`.
+  - SAM2 root and checkpoint defaults now use `$SAM2_STREAMING_ROOT` / `$SAM2_CHECKPOINT` first, then repository/current-user candidates, instead of hard-coding one workstation username.
+  - If a repository symlink is stale on another machine, the resolver falls back to the current user's `~/github/SAM2_streaming` and `~/Datasets/sam2/sam2.1_hiera_large.pt`.
+  - The real semantic checkpoint default now also uses `$SEMANTIC_CKPT_A` or the current user's `~/github/3d_semantic_train/...` path.
 
 ---
 *Update this file after every 2 view/browser/search operations.*

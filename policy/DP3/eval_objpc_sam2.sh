@@ -11,13 +11,13 @@ object_placeholders=${7:-\{A\},\{B\}}
 checkpoint_num=${8:-3000}
 sam2_bbox_prompt_path=${9:-}
 sam2_camera_names=${10:-head_camera,front_camera}
-sam2_checkpoint=${11:-/home/zheng/Datasets/sam2/sam2.1_hiera_large.pt}
+sam2_checkpoint=${11:-${SAM2_CHECKPOINT:-${HOME}/Datasets/sam2/sam2.1_hiera_large.pt}}
 sam2_device=${12:-cuda:0}
 sam2_config=${13:-sam2.1/sam2.1_hiera_l.yaml}
 sam2_interactive_init=${14:-True}
 sam2_min_mask_points=${15:-16}
 sam2_autocast_dtype=${16:-bfloat16}
-sam2_root=${17:-}
+sam2_root=${17:-${SAM2_STREAMING_ROOT:-}}
 
 extra_overrides=(
     --sam2_camera_names "${sam2_camera_names}"
