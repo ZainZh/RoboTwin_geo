@@ -1064,3 +1064,14 @@
   - Verified with `bash policy/DP3/scripts/test_real_infer_script_interfaces.sh`.
   - Verified shell syntax with `bash -n policy/DP3/real_infer_arg_utils.sh policy/DP3/real_infer_baseline.sh policy/DP3/real_infer_semantic_pointwise_hybrid.sh policy/DP3/scripts/test_real_infer_script_interfaces.sh`.
   - Verified `demo_real_zed_sam2_objpc_rightbase` auto-resolves to `right_base` and the default right-arm robot-camera calibration path.
+
+### Phase 30: Real-ZED Action Step Limiting
+- **Status:** complete
+- Actions taken:
+  - Added `script/test_real_zed_inference_actions.py` covering per-joint and gripper action-delta clipping.
+  - Verified the test failed before implementation because `limit_action_delta_for_execution` did not exist.
+  - Added `limit_action_delta_for_execution` to real DP3 inference and applied it before action-delta safety checks and robot execution.
+  - Added CLI controls `--max_executed_joint_delta` and `--max_executed_gripper_delta`, defaulting to `0.12` and `0.2`.
+  - Verified with `python -m unittest script.test_real_zed_inference_actions`.
+  - Verified syntax with `python -m py_compile script/real_zed_inference/real_dp3_inference.py script/test_real_zed_inference_actions.py`.
+  - Verified CLI visibility with `python script/real_zed_inference/real_dp3_inference.py --help | rg "max_executed|max_action_delta|disable_action_delta"`.

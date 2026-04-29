@@ -564,6 +564,29 @@ def clamp_action(action: np.ndarray) -> np.ndarray:
     return out
 
 
+def limit_action_delta_for_execution(
+    action: np.ndarray,
+    last_action: np.ndarray,
+    args: argparse.Namespace,
+) -> np.ndarray:
+    out = np.asarray(action, dtype=np.float32).reshape(14).copy()
+    last = np.asarray(last_action, dtype=np.float32).reshape(14)
+    joint_limit = float(getattr(args, "max_executed_joint_delta", 0.0))
+    gripper_limit = float(getattr(args, "max_executed_gripper_delta", 0.0))
+
+    if joint_limit > 0.0:
+        arm_indices = np.asarray([0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12], dtype=np.int64)
+        delta = np.clip(out[arm_indices] - last[arm_indices], -joint_limit, joint_limit)
+        out[arm_indices] = last[arm_indices] + delta
+
+    if gripper_limit > 0.0:
+        for idx in (6, 13):
+            delta = float(np.clip(float(out[idx] - last[idx]), -gripper_limit, gripper_limit))
+            out[idx] = float(last[idx] + delta)
+
+    return clamp_action(out)
+
+
 def maybe_check_action_safety(action: np.ndarray, last_action: np.ndarray, args: argparse.Namespace, *, first_action: bool) -> None:
     if bool(args.disable_action_delta_safety):
         return
@@ -609,6 +632,7 @@ def execute_action(
     first_action: bool,
 ) -> np.ndarray:
     action = clamp_action(action)
+    action = limit_action_delta_for_execution(action, last_action, args)
     maybe_check_action_safety(action, last_action, args, first_action=first_action)
     maybe_check_xyz_safety(env, args)
     flag = np.asarray([1, 1], dtype=np.float32)
@@ -809,6 +833,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--initial_right_gripper", type=float, default=1.0)
     parser.add_argument("--interpolate_first_action", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--first_action_interp_step", type=float, default=0.001)
+    parser.add_argument("--max_executed_joint_delta", type=float, default=0.12)
+    parser.add_argument("--max_executed_gripper_delta", type=float, default=0.2)
     parser.add_argument("--max_action_delta", type=float, default=0.35)
     parser.add_argument("--disable_action_delta_safety", action="store_true")
     parser.add_argument("--disable_xyz_safety", action="store_true")

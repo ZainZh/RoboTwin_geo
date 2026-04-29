@@ -662,6 +662,10 @@
   - Real inference scripts now expose `output_frame` and robot-camera calibration as positional optional args rather than hiding them in passthrough flags.
   - `auto` resolution first reads `data/<task>/<task_config>/real_zed_sam2_objpc_meta.json`; if that file is unavailable, it infers `right_base`, `left_base`, or `workspace` from the `task_config` name.
   - For `right_base` or `left_base`, `auto` calibration resolves to the default `robot_camera_apriltag_<arm>_global.yaml` under `script/real_zed_collection/calibration`.
+- Real-ZED action step finding:
+  - The `Action delta safety stop` is triggered by a large joint-space action jump between consecutive commands, not by the camera pipeline.
+  - Before the fix, only the first action was interpolated; later DP3 actions were sent directly via `env.step(action)`.
+  - Real inference now clips the actually executed arm-joint delta and gripper delta before safety checking, keeping `--max_action_delta` as a hard stop rather than the mechanism for smoothing.
 
 ---
 *Update this file after every 2 view/browser/search operations.*
