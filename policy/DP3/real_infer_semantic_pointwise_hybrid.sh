@@ -1,8 +1,8 @@
 #!/bin/bash
 
-task_name=${1:-grasp_mug}
-task_config=${2:-demo_real_zed_sam2_objpc}
-expert_data_num=${3:-57}
+task_name=${1:-grasp_mug_new}
+task_config=${2:-demo_real_zed_sam2_objpc_rightbase}
+expert_data_num=${3:-32}
 seed=${4:-0}
 gpu_id=${5:-0}
 semantic_ckpt_A=${6:-${SEMANTIC_CKPT_A:-${HOME}/github/3d_semantic_train/outputs/utonia_universal_field/Mug_semantic/mug.pt}}
