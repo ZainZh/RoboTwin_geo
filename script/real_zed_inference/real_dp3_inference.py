@@ -528,6 +528,7 @@ def add_sam2_object_pointclouds(
         sam2_image_width=int(args.sam2_image_width),
         min_depth_m=float(args.min_depth_m),
         max_depth_m=float(args.max_depth_m),
+        object_resample_mode=str(args.online_object_resample),
     )
     observation["object_pointcloud"] = object_pointcloud
     observation["sam2_meta"] = meta
@@ -1003,6 +1004,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sam2_device", default="cuda:0")
     parser.add_argument("--sam2_autocast_dtype", default="bfloat16")
     parser.add_argument("--sam2_image_width", type=int, default=640)
+    parser.add_argument("--online_object_resample", choices=["fast", "fps"], default="fast")
     parser.add_argument("--sam2_bbox_prompt_path", default="")
     parser.add_argument("--sam2_interactive_init", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--sam2_min_mask_points", type=int, default=16)

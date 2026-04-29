@@ -267,6 +267,35 @@ def _crop_point_cloud_xyz(point_cloud: np.ndarray, bounds: tuple[float, float, f
     return pc[mask]
 
 
+def fast_resample_point_cloud(point_cloud: np.ndarray, target_num_points: int) -> np.ndarray:
+    pc = strip_zero_points(point_cloud)
+    target = int(target_num_points)
+    if target <= 0:
+        return pc.astype(np.float32)
+    if len(pc) == 0:
+        return np.zeros((target, 6), dtype=np.float32)
+    if len(pc) == target:
+        return pc.astype(np.float32)
+    if len(pc) > target:
+        idx = np.linspace(0, len(pc) - 1, target).round().astype(np.int64)
+        return pc[idx].astype(np.float32)
+    reps = target - len(pc)
+    idx = np.arange(reps, dtype=np.int64) % len(pc)
+    return np.concatenate([pc, pc[idx]], axis=0).astype(np.float32)
+
+
+def fast_merge_object_point_clouds(point_clouds: Sequence[np.ndarray], target_num_points: int) -> np.ndarray:
+    cleaned = []
+    for point_cloud in point_clouds:
+        pc = strip_zero_points(point_cloud)
+        if len(pc) > 0:
+            cleaned.append(pc)
+    if not cleaned:
+        return np.zeros((int(target_num_points), 6), dtype=np.float32)
+    merged = cleaned[0] if len(cleaned) == 1 else np.concatenate(cleaned, axis=0)
+    return fast_resample_point_cloud(merged, int(target_num_points))
+
+
 def _select_depth_points_by_mask(
     *,
     mask: np.ndarray,
@@ -524,6 +553,7 @@ def extract_placeholder_point_clouds_sam2_online(
     sam2_image_width: int = 0,
     min_depth_m: float = 0.05,
     max_depth_m: float = 3.0,
+    object_resample_mode: str = "fps",
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, object]]:
     scene_pc = ensure_point_cloud_channels(observation.get("pointcloud", np.zeros((0, 6), dtype=np.float32)), channels=6)
     scene_pc = strip_zero_points(scene_pc)
@@ -631,11 +661,15 @@ def extract_placeholder_point_clouds_sam2_online(
         if not selected_clouds:
             out[placeholder] = empty_clouds[placeholder]
             continue
-        merged = merge_object_point_clouds(selected_clouds, target_num_points=int(target_num_points))
-        out[placeholder] = resample_point_cloud(merged, int(target_num_points))
+        if str(object_resample_mode).strip().lower() == "fast":
+            out[placeholder] = fast_merge_object_point_clouds(selected_clouds, target_num_points=int(target_num_points))
+        else:
+            merged = merge_object_point_clouds(selected_clouds, target_num_points=int(target_num_points))
+            out[placeholder] = resample_point_cloud(merged, int(target_num_points))
 
     return out, {
         "mode": "sam2_projected",
+        "object_resample_mode": str(object_resample_mode),
         "camera_count": int(active_camera_count),
         "cameras": camera_meta,
     }
@@ -645,6 +679,8 @@ __all__ = [
     "Sam2CameraTrackingState",
     "build_sam2_tracker_factory",
     "extract_placeholder_point_clouds_sam2_online",
+    "fast_merge_object_point_clouds",
+    "fast_resample_point_cloud",
     "load_sam2_bbox_prompt_file",
     "parse_camera_list",
     "select_bbox_for_image",

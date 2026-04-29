@@ -690,6 +690,7 @@
   - The preview script supports single-object checks through `--object_placeholders "{A}"`, headless FPS checks through `--no_open3d`, and larger Open3D rendering through `--point_size`, `--open3d_width`, `--open3d_height`, and `--reset_view_each_frame`.
   - Open3D zoom-out can appear broken when only a small object point cloud is rendered because the legacy visualizer clamps zoom around the current geometry bounding box. The preview now adds a workspace LineSet by default through `--show_workspace_box`, which acts as a view anchor and gives the mouse wheel a larger zoom range.
   - The preview script now has fine-grained `--profile_timing` output for `snapshot_frames`, per-camera RGB/depth alignment, per-camera depth-to-scene-pointcloud, scene merge/resample, per-camera SAM2 resize/create/initialize/track, per-camera/per-placeholder depth lift, object merge/resample, Open3D update, RGB preview, and total loop time.
+  - The preview timing showed online object merge dominated stable frames because `merge_object_point_clouds` used farthest point sampling. Online SAM2 object point clouds now expose `--online_object_resample fast|fps`, defaulting to `fast` for real preview/inference while leaving offline training preprocess behavior unchanged.
 
 ---
 *Update this file after every 2 view/browser/search operations.*

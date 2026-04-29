@@ -1130,4 +1130,5 @@
   - Added `script/test_real_sam2_object_pointcloud_preview.py` covering empty-row filtering and placeholder/RGB coloring without requiring Open3D or hardware.
   - Added a default workspace bounding-box LineSet and `--open3d_initial_zoom` to prevent Open3D from clamping zoom-out around a tiny single-object point cloud.
   - Added preview-specific fine-grained timing for frame snapshot, per-camera scene point-cloud construction, SAM2 tracking, mask-depth object lifting, merge/resample, Open3D rendering, image display, and loop total.
+  - Added `fast_merge_object_point_clouds` / `fast_resample_point_cloud` for online SAM2 object clouds and exposed `--online_object_resample fast|fps`; preview and real inference default to `fast`.
   - Verified with `python -m unittest script.test_real_sam2_object_pointcloud_preview`, `python -m py_compile script/real_zed_inference/preview_sam2_object_pointcloud.py script/test_real_sam2_object_pointcloud_preview.py`, CLI help grep, and `python -c "import open3d as o3d; print(o3d.__version__)"`.

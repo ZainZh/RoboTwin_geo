@@ -11,6 +11,7 @@ from sam2_pointcloud_utils import (
     _display_scale_for_image,
     _try_normalize_bbox_xyxy,
     extract_placeholder_point_clouds_sam2_online,
+    fast_merge_object_point_clouds,
     load_sam2_bbox_prompt_file,
 )
 
@@ -47,6 +48,28 @@ class Sam2PointcloudUtilsTest(unittest.TestCase):
         self.assertEqual(_try_normalize_bbox_xyxy((100, 50, 200, 150), (1080, 1920)), [100, 50, 200, 150])
         self.assertAlmostEqual(_display_scale_for_image((1080, 1920), max_width=1280, max_height=720), 2.0 / 3.0)
         self.assertEqual(_display_to_image_point(640, 360, scale=2.0 / 3.0, image_shape_hw=(1080, 1920)), (960, 540))
+
+    def test_fast_merge_object_point_clouds_returns_fixed_count_without_fps(self):
+        cloud_a = np.concatenate(
+            [
+                np.arange(20, dtype=np.float32).reshape(10, 2),
+                np.ones((10, 4), dtype=np.float32),
+            ],
+            axis=1,
+        )
+        cloud_b = np.concatenate(
+            [
+                np.arange(20, 40, dtype=np.float32).reshape(10, 2),
+                np.ones((10, 4), dtype=np.float32) * 2.0,
+            ],
+            axis=1,
+        )
+
+        merged = fast_merge_object_point_clouds([cloud_a, cloud_b], target_num_points=8)
+
+        self.assertEqual(merged.shape, (8, 6))
+        np.testing.assert_allclose(merged[0], cloud_a[0, :6])
+        np.testing.assert_allclose(merged[-1], cloud_b[-1, :6])
 
     def _observation(self):
         pointcloud = np.array(

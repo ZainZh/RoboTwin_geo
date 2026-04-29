@@ -40,6 +40,7 @@ from sam2_pointcloud_utils import (  # noqa: E402
     _select_depth_points_by_mask,
     _resize_keep_aspect,
     build_sam2_tracker_factory,
+    fast_merge_object_point_clouds,
     load_sam2_bbox_prompt_file,
 )
 
@@ -282,6 +283,7 @@ def extract_preview_object_pointclouds_sam2(
     min_depth_m: float,
     max_depth_m: float,
     interactive_init: bool,
+    object_resample_mode: str,
     timer: TimingRecorder,
 ) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
     placeholder_list = [str(item) for item in placeholders]
@@ -363,13 +365,19 @@ def extract_preview_object_pointclouds_sam2(
         if not clouds:
             out[placeholder] = empty_clouds[placeholder]
             continue
-        with timed_stage(timer, f"object_pc.{placeholder}.merge"):
-            merged = merge_object_point_clouds(clouds, target_num_points=int(target_num_points))
-        with timed_stage(timer, f"object_pc.{placeholder}.resample"):
-            out[placeholder] = resample_point_cloud(merged, int(target_num_points))
+        mode = str(object_resample_mode).strip().lower()
+        if mode == "fast":
+            with timed_stage(timer, f"object_pc.{placeholder}.fast_merge"):
+                out[placeholder] = fast_merge_object_point_clouds(clouds, target_num_points=int(target_num_points))
+        else:
+            with timed_stage(timer, f"object_pc.{placeholder}.fps_merge"):
+                merged = merge_object_point_clouds(clouds, target_num_points=int(target_num_points))
+            with timed_stage(timer, f"object_pc.{placeholder}.resample"):
+                out[placeholder] = resample_point_cloud(merged, int(target_num_points))
 
     return out, {
         "mode": "sam2_mask_depth_profiled",
+        "object_resample_mode": str(object_resample_mode),
         "camera_count": int(active_camera_count),
         "cameras": camera_meta,
     }
@@ -503,6 +511,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sam2_device", default="cuda:0")
     parser.add_argument("--sam2_autocast_dtype", default="bfloat16")
     parser.add_argument("--sam2_image_width", type=int, default=640)
+    parser.add_argument("--online_object_resample", choices=["fast", "fps"], default="fast")
     parser.add_argument("--sam2_bbox_prompt_path", default="")
     parser.add_argument("--sam2_interactive_init", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--sam2_min_mask_points", type=int, default=16)
@@ -536,6 +545,7 @@ def run_preview(args: argparse.Namespace) -> None:
     print(f"[INFO] output_frame={args.output_frame}")
     print(f"[INFO] workspace_crop_enabled={bool(args.workspace_crop_enabled)}")
     print(f"[INFO] sam2_image_width={int(args.sam2_image_width)} zed_resolution={args.zed_resolution}")
+    print(f"[INFO] online_object_resample={args.online_object_resample}")
     print(f"[INFO] open3d_enabled={not bool(args.no_open3d)}")
     if args.robot_camera_calibration_path:
         print(f"[INFO] robot_camera_calibration_path={args.robot_camera_calibration_path}")
@@ -572,6 +582,7 @@ def run_preview(args: argparse.Namespace) -> None:
                     min_depth_m=float(args.min_depth_m),
                     max_depth_m=float(args.max_depth_m),
                     interactive_init=bool(args.sam2_interactive_init),
+                    object_resample_mode=str(args.online_object_resample),
                     timer=timer,
                 )
             with timed_stage(timer, "prepare_clouds"):
