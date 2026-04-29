@@ -31,5 +31,39 @@ class RealZedInferenceActionTest(unittest.TestCase):
         np.testing.assert_allclose(clipped, action)
 
 
+class RealZedInferencePointcloudTest(unittest.TestCase):
+    def test_camera_frame_to_output_pc_filters_workspace_before_output_transform(self):
+        from script.real_zed_collection.workspace_crop_utils import WorkspaceBounds
+        from script.real_zed_inference.real_dp3_inference import camera_frame_to_output_pc
+
+        depth = np.ones((1, 2), dtype=np.float32)
+        rgb = np.zeros((1, 2, 3), dtype=np.uint8)
+        rgb[0, 0] = [255, 0, 0]
+        rgb[0, 1] = [0, 255, 0]
+        t_output_from_cam = np.eye(4, dtype=np.float32)
+        t_output_from_cam[0, 3] = 10.0
+
+        point_cloud = camera_frame_to_output_pc(
+            camera_frame={"rgb": rgb, "depth_m": depth},
+            camera_matrix=np.eye(3, dtype=np.float32),
+            t_workspace_from_cam=np.eye(4, dtype=np.float32),
+            workspace_bounds=WorkspaceBounds(
+                x_min=-0.1,
+                x_max=0.5,
+                y_min=-0.1,
+                y_max=0.5,
+                z_min=0.5,
+                z_max=1.5,
+            ),
+            t_output_from_cam=t_output_from_cam,
+            min_depth_m=0.05,
+            max_depth_m=3.0,
+        )
+
+        self.assertEqual(point_cloud.shape, (1, 6))
+        np.testing.assert_allclose(point_cloud[0, :3], np.array([10.0, 0.0, 1.0], dtype=np.float32))
+        np.testing.assert_allclose(point_cloud[0, 3:6], np.array([1.0, 0.0, 0.0], dtype=np.float32))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -125,6 +125,16 @@ SAM2 streaming tracking migration for real objpc training/eval data
 - [ ] Run the calibration on real robot/ZED hardware.
 - **Status:** complete with hardware run pending
 
+### Phase 16: Real SAM2 Online Latency Reduction
+- [x] Diagnose why semantic real inference is much slower than the standalone ZED SAM2 tracker.
+- [x] Replace fused-scene back-projection with direct `mask + depth` object point-cloud lifting.
+- [x] Enforce workspace 3D filtering before points enter scene/object observations for all output frames.
+- [x] Add SAM2 input downscale control so tracking does not require 1080p frames.
+- [x] Add a standalone real-time SAM2 object point-cloud preview script for hardware-side unit testing.
+- [x] Verify with unit tests, syntax checks, and CLI visibility.
+- [ ] Run on real ZED/robot hardware and inspect `--profile_timing`.
+- **Status:** complete with hardware timing pending
+
 ## Decisions Made
 
 | Decision | Rationale |

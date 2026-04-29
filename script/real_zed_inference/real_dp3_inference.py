@@ -181,6 +181,38 @@ def camera_frame_to_world_pc(
     return transform_point_cloud(pc_cam, np.asarray(t_world_from_cam, dtype=np.float32).reshape(4, 4))
 
 
+def camera_frame_to_output_pc(
+    *,
+    camera_frame: Mapping[str, Any],
+    camera_matrix: np.ndarray,
+    t_workspace_from_cam: np.ndarray,
+    workspace_bounds: WorkspaceBounds | None,
+    t_output_from_cam: np.ndarray,
+    min_depth_m: float,
+    max_depth_m: float,
+) -> np.ndarray:
+    rgb = np.asarray(camera_frame["rgb"], dtype=np.uint8)
+    depth_m = np.asarray(camera_frame["depth_m"], dtype=np.float32)
+    rgb = rgb_to_depth_shape(rgb, depth_m.shape)
+    pc_cam = depth_rgb_to_point_cloud(
+        depth_m=depth_m,
+        rgb=rgb,
+        camera_matrix=np.asarray(camera_matrix, dtype=np.float32).reshape(3, 3),
+        min_depth_m=float(min_depth_m),
+        max_depth_m=float(max_depth_m),
+    )
+    if workspace_bounds is None:
+        return transform_point_cloud(pc_cam, np.asarray(t_output_from_cam, dtype=np.float32).reshape(4, 4))
+    pc_workspace = transform_point_cloud(pc_cam, np.asarray(t_workspace_from_cam, dtype=np.float32).reshape(4, 4))
+    pc_workspace = crop_point_cloud_by_bounds(pc_workspace, workspace_bounds)
+    if pc_workspace.size == 0:
+        return np.zeros((0, 6), dtype=np.float32)
+    t_output_from_workspace = np.asarray(t_output_from_cam, dtype=np.float64).reshape(4, 4) @ invert_transform(
+        np.asarray(t_workspace_from_cam, dtype=np.float64).reshape(4, 4)
+    )
+    return transform_point_cloud(pc_workspace, t_output_from_workspace)
+
+
 @dataclass
 class LiveZedCameras:
     labels: list[str]
@@ -188,8 +220,8 @@ class LiveZedCameras:
     calibrations: dict[str, Any]
     label_to_calib: dict[str, str]
     workspace_bounds: WorkspaceBounds | None
-    pointcloud_crop_bounds: WorkspaceBounds | None
     output_frame: str
+    t_workspace_from_cam_by_label: dict[str, np.ndarray]
     t_output_from_cam_by_label: dict[str, np.ndarray]
     shared_by_label: dict[str, SharedZedFrame]
     stop_event: threading.Event
@@ -246,7 +278,10 @@ def start_zed_cameras(args: argparse.Namespace) -> LiveZedCameras:
         output_frame=args.output_frame,
         robot_camera_calibration=robot_camera_calibration,
     )
-    pointcloud_crop_bounds = workspace_bounds if output_frame in {"source", "workspace"} else None
+    t_workspace_from_cam_by_label = {
+        label: np.asarray(calibrations[label_to_calib[label]].t_world_from_cam, dtype=np.float64).reshape(4, 4)
+        for label in labels
+    }
     shared_by_label = {label: SharedZedFrame() for label in labels}
     stop_event = threading.Event()
     threads: list[threading.Thread] = []
@@ -269,11 +304,9 @@ def start_zed_cameras(args: argparse.Namespace) -> LiveZedCameras:
                     if bool(args.workspace_crop_enabled)
                     else None
                 ),
-                "workspace_camera_matrix": (
-                    calibrations[calib_label].camera_matrix.astype(np.float64)
-                    if bool(args.workspace_crop_enabled)
-                    else None
-                ),
+                # Use the live ZED intrinsics for image-space ROI projection so
+                # changing --zed_resolution does not reuse stale calibration intrinsics.
+                "workspace_camera_matrix": None,
                 "workspace_bounds": workspace_bounds,
                 "workspace_crop_margin_px": int(args.workspace_crop_margin_px),
                 "workspace_crop_resize_rgb": bool(args.workspace_crop_resize_rgb),
@@ -292,8 +325,8 @@ def start_zed_cameras(args: argparse.Namespace) -> LiveZedCameras:
         calibrations=calibrations,
         label_to_calib=label_to_calib,
         workspace_bounds=workspace_bounds,
-        pointcloud_crop_bounds=pointcloud_crop_bounds,
         output_frame=output_frame,
+        t_workspace_from_cam_by_label=t_workspace_from_cam_by_label,
         t_output_from_cam_by_label=t_output_from_cam_by_label,
         shared_by_label=shared_by_label,
         stop_event=stop_event,
@@ -369,14 +402,17 @@ def build_robotwin_observation(
         rgb_aligned = rgb_to_depth_shape(np.asarray(frame["rgb"], dtype=np.uint8), depth_m.shape)
         camera_matrix = np.asarray(frame.get("camera_matrix", calib.camera_matrix), dtype=np.float32).reshape(3, 3)
         t_output_from_cam = np.asarray(live.t_output_from_cam_by_label[label], dtype=np.float32).reshape(4, 4)
+        t_workspace_from_cam = np.asarray(live.t_workspace_from_cam_by_label[label], dtype=np.float32).reshape(4, 4)
 
         frame_for_pc = dict(frame)
         frame_for_pc["rgb"] = rgb_aligned
         scene_chunks.append(
-            camera_frame_to_world_pc(
+            camera_frame_to_output_pc(
                 camera_frame=frame_for_pc,
                 camera_matrix=camera_matrix,
-                t_world_from_cam=t_output_from_cam,
+                t_workspace_from_cam=t_workspace_from_cam,
+                workspace_bounds=live.workspace_bounds,
+                t_output_from_cam=t_output_from_cam,
                 min_depth_m=float(args.min_depth_m),
                 max_depth_m=float(args.max_depth_m),
             )
@@ -388,9 +424,25 @@ def build_robotwin_observation(
             # SAM2 projection utilities expect world -> camera here.
             "extrinsic_cv": invert_transform(t_output_from_cam).astype(np.float32),
             "cam2world_gl": t_output_from_cam.astype(np.float32),
+            "t_workspace_from_cam": t_workspace_from_cam.astype(np.float32),
+            "workspace_bounds_m": (
+                np.asarray(
+                    [
+                        live.workspace_bounds.x_min,
+                        live.workspace_bounds.x_max,
+                        live.workspace_bounds.y_min,
+                        live.workspace_bounds.y_max,
+                        live.workspace_bounds.z_min,
+                        live.workspace_bounds.z_max,
+                    ],
+                    dtype=np.float32,
+                )
+                if live.workspace_bounds is not None
+                else None
+            ),
         }
 
-    dense_scene = crop_point_cloud_by_bounds(merge_point_clouds(scene_chunks), live.pointcloud_crop_bounds)
+    dense_scene = merge_point_clouds(scene_chunks)
     scene_point_cloud = deterministic_resample(dense_scene, int(args.scene_point_num))
     observation = {
         "joint_action": {"vector": np.asarray(joint_vector, dtype=np.float32).reshape(14)},
@@ -473,6 +525,9 @@ def add_sam2_object_pointclouds(
         target_num_points=int(args.object_point_num),
         min_mask_points=int(args.sam2_min_mask_points),
         interactive_init=bool(args.sam2_interactive_init),
+        sam2_image_width=int(args.sam2_image_width),
+        min_depth_m=float(args.min_depth_m),
+        max_depth_m=float(args.max_depth_m),
     )
     observation["object_pointcloud"] = object_pointcloud
     observation["sam2_meta"] = meta
@@ -919,7 +974,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--serial_remap", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--camera_labels", default="global,left,right")
     parser.add_argument("--zed_serials", default="")
-    parser.add_argument("--zed_resolution", default="HD1080")
+    parser.add_argument("--zed_resolution", default="HD720")
     parser.add_argument("--zed_fps", type=int, default=15)
     parser.add_argument("--zed_depth_mode", default="NEURAL")
     parser.add_argument("--save_rgb_width", type=int, default=0)
@@ -947,6 +1002,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sam2_checkpoint", default=str(DEFAULT_SAM2_CHECKPOINT))
     parser.add_argument("--sam2_device", default="cuda:0")
     parser.add_argument("--sam2_autocast_dtype", default="bfloat16")
+    parser.add_argument("--sam2_image_width", type=int, default=640)
     parser.add_argument("--sam2_bbox_prompt_path", default="")
     parser.add_argument("--sam2_interactive_init", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--sam2_min_mask_points", type=int, default=16)

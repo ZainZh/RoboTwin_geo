@@ -1099,3 +1099,32 @@
   - Updated `select_bbox_for_image` to scale HD frames to a 1280x720 display canvas, map mouse coordinates back to original image coordinates, and show invalid-box status instead of raising on single clicks.
   - Verified with `python -m unittest test_sam2_pointcloud_utils` from `policy/DP3/scripts`.
   - Verified syntax with `python -m py_compile policy/DP3/scripts/sam2_pointcloud_utils.py policy/DP3/scripts/test_sam2_pointcloud_utils.py script/real_zed_inference/real_dp3_inference.py`.
+
+### Phase 33: Real Semantic Inference SAM2 Latency Diagnosis
+- **Status:** complete
+- Actions taken:
+  - Compared `real_dp3_inference.py`, `zed_sam2_realtime_bbox.py`, and `include/xtrainer_clover/experiments/run_inference.py`.
+  - Confirmed real DP3 inference already uses camera capture threads, so the 15s stall is not caused by missing camera acquisition threading alone.
+  - Identified major path differences from the fast SAM2 demo: three cameras instead of one, `HD1080` + `NEURAL` depth instead of `HD720` RGB-only, no 640-wide SAM2 resize by default, and synchronous point-cloud/SAM2/DP3 work in the main loop.
+  - Identified the likely dominant code issue: online SAM2 object point-cloud extraction projects the full fused dense scene into every camera mask for every placeholder, rather than directly lifting masked depth pixels per camera.
+
+### Phase 34: Real SAM2 Online Mask-Depth Object Point Clouds
+- **Status:** complete with hardware timing pending
+- Actions taken:
+  - Added failing tests for direct SAM2 `mask + depth` lifting with workspace filtering and for scene point-cloud workspace filtering before robot-base output transforms.
+  - Added `camera_frame_to_output_pc` so real scene point clouds are lifted to workspace, cropped by the configured 3D workspace bounds, then transformed into `workspace`, `right_base`, or `left_base`.
+  - Updated real observations to carry `t_workspace_from_cam` and `workspace_bounds_m` per camera for online SAM2 object point-cloud extraction.
+  - Updated SAM2 online extraction to use depth lifting when camera depth and `cam2world_gl` are available, falling back to the old scene-projection path only when depth data is absent.
+  - Added `--sam2_image_width` with default `640` and changed real ZED inference default resolution to `HD720`.
+  - Preserved `image_shape_hw` from saved bbox/point prompts so prompt coordinates can be scaled when SAM2 runs on resized images.
+  - Updated live workspace ROI cropping to use the current ZED SDK intrinsics instead of calibration-file intrinsics, preventing stale-intrinsic crops when `--zed_resolution` changes.
+  - Verified with `python -m unittest script.test_real_zed_inference_actions`, `python -m unittest test_sam2_pointcloud_utils` from `policy/DP3/scripts`, `python -m py_compile ...`, `bash -n ...`, and `python script/real_zed_inference/real_dp3_inference.py --help | rg "zed_resolution|sam2_image_width|output_frame|workspace_crop"`.
+
+### Phase 35: Real SAM2 Object Point-Cloud Preview Script
+- **Status:** complete with hardware run pending
+- Actions taken:
+  - Added `script/real_zed_inference/preview_sam2_object_pointcloud.py`, a standalone live preview that does not load DP3 or connect to the robot.
+  - The script reuses live ZED startup, workspace filtering, SAM2 runtime loading, and online `mask + depth` object point-cloud reconstruction.
+  - Added Open3D live visualization for `{A}/{B}` object clouds, optional RGB camera preview, optional gray scene cloud, placeholder/RGB color modes, frame timing prints, and robot-base output-frame support.
+  - Added `script/test_real_sam2_object_pointcloud_preview.py` covering empty-row filtering and placeholder/RGB coloring without requiring Open3D or hardware.
+  - Verified with `python -m unittest script.test_real_sam2_object_pointcloud_preview`, `python -m py_compile script/real_zed_inference/preview_sam2_object_pointcloud.py script/test_real_sam2_object_pointcloud_preview.py`, CLI help grep, and `python -c "import open3d as o3d; print(o3d.__version__)"`.

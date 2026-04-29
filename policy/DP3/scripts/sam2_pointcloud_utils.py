@@ -63,7 +63,15 @@ def load_sam2_bbox_prompt_file(
             points = item.get("points_xy", item.get("points"))
             labels = item.get("point_labels", item.get("labels"))
             if bbox is not None:
-                out[str(camera_name)][str(placeholder)] = [int(v) for v in bbox[:4]]
+                bbox_record = [int(v) for v in bbox[:4]]
+                image_shape = item.get("image_shape_hw")
+                if image_shape is not None and len(image_shape) >= 2:
+                    out[str(camera_name)][str(placeholder)] = {
+                        "bbox_xyxy": bbox_record,
+                        "image_shape_hw": [int(image_shape[0]), int(image_shape[1])],
+                    }
+                else:
+                    out[str(camera_name)][str(placeholder)] = bbox_record
             elif points is not None:
                 point_list = [[int(round(float(x))), int(round(float(y)))] for x, y in points]
                 if labels is None:
@@ -71,11 +79,15 @@ def load_sam2_bbox_prompt_file(
                 else:
                     label_list = [1 if int(v) > 0 else 0 for v in labels]
                 if len(point_list) > 0 and len(point_list) == len(label_list):
-                    out[str(camera_name)][str(placeholder)] = {
+                    prompt_record = {
                         "prompt_type": "point",
                         "points_xy": point_list,
                         "point_labels": label_list,
                     }
+                    image_shape = item.get("image_shape_hw")
+                    if image_shape is not None and len(image_shape) >= 2:
+                        prompt_record["image_shape_hw"] = [int(image_shape[0]), int(image_shape[1])]
+                    out[str(camera_name)][str(placeholder)] = prompt_record
     return out
 
 
@@ -164,6 +176,176 @@ def _select_scene_points_by_mask(
         "projected_points": int(len(valid_idx)),
         "selected_points": int(len(selected_idx)),
         "mask_pixels": int(mask_arr.sum()),
+    }
+
+
+def _resize_keep_aspect(image: np.ndarray, target_width: int) -> np.ndarray:
+    width = int(target_width)
+    image_arr = np.asarray(image, dtype=np.uint8)
+    if width <= 0 or image_arr.shape[1] <= width:
+        return image_arr
+    scale = float(width) / float(image_arr.shape[1])
+    height = max(1, int(round(float(image_arr.shape[0]) * scale)))
+    return cv2.resize(image_arr, (width, height), interpolation=cv2.INTER_AREA).astype(np.uint8)
+
+
+def _scale_prompt_spec_to_image(prompt_spec, image_shape_hw: tuple[int, int]):
+    if not isinstance(prompt_spec, Mapping):
+        return prompt_spec
+    old_shape = prompt_spec.get("image_shape_hw")
+    if old_shape is None or len(old_shape) < 2:
+        return prompt_spec
+    old_h, old_w = float(old_shape[0]), float(old_shape[1])
+    new_h, new_w = float(image_shape_hw[0]), float(image_shape_hw[1])
+    if old_h <= 0 or old_w <= 0:
+        return prompt_spec
+    sx = new_w / old_w
+    sy = new_h / old_h
+    out = dict(prompt_spec)
+    if "bbox_xyxy" in out:
+        x0, y0, x1, y1 = [float(v) for v in out["bbox_xyxy"][:4]]
+        out["bbox_xyxy"] = [
+            int(round(x0 * sx)),
+            int(round(y0 * sy)),
+            int(round(x1 * sx)),
+            int(round(y1 * sy)),
+        ]
+    points = out.get("points_xy", out.get("points"))
+    if points is not None:
+        out["points_xy"] = [
+            [int(round(float(x) * sx)), int(round(float(y) * sy))]
+            for x, y in points
+        ]
+    out["image_shape_hw"] = [int(new_h), int(new_w)]
+    return out
+
+
+def _transform_point_cloud(point_cloud: np.ndarray, transform: np.ndarray) -> np.ndarray:
+    pc = np.asarray(point_cloud, dtype=np.float32)
+    if pc.size == 0:
+        return np.zeros((0, 6), dtype=np.float32)
+    tf = np.asarray(transform, dtype=np.float64).reshape(4, 4)
+    xyz_h = np.concatenate([pc[:, :3].astype(np.float64), np.ones((len(pc), 1), dtype=np.float64)], axis=1)
+    xyz = (tf @ xyz_h.T).T[:, :3].astype(np.float32)
+    return np.concatenate([xyz, pc[:, 3:6].astype(np.float32)], axis=1)
+
+
+def _parse_workspace_bounds(value) -> tuple[float, float, float, float, float, float] | None:
+    if value is None:
+        return None
+    if isinstance(value, Mapping):
+        try:
+            return (
+                float(value["x_min"]),
+                float(value["x_max"]),
+                float(value["y_min"]),
+                float(value["y_max"]),
+                float(value["z_min"]),
+                float(value["z_max"]),
+            )
+        except Exception:
+            return None
+    arr = np.asarray(value, dtype=np.float32).reshape(-1)
+    if arr.size < 6:
+        return None
+    return tuple(float(v) for v in arr[:6])
+
+
+def _crop_point_cloud_xyz(point_cloud: np.ndarray, bounds: tuple[float, float, float, float, float, float] | None) -> np.ndarray:
+    pc = np.asarray(point_cloud, dtype=np.float32)
+    if bounds is None or pc.size == 0:
+        return pc
+    x_min, x_max, y_min, y_max, z_min, z_max = bounds
+    mask = (
+        (pc[:, 0] >= x_min)
+        & (pc[:, 0] <= x_max)
+        & (pc[:, 1] >= y_min)
+        & (pc[:, 1] <= y_max)
+        & (pc[:, 2] >= z_min)
+        & (pc[:, 2] <= z_max)
+    )
+    return pc[mask]
+
+
+def _select_depth_points_by_mask(
+    *,
+    mask: np.ndarray,
+    depth: np.ndarray,
+    rgb: np.ndarray,
+    intrinsic_cv: np.ndarray,
+    cam2world_gl: np.ndarray,
+    min_depth_m: float,
+    max_depth_m: float,
+    min_points: int,
+    t_workspace_from_cam: np.ndarray | None = None,
+    workspace_bounds_m=None,
+) -> Tuple[np.ndarray | None, Dict[str, object]]:
+    depth_arr = np.asarray(depth, dtype=np.float32)
+    if depth_arr.ndim != 2:
+        return None, {"mode": "invalid_depth", "mask_pixels": int(np.asarray(mask).astype(bool).sum())}
+    mask_arr = np.asarray(mask).astype(bool)
+    if mask_arr.shape != depth_arr.shape:
+        mask_arr = cv2.resize(mask_arr.astype(np.uint8), (depth_arr.shape[1], depth_arr.shape[0]), interpolation=cv2.INTER_NEAREST) > 0
+    rgb_arr = np.asarray(rgb, dtype=np.uint8)
+    if rgb_arr.shape[:2] != depth_arr.shape:
+        rgb_arr = cv2.resize(rgb_arr, (depth_arr.shape[1], depth_arr.shape[0]), interpolation=cv2.INTER_LINEAR).astype(np.uint8)
+
+    valid = (
+        mask_arr
+        & np.isfinite(depth_arr)
+        & (depth_arr > float(min_depth_m))
+        & (depth_arr < float(max_depth_m))
+    )
+    ys, xs = np.where(valid)
+    if xs.size == 0:
+        return None, {
+            "mode": "too_few_mask_depth_points",
+            "mask_pixels": int(mask_arr.sum()),
+            "depth_points": 0,
+            "workspace_points": 0,
+        }
+
+    k = np.asarray(intrinsic_cv, dtype=np.float64).reshape(3, 3)
+    z = depth_arr[ys, xs].astype(np.float64)
+    x = (xs.astype(np.float64) - float(k[0, 2])) * z / float(k[0, 0])
+    y = (ys.astype(np.float64) - float(k[1, 2])) * z / float(k[1, 1])
+    xyz_cam = np.stack([x, y, z], axis=1).astype(np.float32)
+    colors = rgb_arr[ys, xs, :3].astype(np.float32) / 255.0
+    pc_cam = np.concatenate([xyz_cam, colors], axis=1).astype(np.float32)
+
+    bounds = _parse_workspace_bounds(workspace_bounds_m)
+    if t_workspace_from_cam is not None and bounds is not None:
+        pc_workspace = _transform_point_cloud(pc_cam, np.asarray(t_workspace_from_cam, dtype=np.float32).reshape(4, 4))
+        pc_workspace = _crop_point_cloud_xyz(pc_workspace, bounds)
+        workspace_points = int(len(pc_workspace))
+        if workspace_points < int(min_points):
+            return None, {
+                "mode": "too_few_mask_depth_points",
+                "mask_pixels": int(mask_arr.sum()),
+                "depth_points": int(len(pc_cam)),
+                "workspace_points": workspace_points,
+            }
+        t_output_from_workspace = np.asarray(cam2world_gl, dtype=np.float64).reshape(4, 4) @ np.linalg.inv(
+            np.asarray(t_workspace_from_cam, dtype=np.float64).reshape(4, 4)
+        )
+        selected = _transform_point_cloud(pc_workspace, t_output_from_workspace)
+    else:
+        selected = _transform_point_cloud(pc_cam, np.asarray(cam2world_gl, dtype=np.float32).reshape(4, 4))
+        workspace_points = int(len(selected))
+        if workspace_points < int(min_points):
+            return None, {
+                "mode": "too_few_mask_depth_points",
+                "mask_pixels": int(mask_arr.sum()),
+                "depth_points": int(len(pc_cam)),
+                "workspace_points": workspace_points,
+            }
+
+    return selected.astype(np.float32), {
+        "mode": "mask_depth_lifted",
+        "mask_pixels": int(mask_arr.sum()),
+        "depth_points": int(len(pc_cam)),
+        "workspace_points": int(workspace_points),
+        "selected_points": int(len(selected)),
     }
 
 
@@ -339,16 +521,17 @@ def extract_placeholder_point_clouds_sam2_online(
     target_num_points: int,
     min_mask_points: int = 16,
     interactive_init: bool = False,
+    sam2_image_width: int = 0,
+    min_depth_m: float = 0.05,
+    max_depth_m: float = 3.0,
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, object]]:
-    scene_pc = ensure_point_cloud_channels(observation["pointcloud"], channels=6)
+    scene_pc = ensure_point_cloud_channels(observation.get("pointcloud", np.zeros((0, 6), dtype=np.float32)), channels=6)
     scene_pc = strip_zero_points(scene_pc)
     placeholder_list = [str(item) for item in placeholders]
     empty_clouds = {
         placeholder: np.zeros((int(target_num_points), 6), dtype=np.float32)
         for placeholder in placeholder_list
     }
-    if len(scene_pc) == 0:
-        return empty_clouds, {"mode": "empty_scene"}
 
     camera_obs = observation.get("observation", {})
     selected_by_placeholder: Dict[str, List[np.ndarray]] = {placeholder: [] for placeholder in placeholder_list}
@@ -364,9 +547,10 @@ def extract_placeholder_point_clouds_sam2_online(
         image = _decode_rgb(camera_info.get("rgb"))
         intrinsic_cv = camera_info.get("intrinsic_cv")
         extrinsic_cv = camera_info.get("extrinsic_cv")
-        if image is None or intrinsic_cv is None or extrinsic_cv is None:
+        if image is None or intrinsic_cv is None:
             camera_meta[str(camera_name)] = {"mode": "missing_camera_data"}
             continue
+        tracker_image = _resize_keep_aspect(image, int(sam2_image_width))
 
         state = tracking_state_by_camera.setdefault(str(camera_name), Sam2CameraTrackingState())
         if state.tracker is None:
@@ -377,7 +561,7 @@ def extract_placeholder_point_clouds_sam2_online(
                 boxes = _interactive_boxes_for_camera(
                     camera_name=str(camera_name),
                     placeholders=placeholder_list,
-                    image=image,
+                    image=tracker_image,
                 )
                 bbox_prompts_by_camera[str(camera_name)] = boxes
             missing_boxes = [placeholder for placeholder in placeholder_list if placeholder not in boxes]
@@ -387,24 +571,50 @@ def extract_placeholder_point_clouds_sam2_online(
                     "missing_placeholders": missing_boxes,
                 }
                 continue
-            masks = state.tracker.initialize(image, boxes)
+            boxes = {
+                placeholder: _scale_prompt_spec_to_image(prompt_spec, tracker_image.shape[:2])
+                for placeholder, prompt_spec in boxes.items()
+            }
+            masks = state.tracker.initialize(tracker_image, boxes)
             state.initialized = True
             mode = "initialized"
         else:
-            masks = state.tracker.track(image)
+            masks = state.tracker.track(tracker_image)
             mode = "tracked"
 
         per_placeholder_meta: Dict[str, object] = {}
         camera_selected = False
+        depth = camera_info.get("depth", camera_info.get("depth_m"))
+        cam2world_gl = camera_info.get("cam2world_gl")
+        can_lift_depth = depth is not None and cam2world_gl is not None
         for placeholder in placeholder_list:
-            mask = np.asarray(masks.get(placeholder, np.zeros(image.shape[:2], dtype=bool))).astype(bool)
-            points, meta = _select_scene_points_by_mask(
-                scene_point_cloud=scene_pc,
-                mask=mask,
-                intrinsic_cv=intrinsic_cv,
-                extrinsic_cv=extrinsic_cv,
-                min_points=int(min_mask_points),
-            )
+            mask = np.asarray(masks.get(placeholder, np.zeros(tracker_image.shape[:2], dtype=bool))).astype(bool)
+            if can_lift_depth:
+                points, meta = _select_depth_points_by_mask(
+                    mask=mask,
+                    depth=depth,
+                    rgb=image,
+                    intrinsic_cv=intrinsic_cv,
+                    cam2world_gl=cam2world_gl,
+                    t_workspace_from_cam=camera_info.get("t_workspace_from_cam"),
+                    workspace_bounds_m=camera_info.get("workspace_bounds_m"),
+                    min_depth_m=float(min_depth_m),
+                    max_depth_m=float(max_depth_m),
+                    min_points=int(min_mask_points),
+                )
+            elif len(scene_pc) > 0 and extrinsic_cv is not None:
+                points, meta = _select_scene_points_by_mask(
+                    scene_point_cloud=scene_pc,
+                    mask=mask,
+                    intrinsic_cv=intrinsic_cv,
+                    extrinsic_cv=extrinsic_cv,
+                    min_points=int(min_mask_points),
+                )
+            else:
+                points, meta = None, {
+                    "mode": "missing_depth_and_scene_projection_data",
+                    "mask_pixels": int(mask.sum()),
+                }
             if points is not None:
                 selected_by_placeholder[placeholder].append(points)
                 camera_selected = True

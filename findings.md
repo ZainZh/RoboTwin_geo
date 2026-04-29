@@ -674,6 +674,19 @@
 - SAM2 online bbox UI finding:
   - The real inference bbox selector crashed on single clicks because it normalized zero-area boxes during preview.
   - The online selector now treats zero-area boxes as invalid UI state instead of throwing, and it scales HD images down to a 1280x720 display canvas while mapping mouse coordinates back to the original image.
+- Real semantic inference SAM2 latency finding:
+  - `script/real_zed_inference/zed_sam2_realtime_bbox.py` is a lightweight benchmark path: one ZED camera, `DEPTH_MODE.NONE`, default `HD720`, RGB resized to width 640, and one SAM2 tracker.
+  - `script/real_zed_inference/real_dp3_inference.py` is much heavier: three ZED cameras, default `HD1080`, `DEPTH_MODE.NEURAL`, full depth-to-point-cloud construction for every camera, point-cloud merge/resample, SAM2 tracking, semantic feature extraction, DP3 inference, and robot control.
+  - Camera acquisition in real DP3 inference is already threaded, similar in spirit to `include/xtrainer_clover/experiments/run_inference.py`. The heavy perception pipeline after snapshots still runs synchronously in the policy main loop.
+  - The current online SAM2 object point-cloud path projects the fused dense scene point cloud back into each camera mask in `_select_scene_points_by_mask(...)`. With three cameras and two placeholders this performs six dense-scene projections per SAM2 update.
+  - For `output_frame=right_base` / `left_base`, `pointcloud_crop_bounds` is currently `None`, so the dense scene passed to SAM2 object extraction can be the full multi-camera point cloud rather than a cropped workspace cloud. This can make the projection step dominate latency and makes the observed 15s stall plausible even if SAM2 tracking itself is fast.
+- Real SAM2 online latency fix finding:
+  - Real inference now builds scene points by lifting each camera depth to the workspace frame, applying the configured 3D workspace bounds, and only then transforming surviving points into the requested output frame.
+  - Online SAM2 object point clouds now use each camera's `mask + depth + intrinsic` directly. The mask is resized back to the depth map when SAM2 runs on a downscaled image.
+  - The object point cloud path applies the same workspace-frame 3D bounds before transforming points to `workspace`, `right_base`, or `left_base`, so workspace-outside points do not enter semantic/DP3 observations.
+  - SAM2 tracking input defaults to width 640 through `--sam2_image_width`, while ZED capture defaults to `HD720`. Prompt files that include `image_shape_hw` preserve that metadata so bbox/point prompts can be scaled to the tracker image.
+  - Real inference workspace ROI projection now uses live ZED intrinsics instead of calibration-file intrinsics, so changing `--zed_resolution` does not make image-space cropping use stale focal length/principal point values.
+  - `script/real_zed_inference/preview_sam2_object_pointcloud.py` isolates the online perception path from DP3 and robot control: it starts live ZED capture, initializes SAM2 prompts, reconstructs workspace-filtered `{A}/{B}` point clouds, and refreshes them in an Open3D window.
 
 ---
 *Update this file after every 2 view/browser/search operations.*

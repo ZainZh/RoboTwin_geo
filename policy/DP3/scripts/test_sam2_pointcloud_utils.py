@@ -114,6 +114,42 @@ class Sam2PointcloudUtilsTest(unittest.TestCase):
         np.testing.assert_allclose(clouds["{B}"][0, :3], np.array([1.0, 2.0, 1.0], dtype=np.float32))
         self.assertEqual(meta["cameras"]["global"]["mode"], "tracked")
 
+    def test_sam2_online_can_lift_masked_depth_points_and_filter_workspace(self):
+        tracker = FakeSam2Tracker()
+        state_by_camera = {}
+        depth = np.ones((4, 4), dtype=np.float32)
+        rgb = np.zeros((4, 4, 3), dtype=np.uint8)
+        rgb[1, 1] = [255, 0, 0]
+
+        clouds, meta = extract_placeholder_point_clouds_sam2_online(
+            {
+                "pointcloud": np.zeros((0, 6), dtype=np.float32),
+                "observation": {
+                    "global": {
+                        "rgb": rgb,
+                        "depth": depth,
+                        "intrinsic_cv": np.eye(3, dtype=np.float32),
+                        "cam2world_gl": np.eye(4, dtype=np.float32),
+                        "t_workspace_from_cam": np.eye(4, dtype=np.float32),
+                        "workspace_bounds_m": np.array([-0.1, 1.5, -0.1, 1.5, 0.5, 1.5], dtype=np.float32),
+                    }
+                },
+            },
+            placeholders=["{A}", "{B}"],
+            camera_names=["global"],
+            tracker_factory=lambda _camera: tracker,
+            tracking_state_by_camera=state_by_camera,
+            bbox_prompts_by_camera={"global": {"{A}": [0, 0, 2, 2], "{B}": [1, 1, 3, 3]}},
+            target_num_points=1,
+            min_mask_points=1,
+        )
+
+        np.testing.assert_allclose(clouds["{A}"][0, :3], np.array([1.0, 1.0, 1.0], dtype=np.float32))
+        np.testing.assert_allclose(clouds["{A}"][0, 3:6], np.array([1.0, 0.0, 0.0], dtype=np.float32))
+        np.testing.assert_allclose(clouds["{B}"], np.zeros((1, 6), dtype=np.float32))
+        self.assertEqual(meta["cameras"]["global"]["placeholders"]["{A}"]["mode"], "mask_depth_lifted")
+        self.assertEqual(meta["cameras"]["global"]["placeholders"]["{B}"]["mode"], "too_few_mask_depth_points")
+
     def test_load_sam2_bbox_prompt_file_filters_cameras_and_placeholders(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "sam2_bbox_prompts.json"
@@ -161,6 +197,32 @@ class Sam2PointcloudUtilsTest(unittest.TestCase):
             self.assertEqual(
                 prompts,
                 {"global": {"{A}": {"prompt_type": "point", "points_xy": [[2, 3], [4, 5]], "point_labels": [1, 0]}}},
+            )
+
+    def test_load_sam2_prompt_file_preserves_bbox_shape_for_resized_tracking(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "sam2_bbox_prompts.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "records": {
+                            "global": {
+                                "{A}": {
+                                    "bbox_xyxy": [100, 50, 300, 150],
+                                    "image_shape_hw": [1000, 2000],
+                                }
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            prompts = load_sam2_bbox_prompt_file(path, camera_names=["global"], placeholders=["{A}"])
+
+            self.assertEqual(
+                prompts,
+                {"global": {"{A}": {"bbox_xyxy": [100, 50, 300, 150], "image_shape_hw": [1000, 2000]}}},
             )
 
 
