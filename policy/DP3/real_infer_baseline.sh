@@ -56,5 +56,15 @@ python script/real_zed_inference/real_dp3_inference.py \
     --checkpoint_num "${checkpoint_num}" \
     --profile_timing \
     --execute \
+    --async_control \
+    --async_control_hz 20 \
+    --control_hz 5 \
+    --servo_j_t 0.10 \
+    --servo_j_gain 200 \
+    --max_executed_joint_delta 0.015 \
+    --max_executed_joint_delta_change 0.004 \
+    --max_executed_gripper_delta 0.02 \
+    --max_executed_gripper_delta_change 0.06 \
+    --action_diagnostics_csv outputs/real_zed_inference/action_diag_async.csv\
     "${frame_overrides[@]}" \
     "${extra_flags[@]}"
