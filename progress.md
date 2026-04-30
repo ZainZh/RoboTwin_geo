@@ -1132,3 +1132,15 @@
   - Added preview-specific fine-grained timing for frame snapshot, per-camera scene point-cloud construction, SAM2 tracking, mask-depth object lifting, merge/resample, Open3D rendering, image display, and loop total.
   - Added `fast_merge_object_point_clouds` / `fast_resample_point_cloud` for online SAM2 object clouds and exposed `--online_object_resample fast|fps`; preview and real inference default to `fast`.
   - Verified with `python -m unittest script.test_real_sam2_object_pointcloud_preview`, `python -m py_compile script/real_zed_inference/preview_sam2_object_pointcloud.py script/test_real_sam2_object_pointcloud_preview.py`, CLI help grep, and `python -c "import open3d as o3d; print(o3d.__version__)"`.
+
+### Phase 36: Object-Only Preview And Per-Camera Parallelism
+- **Status:** complete with hardware timing pending
+- Actions taken:
+  - Added RED tests for object-only preview skipping dense scene construction, shared per-camera worker parallelism, lazy scene pointcloud access in online SAM2 extraction, and real/preview CLI worker controls.
+  - Added `run_camera_tasks_parallel(...)` to `policy/DP3/scripts/sam2_pointcloud_utils.py`; `max_workers <= 0` uses one worker per camera and `1` forces serial execution.
+  - Updated online SAM2 object point-cloud extraction so per-camera tracker resize/init/track and mask-depth lifting run in parallel after any required interactive prompt selection.
+  - Updated the standalone preview to default to `--object_only`, skipping `build_obs.<camera>.depth_to_pc`, `build_obs.merge_scene`, and `build_obs.resample_scene` unless `--show_scene` or `--no-object_only` is passed.
+  - Updated real DP3 inference to parallelize per-camera scene construction and to pass `--parallel_camera_workers` into online SAM2 object extraction.
+  - Verified with `python -m unittest test_sam2_pointcloud_utils` from `policy/DP3/scripts`.
+  - Verified with `python -m unittest script.test_real_sam2_object_pointcloud_preview script.test_real_zed_inference_actions`.
+  - Verified syntax with `python -m py_compile policy/DP3/scripts/sam2_pointcloud_utils.py script/real_zed_inference/preview_sam2_object_pointcloud.py script/real_zed_inference/real_dp3_inference.py script/test_real_sam2_object_pointcloud_preview.py script/test_real_zed_inference_actions.py`.

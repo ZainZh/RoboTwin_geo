@@ -1,4 +1,6 @@
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 
 import numpy as np
 
@@ -68,6 +70,51 @@ class RealSam2ObjectPointcloudPreviewTest(unittest.TestCase):
         self.assertEqual(args.open3d_width, 1800)
         self.assertEqual(args.open3d_height, 1100)
         self.assertTrue(args.show_workspace_box)
+        self.assertTrue(args.object_only)
+
+    def test_object_only_preview_observation_skips_dense_scene_pointcloud_construction(self):
+        from script.real_zed_inference.preview_sam2_object_pointcloud import (
+            TimingRecorder,
+            build_preview_observation,
+        )
+
+        live = SimpleNamespace(
+            labels=["global"],
+            label_to_calib={"global": "global"},
+            calibrations={"global": SimpleNamespace(camera_matrix=np.eye(3, dtype=np.float32))},
+            t_output_from_cam_by_label={"global": np.eye(4, dtype=np.float32)},
+            t_workspace_from_cam_by_label={"global": np.eye(4, dtype=np.float32)},
+            workspace_bounds=None,
+        )
+        args = SimpleNamespace(
+            min_depth_m=0.05,
+            max_depth_m=3.0,
+            scene_point_num=4,
+            parallel_camera_workers=1,
+        )
+        frame = {
+            "rgb": np.zeros((2, 2, 3), dtype=np.uint8),
+            "depth_m": np.ones((2, 2), dtype=np.float32),
+            "camera_matrix": np.eye(3, dtype=np.float32),
+        }
+
+        with mock.patch(
+            "script.real_zed_inference.preview_sam2_object_pointcloud.snapshot_frames",
+            return_value={"global": frame},
+        ), mock.patch(
+            "script.real_zed_inference.preview_sam2_object_pointcloud.camera_frame_to_output_pc",
+            side_effect=AssertionError("dense scene path should be skipped"),
+        ):
+            observation, dense_scene = build_preview_observation(
+                args=args,
+                live=live,
+                timer=TimingRecorder(enabled=True),
+                build_scene=False,
+            )
+
+        self.assertEqual(dense_scene.shape, (0, 6))
+        self.assertEqual(observation["pointcloud"].shape, (4, 6))
+        self.assertIn("global", observation["observation"])
 
     def test_workspace_box_corners_are_transformed_to_output_frame(self):
         from script.real_zed_collection.workspace_crop_utils import WorkspaceBounds
@@ -105,6 +152,14 @@ class RealSam2ObjectPointcloudPreviewTest(unittest.TestCase):
 
         self.assertIn("build_obs.global_pc=1.0ms", formatted)
         self.assertIn("sam2.global.track=2.0ms", formatted)
+
+    def test_parser_supports_parallel_camera_workers(self):
+        from script.real_zed_inference.preview_sam2_object_pointcloud import build_arg_parser
+
+        args = build_arg_parser().parse_args(["--parallel_camera_workers", "2", "--no-object_only"])
+
+        self.assertEqual(args.parallel_camera_workers, 2)
+        self.assertFalse(args.object_only)
 
 
 if __name__ == "__main__":

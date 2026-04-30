@@ -99,6 +99,7 @@ from script.real_zed_collection.postprocess.postprocess_raw_to_robotwin_hdf5 imp
     _output_frame_transforms,
 )
 from script.real_zed_collection.workspace_crop_utils import WorkspaceBounds, invert_transform  # noqa: E402
+from sam2_pointcloud_utils import run_camera_tasks_parallel  # noqa: E402
 
 
 def parse_placeholder_list(text: str | Sequence[str]) -> list[str]:
@@ -392,10 +393,9 @@ def build_robotwin_observation(
     joint_vector: np.ndarray,
 ) -> tuple[dict[str, Any], np.ndarray]:
     frames_by_label = snapshot_frames(live)
-    scene_chunks: list[np.ndarray] = []
     camera_obs: dict[str, dict[str, Any]] = {}
 
-    for label in live.labels:
+    def build_camera(label: str):
         calib = live.calibrations[live.label_to_calib[label]]
         frame = frames_by_label[label]
         depth_m = np.asarray(frame["depth_m"], dtype=np.float32)
@@ -406,18 +406,16 @@ def build_robotwin_observation(
 
         frame_for_pc = dict(frame)
         frame_for_pc["rgb"] = rgb_aligned
-        scene_chunks.append(
-            camera_frame_to_output_pc(
-                camera_frame=frame_for_pc,
-                camera_matrix=camera_matrix,
-                t_workspace_from_cam=t_workspace_from_cam,
-                workspace_bounds=live.workspace_bounds,
-                t_output_from_cam=t_output_from_cam,
-                min_depth_m=float(args.min_depth_m),
-                max_depth_m=float(args.max_depth_m),
-            )
+        scene_chunk = camera_frame_to_output_pc(
+            camera_frame=frame_for_pc,
+            camera_matrix=camera_matrix,
+            t_workspace_from_cam=t_workspace_from_cam,
+            workspace_bounds=live.workspace_bounds,
+            t_output_from_cam=t_output_from_cam,
+            min_depth_m=float(args.min_depth_m),
+            max_depth_m=float(args.max_depth_m),
         )
-        camera_obs[label] = {
+        return label, scene_chunk, {
             "rgb": rgb_aligned.astype(np.uint8),
             "depth": depth_m.astype(np.float32),
             "intrinsic_cv": camera_matrix.astype(np.float32),
@@ -441,6 +439,17 @@ def build_robotwin_observation(
                 else None
             ),
         }
+
+    scene_chunks: list[np.ndarray] = []
+    results = run_camera_tasks_parallel(
+        live.labels,
+        build_camera,
+        max_workers=int(getattr(args, "parallel_camera_workers", 0)),
+    )
+    for label in live.labels:
+        _label, scene_chunk, camera_info = results[str(label)]
+        scene_chunks.append(scene_chunk)
+        camera_obs[str(_label)] = camera_info
 
     dense_scene = merge_point_clouds(scene_chunks)
     scene_point_cloud = deterministic_resample(dense_scene, int(args.scene_point_num))
@@ -529,6 +538,7 @@ def add_sam2_object_pointclouds(
         min_depth_m=float(args.min_depth_m),
         max_depth_m=float(args.max_depth_m),
         object_resample_mode=str(args.online_object_resample),
+        parallel_camera_workers=int(getattr(args, "parallel_camera_workers", 0)),
     )
     observation["object_pointcloud"] = object_pointcloud
     observation["sam2_meta"] = meta
@@ -985,6 +995,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--object_point_num", type=int, default=1024)
     parser.add_argument("--min_depth_m", type=float, default=0.05)
     parser.add_argument("--max_depth_m", type=float, default=3.0)
+    parser.add_argument(
+        "--parallel_camera_workers",
+        type=int,
+        default=0,
+        help="Per-camera worker count; <=0 uses one worker per active camera, 1 disables parallelism.",
+    )
 
     parser.add_argument("--workspace_crop_enabled", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--workspace_crop_x_min", type=float, default=-0.35)
