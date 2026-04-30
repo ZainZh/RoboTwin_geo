@@ -1,0 +1,42 @@
+{
+  "global": {
+    "per_camera_ply": "/home/zheng/github/RoboTwin_geo/outputs/real_zed_collection/previews/episode_20260425164903_yaml_intrinsics/frame41_workspace_crop_global_yaml_intrinsics.ply",
+    "rgb_crop": "/home/zheng/github/RoboTwin_geo/outputs/real_zed_collection/previews/episode_20260425164903_yaml_intrinsics/frame41_global_workspace_crop_rgb_yaml_intrinsics.png",
+    "crop_box_xyxy": [
+      451,
+      14,
+      1656,
+      1080
+    ],
+    "pc_crop_points_before_resample": 107977
+  },
+  "left": {
+    "per_camera_ply": "/home/zheng/github/RoboTwin_geo/outputs/real_zed_collection/previews/episode_20260425164903_yaml_intrinsics/frame41_workspace_crop_left_yaml_intrinsics.ply",
+    "rgb_crop": "/home/zheng/github/RoboTwin_geo/outputs/real_zed_collection/previews/episode_20260425164903_yaml_intrinsics/frame41_left_workspace_crop_rgb_yaml_intrinsics.png",
+    "crop_box_xyxy": [
+      314,
+      219,
+      1723,
+      1080
+    ],
+    "pc_crop_points_before_resample": 299627
+  },
+  "right": {
+    "per_camera_ply": "/home/zheng/github/RoboTwin_geo/outputs/real_zed_collection/previews/episode_20260425164903_yaml_intrinsics/frame41_workspace_crop_right_yaml_intrinsics.ply",
+    "rgb_crop": "/home/zheng/github/RoboTwin_geo/outputs/real_zed_collection/previews/episode_20260425164903_yaml_intrinsics/frame41_right_workspace_crop_rgb_yaml_intrinsics.png",
+    "crop_box_xyxy": [
+      392,
+      350,
+      1920,
+      1080
+    ],
+    "pc_crop_points_before_resample": 222518
+  },
+  "camera_color_legend": {
+    "global": "red",
+    "left": "green",
+    "right": "blue"
+  },
+  "merged_ply": "/home/zheng/github/RoboTwin_geo/outputs/real_zed_collection/previews/episode_20260425164903_yaml_intrinsics/frame41_workspace_crop_merged_yaml_intrinsics.ply",
+  "camera_colored_ply": "/home/zheng/github/RoboTwin_geo/outputs/real_zed_collection/previews/episode_20260425164903_yaml_intrinsics/frame41_workspace_crop_camera_colored_yaml_intrinsics.ply"
+}

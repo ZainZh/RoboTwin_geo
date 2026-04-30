@@ -8,6 +8,7 @@ import os
 import sys
 import threading
 import time
+from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -966,6 +967,193 @@ def execute_action(
     return action.copy()
 
 
+class AsyncActionController:
+    def __init__(self, *, env, args: argparse.Namespace, initial_action: np.ndarray):
+        self.env = env
+        self.args = args
+        self._latest_action = clamp_action(initial_action)
+        self._previous_command_delta = np.zeros(14, dtype=np.float32)
+        self._last_target_action = self._latest_action.copy()
+        self._has_target_action = False
+        self._pending_actions: deque[np.ndarray] = deque()
+        self._condition = threading.Condition()
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._step_count = 0
+        self._first_action = False
+        self._error: BaseException | None = None
+        self._diagnostic_file = None
+        self._diagnostic_writer = None
+
+    @property
+    def step_count(self) -> int:
+        with self._condition:
+            return int(self._step_count)
+
+    def latest_action(self) -> np.ndarray:
+        with self._condition:
+            return self._latest_action.copy()
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        diagnostics_path = str(getattr(self.args, "action_diagnostics_csv", "")).strip()
+        if diagnostics_path:
+            path = resolve_path(diagnostics_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self._diagnostic_file = path.open("w", newline="", encoding="utf-8")
+            print(f"[INFO] Writing async action diagnostics CSV: {path}")
+        self._thread = threading.Thread(target=self._run, name="AsyncActionController", daemon=True)
+        self._thread.start()
+
+    def submit_actions(self, actions: Sequence[np.ndarray]) -> None:
+        action_list = [clamp_action(np.asarray(action, dtype=np.float32).reshape(14)) for action in actions]
+        if not action_list:
+            return
+        with self._condition:
+            if bool(getattr(self.args, "async_control_replace_buffer", True)):
+                self._pending_actions.clear()
+            self._pending_actions.extend(action_list)
+            self._has_target_action = True
+            self._condition.notify_all()
+
+    def wait_until_steps(self, step_count: int, timeout_sec: float) -> bool:
+        deadline = time.time() + float(timeout_sec)
+        with self._condition:
+            while self._step_count < int(step_count):
+                self._raise_if_error_locked()
+                remaining = deadline - time.time()
+                if remaining <= 0.0:
+                    return False
+                self._condition.wait(timeout=remaining)
+            return True
+
+    def raise_if_error(self) -> None:
+        with self._condition:
+            self._raise_if_error_locked()
+
+    def _raise_if_error_locked(self) -> None:
+        if self._error is not None:
+            raise RuntimeError("Async control thread failed") from self._error
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        with self._condition:
+            self._condition.notify_all()
+        if self._thread is not None:
+            self._thread.join(timeout=3.0)
+            self._thread = None
+        if self._diagnostic_file is not None:
+            self._diagnostic_file.close()
+            self._diagnostic_file = None
+        self.raise_if_error()
+
+    def _next_action(self) -> tuple[np.ndarray | None, bool]:
+        max_idle_repeats = int(getattr(self.args, "async_control_max_idle_repeats", -1))
+        with self._condition:
+            if self._pending_actions:
+                action = self._pending_actions.popleft()
+                self._last_target_action = action.copy()
+                return action, False
+            if not self._has_target_action:
+                return None, True
+            if max_idle_repeats == 0:
+                return None, True
+            return self._last_target_action.copy(), True
+
+    def _write_diagnostic(self, row: Mapping[str, Any]) -> None:
+        if self._diagnostic_file is None:
+            return
+        if self._diagnostic_writer is None:
+            self._diagnostic_writer = csv.DictWriter(self._diagnostic_file, fieldnames=list(row.keys()))
+            self._diagnostic_writer.writeheader()
+        self._diagnostic_writer.writerow(row)
+        self._diagnostic_file.flush()
+
+    def _run(self) -> None:
+        hz = float(getattr(self.args, "async_control_hz", 0.0))
+        if hz <= 0.0:
+            hz = float(getattr(self.args, "control_hz", 0.0))
+        period = 0.0 if hz <= 0.0 else 1.0 / hz
+        idle_repeats = 0
+        try:
+            while not self._stop_event.is_set() and self.step_count < int(getattr(self.args, "max_steps", 200)):
+                loop_start = time.perf_counter()
+                raw_action, idle = self._next_action()
+                if raw_action is None:
+                    time.sleep(min(period, 0.01) if period > 0.0 else 0.001)
+                    continue
+                if idle:
+                    idle_repeats += 1
+                    max_idle_repeats = int(getattr(self.args, "async_control_max_idle_repeats", -1))
+                    if max_idle_repeats > 0 and idle_repeats > max_idle_repeats:
+                        time.sleep(min(period, 0.01) if period > 0.0 else 0.001)
+                        continue
+                else:
+                    idle_repeats = 0
+
+                with self._condition:
+                    action_before_step = self._latest_action.copy()
+                    previous_command_delta = self._previous_command_delta.copy()
+
+                command_action = prepare_action_for_execution(
+                    raw_action,
+                    action_before_step,
+                    self.args,
+                    previous_command_delta=previous_command_delta,
+                )
+                cmd_arm_delta, cmd_gripper_delta = action_delta_summary(command_action, action_before_step)
+                cmd_arm_delta_change, cmd_gripper_delta_change = action_delta_change_summary(
+                    command_action,
+                    action_before_step,
+                    previous_command_delta,
+                )
+                observed_after_step = execute_action(
+                    env=self.env,
+                    action=raw_action,
+                    last_action=action_before_step,
+                    args=self.args,
+                    first_action=False,
+                    previous_command_delta=previous_command_delta,
+                )
+                step_elapsed = time.perf_counter() - loop_start
+                with self._condition:
+                    self._latest_action = observed_after_step.copy()
+                    self._previous_command_delta = command_action - action_before_step
+                    self._step_count += 1
+                    step = int(self._step_count)
+                    self._condition.notify_all()
+                pred_arm_delta, pred_gripper_delta = action_delta_summary(raw_action, action_before_step)
+                exec_arm_delta, exec_gripper_delta = action_delta_summary(observed_after_step, action_before_step)
+                row = build_action_diagnostic_row(
+                    step=step,
+                    raw_policy_action=raw_action,
+                    command_action=command_action,
+                    observed_after_step=observed_after_step,
+                    action_before_step=action_before_step,
+                    previous_command_delta=previous_command_delta,
+                    target_period_sec=period,
+                    step_elapsed_sec=step_elapsed,
+                )
+                self._write_diagnostic(row)
+                print(
+                    f"[ASYNC STEP {step:04d}] "
+                    f"idle={idle} left_gripper={observed_after_step[6]:.3f} right_gripper={observed_after_step[13]:.3f} "
+                    f"pred_arm_delta={pred_arm_delta:.4f} cmd_arm_delta={cmd_arm_delta:.4f} "
+                    f"cmd_arm_delta_change={cmd_arm_delta_change:.4f} exec_arm_delta={exec_arm_delta:.4f} "
+                    f"pred_gripper_delta={pred_gripper_delta:.3f} cmd_gripper_delta={cmd_gripper_delta:.3f} "
+                    f"cmd_gripper_delta_change={cmd_gripper_delta_change:.3f} exec_gripper_delta={exec_gripper_delta:.3f}",
+                    flush=True,
+                )
+                elapsed = time.perf_counter() - loop_start
+                if period > 0.0 and elapsed < period:
+                    time.sleep(period - elapsed)
+        except BaseException as exc:
+            with self._condition:
+                self._error = exc
+                self._condition.notify_all()
+
+
 def run_real_inference(args: argparse.Namespace) -> None:
     if bool(args.execute) and bool(args.no_robot):
         raise ValueError("--execute cannot be used together with --no_robot")
@@ -1008,6 +1196,64 @@ def run_real_inference(args: argparse.Namespace) -> None:
 
         if not bool(args.execute):
             print("[INFO] Dry-run mode: model actions are printed but not sent to the robot. Pass --execute to move.")
+
+        if bool(args.async_control):
+            if bool(args.reobserve_each_action):
+                print_warning("[WARN] --reobserve_each_action is ignored when --async_control is enabled.")
+            controller: AsyncActionController | None = None
+            try:
+                while controller is None or controller.step_count < int(args.max_steps):
+                    if controller is not None:
+                        controller.raise_if_error()
+                        joints = controller.latest_action()
+                    else:
+                        joints = last_action.copy()
+                    chunk_timings: dict[str, float] = {}
+                    print("[TRACE] Building live point-cloud observation ...", flush=True)
+                    with profile_section(chunk_timings, "build_obs_pre", bool(args.profile_timing)):
+                        observation, dense_scene = build_robotwin_observation(args=args, live=live, joint_vector=joints)
+                    if needs_sam2_objpc:
+                        print("[TRACE] Updating SAM2 object point clouds ...", flush=True)
+                        tracker_factory, extract_all_fn, _ = sam2_runtime
+                        with profile_section(chunk_timings, "sam2_pre", bool(args.profile_timing)):
+                            observation = add_sam2_object_pointclouds(
+                                observation=observation,
+                                dense_scene_pointcloud=dense_scene,
+                                args=args,
+                                placeholders=placeholders,
+                                camera_names=live.labels,
+                                tracker_factory=tracker_factory,
+                                extract_all_fn=extract_all_fn,
+                                tracking_state_by_camera=sam2_tracking_state_by_camera,
+                                bbox_prompts_by_camera=sam2_bbox_prompts_by_camera,
+                            )
+                    if bool(args.show_img):
+                        with profile_section(chunk_timings, "show_img_pre", bool(args.profile_timing)):
+                            maybe_show_cameras(observation, live.labels)
+
+                    with profile_section(chunk_timings, "encode_pre", bool(args.profile_timing)):
+                        encoded_obs = encode_obs(observation, model)
+                    model.update_obs(encoded_obs)
+                    print("[TRACE] Running DP3 policy inference ...", flush=True)
+                    with profile_section(chunk_timings, "dp3_policy", bool(args.profile_timing)):
+                        actions = np.asarray(model.get_action(), dtype=np.float32).reshape(-1, 14)
+                    if controller is None:
+                        controller = AsyncActionController(env=env, args=args, initial_action=joints)
+                        controller.start()
+                    controller.submit_actions(actions)
+                    if bool(args.profile_timing):
+                        chunk_timings["chunk_total"] = sum(chunk_timings.values())
+                        print_info(
+                            f"[TIMING async_chunk@step {controller.step_count + 1:04d}] "
+                            f"{format_timings(chunk_timings)} actions_submitted={len(actions)} "
+                            f"control_steps={controller.step_count}",
+                        )
+                if controller is not None:
+                    controller.raise_if_error()
+            finally:
+                if controller is not None:
+                    controller.stop()
+            return
 
         action_step = 0
         first_action = True
@@ -1239,6 +1485,25 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip_robot_reset", action="store_true")
     parser.add_argument("--max_steps", type=int, default=200)
     parser.add_argument("--control_hz", type=float, default=10.0)
+    parser.add_argument("--async_control", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--async_control_hz",
+        type=float,
+        default=0.0,
+        help="Fixed-rate async robot-control thread frequency; <=0 reuses --control_hz.",
+    )
+    parser.add_argument(
+        "--async_control_max_idle_repeats",
+        type=int,
+        default=-1,
+        help="How many times async control repeats the last target when the action buffer is empty; -1 repeats until stop.",
+    )
+    parser.add_argument(
+        "--async_control_replace_buffer",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Replace stale pending actions whenever a new policy chunk is submitted.",
+    )
     parser.add_argument("--initial_left_gripper", type=float, default=1.0)
     parser.add_argument("--initial_right_gripper", type=float, default=1.0)
     parser.add_argument("--interpolate_first_action", action=argparse.BooleanOptionalAction, default=True)

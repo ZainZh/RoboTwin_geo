@@ -1181,3 +1181,18 @@
   - Verified shell wrappers with `bash -n policy/DP3/real_infer_baseline.sh policy/DP3/real_infer_semantic_pointwise_hybrid.sh`.
   - Verified CLI visibility with `python script/real_zed_inference/real_dp3_inference.py --help | rg -n "max_executed_joint_delta_change|max_executed_gripper_delta_change|reobserve_each_action|action_diagnostics_csv"`.
   - Verified whitespace with `git diff --check`.
+
+### Phase 40: Async Real Robot Action Buffer Control
+- **Status:** complete with hardware tuning pending
+- Actions taken:
+  - Compared the current RoboTwin real DP3 thread layout against xtrainer `run_inference.py`: both use camera capture threads and a main inference/control loop, but RoboTwin's semantic path blocks the main loop for long SAM2/point-cloud/model updates.
+  - Added RED tests for an async controller that consumes submitted actions in order and keeps sending the last target when the action buffer is empty.
+  - Added `AsyncActionController` to `real_dp3_inference.py`; it owns fixed-rate `env.step(...)`, keeps latest observed joints, applies existing velocity/acceleration limiters, writes diagnostics, and repeats the last target as keepalive during perception/model stalls.
+  - Added CLI flags `--async_control`, `--async_control_hz`, `--async_control_max_idle_repeats`, and `--async_control_replace_buffer`.
+  - Integrated `--async_control` into `run_real_inference`: the main thread now builds observations and submits DP3 action chunks, while the control thread executes continuously.
+  - Kept old synchronous behavior as the default; async control is opt-in.
+  - Verified with `PYTHONDONTWRITEBYTECODE=1 python -m unittest script.test_real_zed_inference_actions`.
+  - Verified syntax with `PYTHONDONTWRITEBYTECODE=1 python -m py_compile script/real_zed_inference/real_dp3_inference.py script/test_real_zed_inference_actions.py`.
+  - Verified shell wrappers with `bash -n policy/DP3/real_infer_baseline.sh policy/DP3/real_infer_semantic_pointwise_hybrid.sh`.
+  - Verified CLI visibility with `python script/real_zed_inference/real_dp3_inference.py --help | rg -n "async_control|async_control_hz|async_control_max_idle_repeats|async_control_replace_buffer|max_executed_joint_delta_change"`.
+  - Verified whitespace with `git diff --check`.

@@ -1,4 +1,5 @@
 import argparse
+import time
 import unittest
 
 import numpy as np
@@ -111,6 +112,98 @@ class RealZedInferenceActionTest(unittest.TestCase):
         np.testing.assert_allclose(env.commands[-1], action, atol=1e-6)
         np.testing.assert_allclose(returned, action, atol=1e-6)
 
+    def test_async_action_controller_keeps_sending_last_target_when_buffer_empty(self):
+        from script.real_zed_inference.real_dp3_inference import AsyncActionController
+
+        class FakeEnv:
+            def __init__(self):
+                self.commands = []
+
+            def step(self, action, flag):
+                self.commands.append(np.asarray(action, dtype=np.float32).copy())
+                return {"joint_positions": np.asarray(action, dtype=np.float32).copy()}
+
+        env = FakeEnv()
+        args = argparse.Namespace(
+            execute=True,
+            async_control_hz=50.0,
+            async_control_max_idle_repeats=100,
+            max_steps=20,
+            max_executed_joint_delta=0.05,
+            max_executed_gripper_delta=0.05,
+            max_executed_joint_delta_change=0.01,
+            max_executed_gripper_delta_change=0.01,
+            execution_substeps=1,
+            execution_substep_sleep_sec=0.0,
+            disable_action_delta_safety=False,
+            max_action_delta=0.35,
+            interpolate_first_action=False,
+            disable_xyz_safety=True,
+            profile_timing=False,
+            action_diagnostics_csv="",
+        )
+        controller = AsyncActionController(
+            env=env,
+            args=args,
+            initial_action=np.zeros(14, dtype=np.float32),
+        )
+        controller.start()
+        controller.submit_actions([np.ones(14, dtype=np.float32) * 0.2])
+        time.sleep(0.09)
+        controller.stop()
+
+        self.assertGreaterEqual(len(env.commands), 3)
+        unique_commands = {tuple(np.round(command, 5)) for command in env.commands}
+        self.assertGreaterEqual(len(unique_commands), 2)
+        np.testing.assert_allclose(env.commands[0], np.ones(14, dtype=np.float32) * 0.01, atol=1e-6)
+
+    def test_async_action_controller_consumes_submitted_actions_in_order(self):
+        from script.real_zed_inference.real_dp3_inference import AsyncActionController
+
+        class FakeEnv:
+            def __init__(self):
+                self.commands = []
+
+            def step(self, action, flag):
+                self.commands.append(np.asarray(action, dtype=np.float32).copy())
+                return {"joint_positions": np.asarray(action, dtype=np.float32).copy()}
+
+        env = FakeEnv()
+        args = argparse.Namespace(
+            execute=True,
+            async_control_hz=100.0,
+            async_control_max_idle_repeats=0,
+            max_steps=10,
+            max_executed_joint_delta=0.5,
+            max_executed_gripper_delta=0.5,
+            max_executed_joint_delta_change=0.0,
+            max_executed_gripper_delta_change=0.0,
+            execution_substeps=1,
+            execution_substep_sleep_sec=0.0,
+            disable_action_delta_safety=True,
+            max_action_delta=0.35,
+            interpolate_first_action=False,
+            disable_xyz_safety=True,
+            profile_timing=False,
+            action_diagnostics_csv="",
+        )
+        controller = AsyncActionController(
+            env=env,
+            args=args,
+            initial_action=np.zeros(14, dtype=np.float32),
+        )
+        controller.start()
+        controller.submit_actions([
+            np.ones(14, dtype=np.float32) * 0.1,
+            np.ones(14, dtype=np.float32) * 0.2,
+        ])
+        controller.wait_until_steps(2, timeout_sec=1.0)
+        controller.stop()
+
+        self.assertGreaterEqual(len(env.commands), 2)
+        np.testing.assert_allclose(env.commands[0], np.ones(14, dtype=np.float32) * 0.1, atol=1e-6)
+        np.testing.assert_allclose(env.commands[1], np.ones(14, dtype=np.float32) * 0.2, atol=1e-6)
+
 
 class RealZedInferencePointcloudTest(unittest.TestCase):
     def test_camera_frame_to_output_pc_filters_workspace_before_output_transform(self):
@@ -163,6 +256,8 @@ class RealZedInferencePointcloudTest(unittest.TestCase):
         self.assertEqual(args.servo_j_gain, 300)
         self.assertAlmostEqual(args.max_executed_joint_delta_change, 0.0)
         self.assertAlmostEqual(args.max_executed_gripper_delta_change, 0.0)
+        self.assertFalse(args.async_control)
+        self.assertAlmostEqual(args.async_control_hz, 0.0)
 
     def test_configure_robot_servo_params_calls_robot_env(self):
         from script.real_zed_inference.real_dp3_inference import configure_robot_servo_params

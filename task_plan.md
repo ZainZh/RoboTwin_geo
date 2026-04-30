@@ -145,6 +145,7 @@ SAM2 streaming tracking migration for real objpc training/eval data
 - [x] Move the default smoothing path down to Dobot `ServoJ(t, gain)` through the xtrainer ZMQ robot server.
 - [x] Add execution-side delta-change limiting to reduce acceleration-like jumps between consecutive commands.
 - [x] Add action diagnostics for policy delta, commanded delta, commanded delta change, and observed execution delta.
+- [x] Add optional async action-buffer control thread so robot ServoJ commands continue while SAM2/DP3 inference is running.
 - [x] Verify with unit tests, syntax checks, shell checks, and CLI help visibility.
 - [ ] Tune the smoothing parameters on real hardware.
 - **Status:** complete with hardware tuning pending

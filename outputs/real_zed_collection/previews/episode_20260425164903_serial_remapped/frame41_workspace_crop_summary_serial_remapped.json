@@ -1,0 +1,53 @@
+{
+  "raw_label_to_calibration_label": {
+    "global": "right",
+    "left": "global",
+    "right": "left"
+  },
+  "global": {
+    "calibration_label": "right",
+    "raw_serial": 38968158,
+    "per_camera_ply": "/home/zheng/github/RoboTwin_geo/outputs/real_zed_collection/previews/episode_20260425164903_serial_remapped/frame41_workspace_crop_raw-global_calib-right.ply",
+    "rgb_crop": "/home/zheng/github/RoboTwin_geo/outputs/real_zed_collection/previews/episode_20260425164903_serial_remapped/frame41_raw-global_calib-right_workspace_crop_rgb.png",
+    "crop_box_xyxy": [
+      392,
+      350,
+      1920,
+      1080
+    ],
+    "pc_crop_points_before_resample": 109180
+  },
+  "left": {
+    "calibration_label": "global",
+    "raw_serial": 31021548,
+    "per_camera_ply": "/home/zheng/github/RoboTwin_geo/outputs/real_zed_collection/previews/episode_20260425164903_serial_remapped/frame41_workspace_crop_raw-left_calib-global.ply",
+    "rgb_crop": "/home/zheng/github/RoboTwin_geo/outputs/real_zed_collection/previews/episode_20260425164903_serial_remapped/frame41_raw-left_calib-global_workspace_crop_rgb.png",
+    "crop_box_xyxy": [
+      451,
+      14,
+      1656,
+      1080
+    ],
+    "pc_crop_points_before_resample": 166419
+  },
+  "right": {
+    "calibration_label": "left",
+    "raw_serial": 37856216,
+    "per_camera_ply": "/home/zheng/github/RoboTwin_geo/outputs/real_zed_collection/previews/episode_20260425164903_serial_remapped/frame41_workspace_crop_raw-right_calib-left.ply",
+    "rgb_crop": "/home/zheng/github/RoboTwin_geo/outputs/real_zed_collection/previews/episode_20260425164903_serial_remapped/frame41_raw-right_calib-left_workspace_crop_rgb.png",
+    "crop_box_xyxy": [
+      314,
+      219,
+      1723,
+      1080
+    ],
+    "pc_crop_points_before_resample": 506182
+  },
+  "camera_color_legend": {
+    "raw global": "red",
+    "raw left": "green",
+    "raw right": "blue"
+  },
+  "merged_ply": "/home/zheng/github/RoboTwin_geo/outputs/real_zed_collection/previews/episode_20260425164903_serial_remapped/frame41_workspace_crop_merged_serial_remapped.ply",
+  "camera_colored_ply": "/home/zheng/github/RoboTwin_geo/outputs/real_zed_collection/previews/episode_20260425164903_serial_remapped/frame41_workspace_crop_camera_colored_serial_remapped.ply"
+}

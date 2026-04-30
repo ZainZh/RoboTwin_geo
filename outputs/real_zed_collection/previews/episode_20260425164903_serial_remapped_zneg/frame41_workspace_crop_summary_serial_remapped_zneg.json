@@ -1,0 +1,37 @@
+{
+  "raw_label_to_calibration_label": {
+    "global": "right",
+    "left": "global",
+    "right": "left"
+  },
+  "workspace_bounds": [
+    -0.35,
+    0.35,
+    -0.25,
+    0.45,
+    -0.5,
+    0.0
+  ],
+  "global": {
+    "calibration_label": "right",
+    "pc_crop_points_before_resample": 808028,
+    "per_camera_ply": "/home/zheng/github/RoboTwin_geo/outputs/real_zed_collection/previews/episode_20260425164903_serial_remapped_zneg/frame41_workspace_crop_zneg_raw-global_calib-right.ply"
+  },
+  "left": {
+    "calibration_label": "global",
+    "pc_crop_points_before_resample": 553110,
+    "per_camera_ply": "/home/zheng/github/RoboTwin_geo/outputs/real_zed_collection/previews/episode_20260425164903_serial_remapped_zneg/frame41_workspace_crop_zneg_raw-left_calib-global.ply"
+  },
+  "right": {
+    "calibration_label": "left",
+    "pc_crop_points_before_resample": 394264,
+    "per_camera_ply": "/home/zheng/github/RoboTwin_geo/outputs/real_zed_collection/previews/episode_20260425164903_serial_remapped_zneg/frame41_workspace_crop_zneg_raw-right_calib-left.ply"
+  },
+  "merged_ply": "/home/zheng/github/RoboTwin_geo/outputs/real_zed_collection/previews/episode_20260425164903_serial_remapped_zneg/frame41_workspace_crop_merged_serial_remapped_zneg.ply",
+  "camera_colored_ply": "/home/zheng/github/RoboTwin_geo/outputs/real_zed_collection/previews/episode_20260425164903_serial_remapped_zneg/frame41_workspace_crop_camera_colored_serial_remapped_zneg.ply",
+  "camera_color_legend": {
+    "raw global": "red",
+    "raw left": "green",
+    "raw right": "blue"
+  }
+}
