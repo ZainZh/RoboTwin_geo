@@ -33,6 +33,8 @@ DEFAULT_SEMANTIC_CKPT_A = Path(
         str(Path.home() / "github" / "3d_semantic_train" / "outputs" / "utonia_universal_field" / "Mug_semantic" / "mug.pt"),
     )
 ).expanduser()
+ARM_JOINT_INDICES = np.asarray([0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12], dtype=np.int64)
+GRIPPER_INDICES = np.asarray([6, 13], dtype=np.int64)
 
 def _preprocess_print(*args):
     """Preprocess the input for colorful printing.
@@ -745,14 +747,52 @@ def limit_action_delta_for_execution(
     gripper_limit = float(getattr(args, "max_executed_gripper_delta", 0.0))
 
     if joint_limit > 0.0:
-        arm_indices = np.asarray([0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12], dtype=np.int64)
-        delta = np.clip(out[arm_indices] - last[arm_indices], -joint_limit, joint_limit)
-        out[arm_indices] = last[arm_indices] + delta
+        delta = np.clip(out[ARM_JOINT_INDICES] - last[ARM_JOINT_INDICES], -joint_limit, joint_limit)
+        out[ARM_JOINT_INDICES] = last[ARM_JOINT_INDICES] + delta
 
     if gripper_limit > 0.0:
-        for idx in (6, 13):
+        for idx in GRIPPER_INDICES:
             delta = float(np.clip(float(out[idx] - last[idx]), -gripper_limit, gripper_limit))
             out[idx] = float(last[idx] + delta)
+
+    return clamp_action(out)
+
+
+def limit_action_delta_change_for_execution(
+    action: np.ndarray,
+    last_action: np.ndarray,
+    previous_command_delta: np.ndarray | None,
+    args: argparse.Namespace,
+) -> np.ndarray:
+    out = np.asarray(action, dtype=np.float32).reshape(14).copy()
+    last = np.asarray(last_action, dtype=np.float32).reshape(14)
+    if previous_command_delta is None:
+        prev_delta = np.zeros(14, dtype=np.float32)
+    else:
+        prev_delta = np.asarray(previous_command_delta, dtype=np.float32).reshape(14)
+    joint_change_limit = float(getattr(args, "max_executed_joint_delta_change", 0.0))
+    gripper_change_limit = float(getattr(args, "max_executed_gripper_delta_change", 0.0))
+
+    if joint_change_limit > 0.0:
+        current_delta = out[ARM_JOINT_INDICES] - last[ARM_JOINT_INDICES]
+        delta_change = np.clip(
+            current_delta - prev_delta[ARM_JOINT_INDICES],
+            -joint_change_limit,
+            joint_change_limit,
+        )
+        out[ARM_JOINT_INDICES] = last[ARM_JOINT_INDICES] + prev_delta[ARM_JOINT_INDICES] + delta_change
+
+    if gripper_change_limit > 0.0:
+        for idx in GRIPPER_INDICES:
+            current_delta = float(out[idx] - last[idx])
+            delta_change = float(
+                np.clip(
+                    current_delta - float(prev_delta[idx]),
+                    -gripper_change_limit,
+                    gripper_change_limit,
+                )
+            )
+            out[idx] = float(last[idx] + float(prev_delta[idx]) + delta_change)
 
     return clamp_action(out)
 
@@ -761,9 +801,12 @@ def prepare_action_for_execution(
     action: np.ndarray,
     last_action: np.ndarray,
     args: argparse.Namespace,
+    *,
+    previous_command_delta: np.ndarray | None = None,
 ) -> np.ndarray:
     command = clamp_action(action)
     command = limit_action_delta_for_execution(command, last_action, args)
+    command = limit_action_delta_change_for_execution(command, last_action, previous_command_delta, args)
     return clamp_action(command)
 
 
@@ -786,11 +829,26 @@ def build_execution_substeps(
 def action_delta_summary(action: np.ndarray, last_action: np.ndarray) -> tuple[float, float]:
     current = np.asarray(action, dtype=np.float32).reshape(14)
     last = np.asarray(last_action, dtype=np.float32).reshape(14)
-    arm_indices = np.asarray([0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12], dtype=np.int64)
-    gripper_indices = np.asarray([6, 13], dtype=np.int64)
-    arm_delta = float(np.max(np.abs(current[arm_indices] - last[arm_indices])))
-    gripper_delta = float(np.max(np.abs(current[gripper_indices] - last[gripper_indices])))
+    arm_delta = float(np.max(np.abs(current[ARM_JOINT_INDICES] - last[ARM_JOINT_INDICES])))
+    gripper_delta = float(np.max(np.abs(current[GRIPPER_INDICES] - last[GRIPPER_INDICES])))
     return arm_delta, gripper_delta
+
+
+def action_delta_change_summary(
+    action: np.ndarray,
+    last_action: np.ndarray,
+    previous_command_delta: np.ndarray | None,
+) -> tuple[float, float]:
+    current = np.asarray(action, dtype=np.float32).reshape(14)
+    last = np.asarray(last_action, dtype=np.float32).reshape(14)
+    if previous_command_delta is None:
+        prev_delta = np.zeros(14, dtype=np.float32)
+    else:
+        prev_delta = np.asarray(previous_command_delta, dtype=np.float32).reshape(14)
+    current_delta = current - last
+    arm_delta_change = float(np.max(np.abs(current_delta[ARM_JOINT_INDICES] - prev_delta[ARM_JOINT_INDICES])))
+    gripper_delta_change = float(np.max(np.abs(current_delta[GRIPPER_INDICES] - prev_delta[GRIPPER_INDICES])))
+    return arm_delta_change, gripper_delta_change
 
 
 def build_action_diagnostic_row(
@@ -800,12 +858,18 @@ def build_action_diagnostic_row(
     command_action: np.ndarray,
     observed_after_step: np.ndarray,
     action_before_step: np.ndarray,
+    previous_command_delta: np.ndarray | None = None,
     target_period_sec: float,
     step_elapsed_sec: float,
 ) -> dict[str, float | int | bool]:
     policy_arm_delta, policy_gripper_delta = action_delta_summary(raw_policy_action, action_before_step)
     command_arm_delta, command_gripper_delta = action_delta_summary(command_action, action_before_step)
     observed_arm_delta, observed_gripper_delta = action_delta_summary(observed_after_step, action_before_step)
+    command_arm_delta_change, command_gripper_delta_change = action_delta_change_summary(
+        command_action,
+        action_before_step,
+        previous_command_delta,
+    )
     follow_error_arm, follow_error_gripper = action_delta_summary(observed_after_step, command_action)
     target_period_sec = float(target_period_sec)
     step_elapsed_sec = float(step_elapsed_sec)
@@ -817,6 +881,8 @@ def build_action_diagnostic_row(
         "policy_gripper_delta": policy_gripper_delta,
         "command_gripper_delta": command_gripper_delta,
         "observed_gripper_delta": observed_gripper_delta,
+        "command_arm_delta_change": command_arm_delta_change,
+        "command_gripper_delta_change": command_gripper_delta_change,
         "command_follow_error_arm": follow_error_arm,
         "command_follow_error_gripper": follow_error_gripper,
         "target_period_sec": target_period_sec,
@@ -868,8 +934,14 @@ def execute_action(
     last_action: np.ndarray,
     args: argparse.Namespace,
     first_action: bool,
+    previous_command_delta: np.ndarray | None = None,
 ) -> np.ndarray:
-    action = prepare_action_for_execution(action, last_action, args)
+    action = prepare_action_for_execution(
+        action,
+        last_action,
+        args,
+        previous_command_delta=previous_command_delta,
+    )
     maybe_check_action_safety(action, last_action, args, first_action=first_action)
     maybe_check_xyz_safety(env, args)
     flag = np.asarray([1, 1], dtype=np.float32)
@@ -939,6 +1011,7 @@ def run_real_inference(args: argparse.Namespace) -> None:
 
         action_step = 0
         first_action = True
+        previous_command_delta = np.zeros(14, dtype=np.float32)
         rate_sec = 0.0 if float(args.control_hz) <= 0 else 1.0 / float(args.control_hz)
         if str(args.action_diagnostics_csv).strip():
             diagnostics_path = resolve_path(args.action_diagnostics_csv)
@@ -993,8 +1066,18 @@ def run_real_inference(args: argparse.Namespace) -> None:
                 step_wall_start = time.perf_counter()
                 last_action_before_step = last_action.copy()
                 pred_arm_delta, pred_gripper_delta = action_delta_summary(action, last_action_before_step)
-                command_action = prepare_action_for_execution(action, last_action_before_step, args)
+                command_action = prepare_action_for_execution(
+                    action,
+                    last_action_before_step,
+                    args,
+                    previous_command_delta=previous_command_delta,
+                )
                 cmd_arm_delta, cmd_gripper_delta = action_delta_summary(command_action, last_action_before_step)
+                cmd_arm_delta_change, cmd_gripper_delta_change = action_delta_change_summary(
+                    command_action,
+                    last_action_before_step,
+                    previous_command_delta,
+                )
                 with profile_section(step_timings, "execute", bool(args.profile_timing)):
                     last_action = execute_action(
                         env=env,
@@ -1002,7 +1085,8 @@ def run_real_inference(args: argparse.Namespace) -> None:
                         last_action=last_action_before_step,
                         args=args,
                         first_action=first_action,
-                )
+                        previous_command_delta=previous_command_delta,
+                    )
                 exec_arm_delta, exec_gripper_delta = action_delta_summary(last_action, last_action_before_step)
                 first_action = False
                 action_step += 1
@@ -1013,9 +1097,11 @@ def run_real_inference(args: argparse.Namespace) -> None:
                     command_action=command_action,
                     observed_after_step=last_action,
                     action_before_step=last_action_before_step,
+                    previous_command_delta=previous_command_delta,
                     target_period_sec=rate_sec,
                     step_elapsed_sec=step_elapsed_for_diag,
                 )
+                previous_command_delta = command_action - last_action_before_step
                 if action_diagnostic_file is not None:
                     if action_diagnostic_writer is None:
                         action_diagnostic_writer = csv.DictWriter(action_diagnostic_file, fieldnames=list(diagnostic_row.keys()))
@@ -1025,8 +1111,10 @@ def run_real_inference(args: argparse.Namespace) -> None:
                 print(
                     f"[STEP {action_step:04d}] "
                     f"left_gripper={last_action[6]:.3f} right_gripper={last_action[13]:.3f} "
-                    f"pred_arm_delta={pred_arm_delta:.4f} cmd_arm_delta={cmd_arm_delta:.4f} exec_arm_delta={exec_arm_delta:.4f} "
-                    f"pred_gripper_delta={pred_gripper_delta:.3f} cmd_gripper_delta={cmd_gripper_delta:.3f} exec_gripper_delta={exec_gripper_delta:.3f} "
+                    f"pred_arm_delta={pred_arm_delta:.4f} cmd_arm_delta={cmd_arm_delta:.4f} "
+                    f"cmd_arm_delta_change={cmd_arm_delta_change:.4f} exec_arm_delta={exec_arm_delta:.4f} "
+                    f"pred_gripper_delta={pred_gripper_delta:.3f} cmd_gripper_delta={cmd_gripper_delta:.3f} "
+                    f"cmd_gripper_delta_change={cmd_gripper_delta_change:.3f} exec_gripper_delta={exec_gripper_delta:.3f} "
                     f"execute={bool(args.execute)}"
                 )
 
@@ -1181,6 +1269,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--max_executed_joint_delta", type=float, default=0.12)
     parser.add_argument("--max_executed_gripper_delta", type=float, default=0.2)
+    parser.add_argument(
+        "--max_executed_joint_delta_change",
+        type=float,
+        default=0.0,
+        help="Limit per-step change of executed arm-joint delta; 0 disables acceleration-style limiting.",
+    )
+    parser.add_argument(
+        "--max_executed_gripper_delta_change",
+        type=float,
+        default=0.0,
+        help="Limit per-step change of executed gripper delta; 0 disables acceleration-style limiting.",
+    )
     parser.add_argument("--max_action_delta", type=float, default=0.35)
     parser.add_argument("--disable_action_delta_safety", action="store_true")
     parser.add_argument("--disable_xyz_safety", action="store_true")
