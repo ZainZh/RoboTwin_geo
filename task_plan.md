@@ -132,6 +132,8 @@ SAM2 streaming tracking migration for real objpc training/eval data
 - [x] Add SAM2 input downscale control so tracking does not require 1080p frames.
 - [x] Add a standalone real-time SAM2 object point-cloud preview script for hardware-side unit testing.
 - [x] Add single-object, headless FPS, and larger Open3D preview controls.
+- [x] Add object-only preview mode that skips dense full-scene point-cloud construction by default.
+- [x] Add shared per-camera worker parallelism for preview object reconstruction, real scene construction, and online SAM2 object extraction.
 - [x] Verify with unit tests, syntax checks, and CLI visibility.
 - [ ] Run on real ZED/robot hardware and inspect `--profile_timing`.
 - **Status:** complete with hardware timing pending

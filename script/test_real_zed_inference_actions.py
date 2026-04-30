@@ -64,6 +64,13 @@ class RealZedInferencePointcloudTest(unittest.TestCase):
         np.testing.assert_allclose(point_cloud[0, :3], np.array([10.0, 0.0, 1.0], dtype=np.float32))
         np.testing.assert_allclose(point_cloud[0, 3:6], np.array([1.0, 0.0, 0.0], dtype=np.float32))
 
+    def test_real_inference_parser_supports_parallel_camera_workers(self):
+        from script.real_zed_inference.real_dp3_inference import build_arg_parser
+
+        args = build_arg_parser().parse_args(["--parallel_camera_workers", "3"])
+
+        self.assertEqual(args.parallel_camera_workers, 3)
+
 
 if __name__ == "__main__":
     unittest.main()

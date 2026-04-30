@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -42,6 +43,7 @@ from sam2_pointcloud_utils import (  # noqa: E402
     build_sam2_tracker_factory,
     fast_merge_object_point_clouds,
     load_sam2_bbox_prompt_file,
+    run_camera_tasks_parallel,
 )
 
 
@@ -58,10 +60,12 @@ class TimingRecorder:
     def __init__(self, *, enabled: bool = False) -> None:
         self.enabled = bool(enabled)
         self.timings: dict[str, float] = {}
+        self._lock = threading.Lock()
 
     def add(self, name: str, seconds: float) -> None:
         if self.enabled:
-            self.timings[str(name)] = self.timings.get(str(name), 0.0) + float(seconds)
+            with self._lock:
+                self.timings[str(name)] = self.timings.get(str(name), 0.0) + float(seconds)
 
     def format(self) -> str:
         return format_timings(self.timings)
@@ -190,14 +194,19 @@ def workspace_bounds_array(bounds: WorkspaceBounds | None) -> np.ndarray | None:
     )
 
 
-def build_preview_observation(*, args: argparse.Namespace, live, timer: TimingRecorder) -> tuple[dict[str, Any], np.ndarray]:
+def build_preview_observation(
+    *,
+    args: argparse.Namespace,
+    live,
+    timer: TimingRecorder,
+    build_scene: bool = True,
+) -> tuple[dict[str, Any], np.ndarray]:
     with timed_stage(timer, "snapshot_frames"):
         frames_by_label = snapshot_frames(live)
-    scene_chunks: list[np.ndarray] = []
     camera_obs: dict[str, dict[str, Any]] = {}
     bounds_arr = workspace_bounds_array(live.workspace_bounds)
 
-    for label in live.labels:
+    def build_camera(label: str):
         with timed_stage(timer, f"build_obs.{label}"):
             calib = live.calibrations[live.label_to_calib[label]]
             frame = frames_by_label[label]
@@ -207,11 +216,12 @@ def build_preview_observation(*, args: argparse.Namespace, live, timer: TimingRe
                 camera_matrix = np.asarray(frame.get("camera_matrix", calib.camera_matrix), dtype=np.float32).reshape(3, 3)
                 t_output_from_cam = np.asarray(live.t_output_from_cam_by_label[label], dtype=np.float32).reshape(4, 4)
                 t_workspace_from_cam = np.asarray(live.t_workspace_from_cam_by_label[label], dtype=np.float32).reshape(4, 4)
-            with timed_stage(timer, f"build_obs.{label}.depth_to_pc"):
-                frame_for_pc = dict(frame)
-                frame_for_pc["rgb"] = rgb_aligned
-                scene_chunks.append(
-                    camera_frame_to_output_pc(
+            scene_chunk = None
+            if bool(build_scene):
+                with timed_stage(timer, f"build_obs.{label}.depth_to_pc"):
+                    frame_for_pc = dict(frame)
+                    frame_for_pc["rgb"] = rgb_aligned
+                    scene_chunk = camera_frame_to_output_pc(
                         camera_frame=frame_for_pc,
                         camera_matrix=camera_matrix,
                         t_workspace_from_cam=t_workspace_from_cam,
@@ -220,20 +230,35 @@ def build_preview_observation(*, args: argparse.Namespace, live, timer: TimingRe
                         min_depth_m=float(args.min_depth_m),
                         max_depth_m=float(args.max_depth_m),
                     )
-                )
-            camera_obs[label] = {
+            return label, {
                 "rgb": rgb_aligned.astype(np.uint8),
                 "depth": depth_m.astype(np.float32),
                 "intrinsic_cv": camera_matrix.astype(np.float32),
                 "cam2world_gl": t_output_from_cam.astype(np.float32),
                 "t_workspace_from_cam": t_workspace_from_cam.astype(np.float32),
                 "workspace_bounds_m": bounds_arr,
-            }
+            }, scene_chunk
 
-    with timed_stage(timer, "build_obs.merge_scene"):
-        dense_scene = merge_point_clouds(scene_chunks)
-    with timed_stage(timer, "build_obs.resample_scene"):
-        scene_point_cloud = deterministic_resample(dense_scene, int(args.scene_point_num))
+    results = run_camera_tasks_parallel(
+        live.labels,
+        build_camera,
+        max_workers=int(getattr(args, "parallel_camera_workers", 0)),
+    )
+    scene_chunks: list[np.ndarray] = []
+    for label in live.labels:
+        _label, camera_info, scene_chunk = results[str(label)]
+        camera_obs[str(_label)] = camera_info
+        if scene_chunk is not None:
+            scene_chunks.append(scene_chunk)
+
+    if bool(build_scene):
+        with timed_stage(timer, "build_obs.merge_scene"):
+            dense_scene = merge_point_clouds(scene_chunks)
+        with timed_stage(timer, "build_obs.resample_scene"):
+            scene_point_cloud = deterministic_resample(dense_scene, int(args.scene_point_num))
+    else:
+        dense_scene = np.zeros((0, 6), dtype=np.float32)
+        scene_point_cloud = np.zeros((int(args.scene_point_num), 6), dtype=np.float32)
     observation = {
         "joint_action": {"vector": np.zeros(14, dtype=np.float32)},
         "pointcloud": scene_point_cloud.astype(np.float32),
@@ -284,9 +309,11 @@ def extract_preview_object_pointclouds_sam2(
     max_depth_m: float,
     interactive_init: bool,
     object_resample_mode: str,
+    parallel_camera_workers: int | None,
     timer: TimingRecorder,
 ) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
     placeholder_list = [str(item) for item in placeholders]
+    camera_name_list = [str(item) for item in camera_names]
     empty_clouds = {
         placeholder: np.zeros((int(target_num_points), 6), dtype=np.float32)
         for placeholder in placeholder_list
@@ -294,34 +321,49 @@ def extract_preview_object_pointclouds_sam2(
     selected_by_placeholder: dict[str, list[np.ndarray]] = {placeholder: [] for placeholder in placeholder_list}
     camera_meta: dict[str, Any] = {}
     camera_obs = observation.get("observation", {}) if isinstance(observation, Mapping) else {}
-    active_camera_count = 0
 
-    for camera_name in camera_names:
+    if bool(interactive_init):
+        for camera_name in camera_name_list:
+            state = tracking_state_by_camera.get(camera_name)
+            if state is not None and state.initialized:
+                continue
+            boxes = dict(bbox_prompts_by_camera.get(camera_name, {}))
+            if boxes:
+                continue
+            camera_info = camera_obs.get(camera_name)
+            if camera_info is None:
+                continue
+            image = np.asarray(camera_info.get("rgb"), dtype=np.uint8)
+            if image.ndim != 3:
+                continue
+            with timed_stage(timer, f"sam2.{camera_name}.resize_for_prompt"):
+                tracker_image = _resize_keep_aspect(image, int(sam2_image_width))
+            bbox_prompts_by_camera[camera_name] = interactive_boxes_for_camera(camera_name, placeholder_list, tracker_image)
+
+    state_lock = threading.Lock()
+
+    def process_camera(camera_name: str):
         camera_key = str(camera_name)
+        selected: dict[str, list[np.ndarray]] = {placeholder: [] for placeholder in placeholder_list}
         camera_info = camera_obs.get(camera_key)
         if camera_info is None:
-            camera_meta[camera_key] = {"mode": "missing_camera"}
-            continue
+            return camera_key, selected, {"mode": "missing_camera"}, False
         image = np.asarray(camera_info.get("rgb"), dtype=np.uint8)
         if image.ndim != 3:
-            camera_meta[camera_key] = {"mode": "missing_rgb"}
-            continue
+            return camera_key, selected, {"mode": "missing_rgb"}, False
         with timed_stage(timer, f"sam2.{camera_key}.resize"):
             tracker_image = _resize_keep_aspect(image, int(sam2_image_width))
 
-        state = tracking_state_by_camera.setdefault(camera_key, Sam2CameraTrackingState())
+        with state_lock:
+            state = tracking_state_by_camera.setdefault(camera_key, Sam2CameraTrackingState())
         if state.tracker is None:
             with timed_stage(timer, f"sam2.{camera_key}.create_tracker"):
                 state.tracker = tracker_factory(camera_key)
         if not state.initialized:
             boxes = dict(bbox_prompts_by_camera.get(camera_key, {}))
-            if not boxes and bool(interactive_init):
-                boxes = interactive_boxes_for_camera(camera_key, placeholder_list, tracker_image)
-                bbox_prompts_by_camera[camera_key] = boxes
             missing = [placeholder for placeholder in placeholder_list if placeholder not in boxes]
             if missing:
-                camera_meta[camera_key] = {"mode": "missing_bbox_prompts", "missing_placeholders": missing}
-                continue
+                return camera_key, selected, {"mode": "missing_bbox_prompts", "missing_placeholders": missing}, False
             boxes = {
                 placeholder: _scale_prompt_spec_to_image(prompt_spec, tracker_image.shape[:2])
                 for placeholder, prompt_spec in boxes.items()
@@ -351,12 +393,26 @@ def extract_preview_object_pointclouds_sam2(
                     min_depth_m=float(min_depth_m),
                     max_depth_m=float(max_depth_m),
                     min_points=int(min_mask_points),
-                )
+            )
             if points is not None:
-                selected_by_placeholder[placeholder].append(points)
+                selected[placeholder].append(points)
                 camera_selected = True
             per_placeholder_meta[placeholder] = meta
-        camera_meta[camera_key] = {"mode": mode, "placeholders": per_placeholder_meta}
+        return camera_key, selected, {"mode": mode, "placeholders": per_placeholder_meta}, camera_selected
+
+    active_camera_count = 0
+    camera_results = run_camera_tasks_parallel(
+        camera_name_list,
+        process_camera,
+        max_workers=parallel_camera_workers,
+    )
+    for camera_name in camera_name_list:
+        if camera_name not in camera_results:
+            continue
+        camera_key, selected, meta, camera_selected = camera_results[camera_name]
+        camera_meta[camera_key] = meta
+        for placeholder, clouds in selected.items():
+            selected_by_placeholder[placeholder].extend(clouds)
         if camera_selected:
             active_camera_count += 1
 
@@ -494,6 +550,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--scene_preview_num", type=int, default=4096)
     parser.add_argument("--min_depth_m", type=float, default=0.05)
     parser.add_argument("--max_depth_m", type=float, default=3.0)
+    parser.add_argument(
+        "--object_only",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Skip dense full-scene point-cloud construction unless --show_scene is also set.",
+    )
+    parser.add_argument(
+        "--parallel_camera_workers",
+        type=int,
+        default=0,
+        help="Per-camera worker count; <=0 uses one worker per active camera, 1 disables parallelism.",
+    )
 
     parser.add_argument("--workspace_crop_enabled", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--workspace_crop_x_min", type=float, default=-0.35)
@@ -546,6 +614,7 @@ def run_preview(args: argparse.Namespace) -> None:
     print(f"[INFO] workspace_crop_enabled={bool(args.workspace_crop_enabled)}")
     print(f"[INFO] sam2_image_width={int(args.sam2_image_width)} zed_resolution={args.zed_resolution}")
     print(f"[INFO] online_object_resample={args.online_object_resample}")
+    print(f"[INFO] object_only={bool(args.object_only)} parallel_camera_workers={int(args.parallel_camera_workers)}")
     print(f"[INFO] open3d_enabled={not bool(args.no_open3d)}")
     if args.robot_camera_calibration_path:
         print(f"[INFO] robot_camera_calibration_path={args.robot_camera_calibration_path}")
@@ -567,7 +636,13 @@ def run_preview(args: argparse.Namespace) -> None:
         while int(args.max_frames) < 0 or frame_idx < int(args.max_frames):
             loop_start = time.perf_counter()
             timer = TimingRecorder(enabled=bool(args.profile_timing))
-            observation, dense_scene = build_preview_observation(args=args, live=live, timer=timer)
+            build_scene = bool(args.show_scene) or not bool(args.object_only)
+            observation, dense_scene = build_preview_observation(
+                args=args,
+                live=live,
+                timer=timer,
+                build_scene=build_scene,
+            )
             with timed_stage(timer, "sam2_object_pc.total"):
                 object_pointcloud, _meta = extract_preview_object_pointclouds_sam2(
                     observation,
@@ -583,6 +658,7 @@ def run_preview(args: argparse.Namespace) -> None:
                     max_depth_m=float(args.max_depth_m),
                     interactive_init=bool(args.sam2_interactive_init),
                     object_resample_mode=str(args.online_object_resample),
+                    parallel_camera_workers=int(args.parallel_camera_workers),
                     timer=timer,
                 )
             with timed_stage(timer, "prepare_clouds"):

@@ -1,4 +1,5 @@
 import json
+import time
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +14,7 @@ from sam2_pointcloud_utils import (
     extract_placeholder_point_clouds_sam2_online,
     fast_merge_object_point_clouds,
     load_sam2_bbox_prompt_file,
+    run_camera_tasks_parallel,
 )
 
 
@@ -40,6 +42,11 @@ class FakeSam2Tracker:
         masks["{A}"][1, 2] = True
         masks["{B}"][2, 1] = True
         return masks
+
+
+class RaisesOnArray:
+    def __array__(self, dtype=None):
+        raise AssertionError("scene pointcloud should not be read when depth lifting is available")
 
 
 class Sam2PointcloudUtilsTest(unittest.TestCase):
@@ -70,6 +77,18 @@ class Sam2PointcloudUtilsTest(unittest.TestCase):
         self.assertEqual(merged.shape, (8, 6))
         np.testing.assert_allclose(merged[0], cloud_a[0, :6])
         np.testing.assert_allclose(merged[-1], cloud_b[-1, :6])
+
+    def test_run_camera_tasks_parallel_executes_independent_camera_tasks_concurrently(self):
+        def worker(camera_name):
+            time.sleep(0.05)
+            return f"{camera_name}-done"
+
+        start = time.perf_counter()
+        results = run_camera_tasks_parallel(["global", "left", "right"], worker, max_workers=3)
+        elapsed = time.perf_counter() - start
+
+        self.assertEqual(results, {"global": "global-done", "left": "left-done", "right": "right-done"})
+        self.assertLess(elapsed, 0.12)
 
     def _observation(self):
         pointcloud = np.array(
@@ -172,6 +191,35 @@ class Sam2PointcloudUtilsTest(unittest.TestCase):
         np.testing.assert_allclose(clouds["{B}"], np.zeros((1, 6), dtype=np.float32))
         self.assertEqual(meta["cameras"]["global"]["placeholders"]["{A}"]["mode"], "mask_depth_lifted")
         self.assertEqual(meta["cameras"]["global"]["placeholders"]["{B}"]["mode"], "too_few_mask_depth_points")
+
+    def test_sam2_online_does_not_touch_scene_pointcloud_when_depth_lifting_is_available(self):
+        tracker = FakeSam2Tracker()
+        depth = np.ones((4, 4), dtype=np.float32)
+        rgb = np.zeros((4, 4, 3), dtype=np.uint8)
+
+        clouds, meta = extract_placeholder_point_clouds_sam2_online(
+            {
+                "pointcloud": RaisesOnArray(),
+                "observation": {
+                    "global": {
+                        "rgb": rgb,
+                        "depth": depth,
+                        "intrinsic_cv": np.eye(3, dtype=np.float32),
+                        "cam2world_gl": np.eye(4, dtype=np.float32),
+                    }
+                },
+            },
+            placeholders=["{A}"],
+            camera_names=["global"],
+            tracker_factory=lambda _camera: tracker,
+            tracking_state_by_camera={},
+            bbox_prompts_by_camera={"global": {"{A}": [0, 0, 2, 2]}},
+            target_num_points=1,
+            min_mask_points=1,
+        )
+
+        self.assertEqual(clouds["{A}"].shape, (1, 6))
+        self.assertEqual(meta["cameras"]["global"]["placeholders"]["{A}"]["mode"], "mask_depth_lifted")
 
     def test_load_sam2_bbox_prompt_file_filters_cameras_and_placeholders(self):
         with tempfile.TemporaryDirectory() as tmp:

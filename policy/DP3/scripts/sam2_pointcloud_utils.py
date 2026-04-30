@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -296,6 +298,36 @@ def fast_merge_object_point_clouds(point_clouds: Sequence[np.ndarray], target_nu
     return fast_resample_point_cloud(merged, int(target_num_points))
 
 
+def _resolve_camera_workers(camera_names: Sequence[str], max_workers: int | None = None) -> int:
+    count = len([str(item) for item in camera_names])
+    if count <= 1:
+        return 1
+    if max_workers is None or int(max_workers) <= 0:
+        return count
+    return max(1, min(int(max_workers), count))
+
+
+def run_camera_tasks_parallel(
+    camera_names: Sequence[str],
+    worker: Callable[[str], object],
+    *,
+    max_workers: int | None = None,
+) -> Dict[str, object]:
+    names = [str(item) for item in camera_names]
+    if not names:
+        return {}
+    worker_count = _resolve_camera_workers(names, max_workers=max_workers)
+    if worker_count <= 1:
+        return {name: worker(name) for name in names}
+    results: Dict[str, object] = {}
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        future_to_name = {executor.submit(worker, name): name for name in names}
+        for future in as_completed(future_to_name):
+            name = future_to_name[future]
+            results[name] = future.result()
+    return {name: results[name] for name in names if name in results}
+
+
 def _select_depth_points_by_mask(
     *,
     mask: np.ndarray,
@@ -554,10 +586,10 @@ def extract_placeholder_point_clouds_sam2_online(
     min_depth_m: float = 0.05,
     max_depth_m: float = 3.0,
     object_resample_mode: str = "fps",
+    parallel_camera_workers: int | None = None,
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, object]]:
-    scene_pc = ensure_point_cloud_channels(observation.get("pointcloud", np.zeros((0, 6), dtype=np.float32)), channels=6)
-    scene_pc = strip_zero_points(scene_pc)
     placeholder_list = [str(item) for item in placeholders]
+    camera_name_list = [str(item) for item in camera_names]
     empty_clouds = {
         placeholder: np.zeros((int(target_num_points), 6), dtype=np.float32)
         for placeholder in placeholder_list
@@ -566,41 +598,79 @@ def extract_placeholder_point_clouds_sam2_online(
     camera_obs = observation.get("observation", {})
     selected_by_placeholder: Dict[str, List[np.ndarray]] = {placeholder: [] for placeholder in placeholder_list}
     camera_meta: Dict[str, Dict[str, object]] = {}
-    bbox_prompts_by_camera = bbox_prompts_by_camera or {}
-    active_camera_count = 0
+    if bbox_prompts_by_camera is None:
+        bbox_prompts_mutable: Dict[str, Dict[str, object]] = {}
+    elif isinstance(bbox_prompts_by_camera, dict):
+        bbox_prompts_mutable = bbox_prompts_by_camera
+    else:
+        bbox_prompts_mutable = {
+            str(camera): dict(prompts)
+            for camera, prompts in bbox_prompts_by_camera.items()
+        }
 
-    for camera_name in camera_names:
-        camera_info = camera_obs.get(camera_name)
+    if bool(interactive_init):
+        for camera_name in camera_name_list:
+            camera_info = camera_obs.get(camera_name)
+            if camera_info is None:
+                continue
+            state = tracking_state_by_camera.get(camera_name)
+            if state is not None and state.initialized:
+                continue
+            boxes = dict(bbox_prompts_mutable.get(camera_name, {}))
+            if boxes:
+                continue
+            image = _decode_rgb(camera_info.get("rgb"))
+            if image is None:
+                continue
+            tracker_image = _resize_keep_aspect(image, int(sam2_image_width))
+            bbox_prompts_mutable[camera_name] = _interactive_boxes_for_camera(
+                camera_name=camera_name,
+                placeholders=placeholder_list,
+                image=tracker_image,
+            )
+
+    state_lock = threading.Lock()
+    scene_lock = threading.Lock()
+    scene_pc_cache: np.ndarray | None = None
+
+    def get_scene_pc() -> np.ndarray:
+        nonlocal scene_pc_cache
+        if scene_pc_cache is not None:
+            return scene_pc_cache
+        with scene_lock:
+            if scene_pc_cache is None:
+                scene_pc = ensure_point_cloud_channels(
+                    observation.get("pointcloud", np.zeros((0, 6), dtype=np.float32)),
+                    channels=6,
+                )
+                scene_pc_cache = strip_zero_points(scene_pc)
+        return scene_pc_cache
+
+    def process_camera(camera_name: str) -> Tuple[str, Dict[str, List[np.ndarray]], Dict[str, object], bool]:
+        camera_key = str(camera_name)
+        selected: Dict[str, List[np.ndarray]] = {placeholder: [] for placeholder in placeholder_list}
+        camera_info = camera_obs.get(camera_key)
         if camera_info is None:
-            camera_meta[str(camera_name)] = {"mode": "missing_camera"}
-            continue
+            return camera_key, selected, {"mode": "missing_camera"}, False
         image = _decode_rgb(camera_info.get("rgb"))
         intrinsic_cv = camera_info.get("intrinsic_cv")
         extrinsic_cv = camera_info.get("extrinsic_cv")
         if image is None or intrinsic_cv is None:
-            camera_meta[str(camera_name)] = {"mode": "missing_camera_data"}
-            continue
+            return camera_key, selected, {"mode": "missing_camera_data"}, False
         tracker_image = _resize_keep_aspect(image, int(sam2_image_width))
 
-        state = tracking_state_by_camera.setdefault(str(camera_name), Sam2CameraTrackingState())
+        with state_lock:
+            state = tracking_state_by_camera.setdefault(camera_key, Sam2CameraTrackingState())
         if state.tracker is None:
-            state.tracker = tracker_factory(str(camera_name))
+            state.tracker = tracker_factory(camera_key)
         if not state.initialized:
-            boxes = dict(bbox_prompts_by_camera.get(str(camera_name), {}))
-            if not boxes and bool(interactive_init):
-                boxes = _interactive_boxes_for_camera(
-                    camera_name=str(camera_name),
-                    placeholders=placeholder_list,
-                    image=tracker_image,
-                )
-                bbox_prompts_by_camera[str(camera_name)] = boxes
+            boxes = dict(bbox_prompts_mutable.get(camera_key, {}))
             missing_boxes = [placeholder for placeholder in placeholder_list if placeholder not in boxes]
             if missing_boxes:
-                camera_meta[str(camera_name)] = {
+                return camera_key, selected, {
                     "mode": "missing_bbox_prompts",
                     "missing_placeholders": missing_boxes,
-                }
-                continue
+                }, False
             boxes = {
                 placeholder: _scale_prompt_spec_to_image(prompt_spec, tracker_image.shape[:2])
                 for placeholder, prompt_spec in boxes.items()
@@ -632,27 +702,48 @@ def extract_placeholder_point_clouds_sam2_online(
                     max_depth_m=float(max_depth_m),
                     min_points=int(min_mask_points),
                 )
-            elif len(scene_pc) > 0 and extrinsic_cv is not None:
-                points, meta = _select_scene_points_by_mask(
-                    scene_point_cloud=scene_pc,
-                    mask=mask,
-                    intrinsic_cv=intrinsic_cv,
-                    extrinsic_cv=extrinsic_cv,
-                    min_points=int(min_mask_points),
-                )
+            elif extrinsic_cv is not None:
+                scene_pc = get_scene_pc()
+                if len(scene_pc) > 0:
+                    points, meta = _select_scene_points_by_mask(
+                        scene_point_cloud=scene_pc,
+                        mask=mask,
+                        intrinsic_cv=intrinsic_cv,
+                        extrinsic_cv=extrinsic_cv,
+                        min_points=int(min_mask_points),
+                    )
+                else:
+                    points, meta = None, {
+                        "mode": "missing_depth_and_scene_projection_data",
+                        "mask_pixels": int(mask.sum()),
+                    }
             else:
                 points, meta = None, {
                     "mode": "missing_depth_and_scene_projection_data",
                     "mask_pixels": int(mask.sum()),
                 }
             if points is not None:
-                selected_by_placeholder[placeholder].append(points)
+                selected[placeholder].append(points)
                 camera_selected = True
             per_placeholder_meta[placeholder] = meta
-        camera_meta[str(camera_name)] = {
+        return camera_key, selected, {
             "mode": mode,
             "placeholders": per_placeholder_meta,
-        }
+        }, camera_selected
+
+    active_camera_count = 0
+    camera_results = run_camera_tasks_parallel(
+        camera_name_list,
+        process_camera,
+        max_workers=parallel_camera_workers,
+    )
+    for camera_name in camera_name_list:
+        if camera_name not in camera_results:
+            continue
+        camera_key, selected, meta, camera_selected = camera_results[camera_name]
+        camera_meta[camera_key] = meta
+        for placeholder, clouds in selected.items():
+            selected_by_placeholder[placeholder].extend(clouds)
         if camera_selected:
             active_camera_count += 1
 
@@ -683,5 +774,6 @@ __all__ = [
     "fast_resample_point_cloud",
     "load_sam2_bbox_prompt_file",
     "parse_camera_list",
+    "run_camera_tasks_parallel",
     "select_bbox_for_image",
 ]

@@ -691,6 +691,9 @@
   - Open3D zoom-out can appear broken when only a small object point cloud is rendered because the legacy visualizer clamps zoom around the current geometry bounding box. The preview now adds a workspace LineSet by default through `--show_workspace_box`, which acts as a view anchor and gives the mouse wheel a larger zoom range.
   - The preview script now has fine-grained `--profile_timing` output for `snapshot_frames`, per-camera RGB/depth alignment, per-camera depth-to-scene-pointcloud, scene merge/resample, per-camera SAM2 resize/create/initialize/track, per-camera/per-placeholder depth lift, object merge/resample, Open3D update, RGB preview, and total loop time.
   - The preview timing showed online object merge dominated stable frames because `merge_object_point_clouds` used farthest point sampling. Online SAM2 object point clouds now expose `--online_object_resample fast|fps`, defaulting to `fast` for real preview/inference while leaving offline training preprocess behavior unchanged.
+  - After `fast` object sampling, the next stable-frame bottlenecks were serial per-camera SAM2 tracking and full-scene depth-to-pointcloud construction. The preview now defaults to `--object_only`, so it skips dense full-scene construction unless `--show_scene` or `--no-object_only` is set.
+  - The online SAM2 extractor no longer reads `observation["pointcloud"]` when per-camera `depth + cam2world_gl` are available. Dense scene point clouds are only materialized for the legacy scene-projection fallback.
+  - Per-camera work now uses a shared worker helper: `--parallel_camera_workers 0` means one worker per active camera, `1` forces serial execution, and positive values cap the worker count. This applies to preview object reconstruction, real DP3 scene construction, and online SAM2 object extraction.
 
 ---
 *Update this file after every 2 view/browser/search operations.*
