@@ -146,6 +146,43 @@ class RealZedInferencePointcloudTest(unittest.TestCase):
 
         self.assertEqual(env.calls, [(0.08, 250)])
 
+    def test_action_diagnostics_reports_policy_command_and_observed_deltas(self):
+        from script.real_zed_inference.real_dp3_inference import build_action_diagnostic_row
+
+        before = np.zeros(14, dtype=np.float32)
+        raw_policy = np.zeros(14, dtype=np.float32)
+        raw_policy[0] = 0.30
+        raw_policy[6] = 0.50
+        command = np.zeros(14, dtype=np.float32)
+        command[0] = 0.12
+        command[6] = 0.20
+        observed = np.zeros(14, dtype=np.float32)
+        observed[0] = 0.08
+        observed[6] = 0.18
+
+        row = build_action_diagnostic_row(
+            step=7,
+            raw_policy_action=raw_policy,
+            command_action=command,
+            observed_after_step=observed,
+            action_before_step=before,
+            target_period_sec=0.2,
+            step_elapsed_sec=0.15,
+        )
+
+        self.assertEqual(row["step"], 7)
+        self.assertAlmostEqual(row["policy_arm_delta"], 0.30, places=6)
+        self.assertAlmostEqual(row["command_arm_delta"], 0.12, places=6)
+        self.assertAlmostEqual(row["observed_arm_delta"], 0.08, places=6)
+        self.assertAlmostEqual(row["policy_gripper_delta"], 0.50, places=6)
+        self.assertAlmostEqual(row["command_gripper_delta"], 0.20, places=6)
+        self.assertAlmostEqual(row["observed_gripper_delta"], 0.18, places=6)
+        self.assertAlmostEqual(row["command_follow_error_arm"], 0.04, places=6)
+        self.assertAlmostEqual(row["command_follow_error_gripper"], 0.02, places=6)
+        self.assertAlmostEqual(row["target_period_sec"], 0.2, places=6)
+        self.assertAlmostEqual(row["step_elapsed_sec"], 0.15, places=6)
+        self.assertFalse(row["control_overrun"])
+
 
 if __name__ == "__main__":
     unittest.main()

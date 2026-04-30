@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import os
 import sys
 import threading
@@ -756,6 +757,16 @@ def limit_action_delta_for_execution(
     return clamp_action(out)
 
 
+def prepare_action_for_execution(
+    action: np.ndarray,
+    last_action: np.ndarray,
+    args: argparse.Namespace,
+) -> np.ndarray:
+    command = clamp_action(action)
+    command = limit_action_delta_for_execution(command, last_action, args)
+    return clamp_action(command)
+
+
 def build_execution_substeps(
     last_action: np.ndarray,
     target_action: np.ndarray,
@@ -780,6 +791,38 @@ def action_delta_summary(action: np.ndarray, last_action: np.ndarray) -> tuple[f
     arm_delta = float(np.max(np.abs(current[arm_indices] - last[arm_indices])))
     gripper_delta = float(np.max(np.abs(current[gripper_indices] - last[gripper_indices])))
     return arm_delta, gripper_delta
+
+
+def build_action_diagnostic_row(
+    *,
+    step: int,
+    raw_policy_action: np.ndarray,
+    command_action: np.ndarray,
+    observed_after_step: np.ndarray,
+    action_before_step: np.ndarray,
+    target_period_sec: float,
+    step_elapsed_sec: float,
+) -> dict[str, float | int | bool]:
+    policy_arm_delta, policy_gripper_delta = action_delta_summary(raw_policy_action, action_before_step)
+    command_arm_delta, command_gripper_delta = action_delta_summary(command_action, action_before_step)
+    observed_arm_delta, observed_gripper_delta = action_delta_summary(observed_after_step, action_before_step)
+    follow_error_arm, follow_error_gripper = action_delta_summary(observed_after_step, command_action)
+    target_period_sec = float(target_period_sec)
+    step_elapsed_sec = float(step_elapsed_sec)
+    return {
+        "step": int(step),
+        "policy_arm_delta": policy_arm_delta,
+        "command_arm_delta": command_arm_delta,
+        "observed_arm_delta": observed_arm_delta,
+        "policy_gripper_delta": policy_gripper_delta,
+        "command_gripper_delta": command_gripper_delta,
+        "observed_gripper_delta": observed_gripper_delta,
+        "command_follow_error_arm": follow_error_arm,
+        "command_follow_error_gripper": follow_error_gripper,
+        "target_period_sec": target_period_sec,
+        "step_elapsed_sec": step_elapsed_sec,
+        "control_overrun": bool(target_period_sec > 0.0 and step_elapsed_sec > target_period_sec),
+    }
 
 
 def maybe_check_action_safety(action: np.ndarray, last_action: np.ndarray, args: argparse.Namespace, *, first_action: bool) -> None:
@@ -826,8 +869,7 @@ def execute_action(
     args: argparse.Namespace,
     first_action: bool,
 ) -> np.ndarray:
-    action = clamp_action(action)
-    action = limit_action_delta_for_execution(action, last_action, args)
+    action = prepare_action_for_execution(action, last_action, args)
     maybe_check_action_safety(action, last_action, args, first_action=first_action)
     maybe_check_xyz_safety(env, args)
     flag = np.asarray([1, 1], dtype=np.float32)
@@ -869,6 +911,8 @@ def run_real_inference(args: argparse.Namespace) -> None:
     print("[INFO] Starting ZED cameras ...")
     live = start_zed_cameras(args)
     env = None
+    action_diagnostic_file = None
+    action_diagnostic_writer = None
     try:
         print("[INFO] Initializing robot interface ...")
         env = build_robot_env(args)
@@ -896,6 +940,11 @@ def run_real_inference(args: argparse.Namespace) -> None:
         action_step = 0
         first_action = True
         rate_sec = 0.0 if float(args.control_hz) <= 0 else 1.0 / float(args.control_hz)
+        if str(args.action_diagnostics_csv).strip():
+            diagnostics_path = resolve_path(args.action_diagnostics_csv)
+            diagnostics_path.parent.mkdir(parents=True, exist_ok=True)
+            action_diagnostic_file = diagnostics_path.open("w", newline="", encoding="utf-8")
+            print(f"[INFO] Writing action diagnostics CSV: {diagnostics_path}")
         while action_step < int(args.max_steps):
             chunk_timings: dict[str, float] = {}
             with profile_section(chunk_timings, "robot_obs_pre", bool(args.profile_timing)):
@@ -944,6 +993,8 @@ def run_real_inference(args: argparse.Namespace) -> None:
                 step_wall_start = time.perf_counter()
                 last_action_before_step = last_action.copy()
                 pred_arm_delta, pred_gripper_delta = action_delta_summary(action, last_action_before_step)
+                command_action = prepare_action_for_execution(action, last_action_before_step, args)
+                cmd_arm_delta, cmd_gripper_delta = action_delta_summary(command_action, last_action_before_step)
                 with profile_section(step_timings, "execute", bool(args.profile_timing)):
                     last_action = execute_action(
                         env=env,
@@ -951,15 +1002,31 @@ def run_real_inference(args: argparse.Namespace) -> None:
                         last_action=last_action_before_step,
                         args=args,
                         first_action=first_action,
-                    )
+                )
                 exec_arm_delta, exec_gripper_delta = action_delta_summary(last_action, last_action_before_step)
                 first_action = False
                 action_step += 1
+                step_elapsed_for_diag = time.perf_counter() - step_wall_start
+                diagnostic_row = build_action_diagnostic_row(
+                    step=action_step,
+                    raw_policy_action=action,
+                    command_action=command_action,
+                    observed_after_step=last_action,
+                    action_before_step=last_action_before_step,
+                    target_period_sec=rate_sec,
+                    step_elapsed_sec=step_elapsed_for_diag,
+                )
+                if action_diagnostic_file is not None:
+                    if action_diagnostic_writer is None:
+                        action_diagnostic_writer = csv.DictWriter(action_diagnostic_file, fieldnames=list(diagnostic_row.keys()))
+                        action_diagnostic_writer.writeheader()
+                    action_diagnostic_writer.writerow(diagnostic_row)
+                    action_diagnostic_file.flush()
                 print(
                     f"[STEP {action_step:04d}] "
                     f"left_gripper={last_action[6]:.3f} right_gripper={last_action[13]:.3f} "
-                    f"pred_arm_delta={pred_arm_delta:.4f} exec_arm_delta={exec_arm_delta:.4f} "
-                    f"pred_gripper_delta={pred_gripper_delta:.3f} exec_gripper_delta={exec_gripper_delta:.3f} "
+                    f"pred_arm_delta={pred_arm_delta:.4f} cmd_arm_delta={cmd_arm_delta:.4f} exec_arm_delta={exec_arm_delta:.4f} "
+                    f"pred_gripper_delta={pred_gripper_delta:.3f} cmd_gripper_delta={cmd_gripper_delta:.3f} exec_gripper_delta={exec_gripper_delta:.3f} "
                     f"execute={bool(args.execute)}"
                 )
 
@@ -1004,6 +1071,8 @@ def run_real_inference(args: argparse.Namespace) -> None:
                             f"target_period={rate_sec * 1000.0:.1f}ms overrun={overrun * 1000.0:.1f}ms",
                         )
     finally:
+        if action_diagnostic_file is not None:
+            action_diagnostic_file.close()
         live.stop()
         if bool(args.show_img):
             cv2.destroyAllWindows()
@@ -1119,6 +1188,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reobserve_each_action", action="store_true")
     parser.add_argument("--profile_timing", action="store_true")
     parser.add_argument("--profile_timing_interval", type=int, default=1)
+    parser.add_argument(
+        "--action_diagnostics_csv",
+        default="",
+        help="Optional CSV path for policy-vs-command-vs-observed action delta diagnostics.",
+    )
     return parser
 
 
