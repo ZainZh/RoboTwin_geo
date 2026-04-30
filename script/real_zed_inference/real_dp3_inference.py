@@ -664,6 +664,29 @@ def build_robot_env(args: argparse.Namespace):
     return env
 
 
+def configure_robot_servo_params(env, args: argparse.Namespace):
+    if env is None:
+        return None
+    servo_j_t = float(getattr(args, "servo_j_t", 0.0))
+    servo_j_gain = int(getattr(args, "servo_j_gain", 0))
+    if servo_j_t <= 0.0 and servo_j_gain <= 0:
+        return None
+    kwargs = {
+        "servo_j_t": servo_j_t if servo_j_t > 0.0 else None,
+        "servo_j_gain": servo_j_gain if servo_j_gain > 0 else None,
+    }
+    try:
+        result = env.set_servo_params(**kwargs)
+    except Exception as exc:
+        raise RuntimeError(
+            "Failed to set Dobot ServoJ parameters through the robot server. "
+            "Restart the xtrainer ZMQ robot server after updating RoboTwin_geo, "
+            "or pass --servo_j_t 0 --servo_j_gain 0 to skip this controller-level setting."
+        ) from exc
+    print(f"[INFO] Dobot ServoJ params set: {result}")
+    return result
+
+
 def interpolate_robot(env, start: np.ndarray, target: np.ndarray, *, max_step: float, flag: np.ndarray) -> None:
     max_delta = float(np.max(np.abs(target - start))) if start.size and target.size else 0.0
     steps = max(1, min(int(max_delta / max(float(max_step), 1e-6)), 150))
@@ -733,6 +756,22 @@ def limit_action_delta_for_execution(
     return clamp_action(out)
 
 
+def build_execution_substeps(
+    last_action: np.ndarray,
+    target_action: np.ndarray,
+    args: argparse.Namespace,
+) -> list[np.ndarray]:
+    start = np.asarray(last_action, dtype=np.float32).reshape(14)
+    target = np.asarray(target_action, dtype=np.float32).reshape(14)
+    substeps = int(getattr(args, "execution_substeps", 1))
+    if substeps <= 1:
+        return [clamp_action(target)]
+    return [
+        clamp_action(start + (target - start) * (float(i) / float(substeps)))
+        for i in range(1, substeps + 1)
+    ]
+
+
 def action_delta_summary(action: np.ndarray, last_action: np.ndarray) -> tuple[float, float]:
     current = np.asarray(action, dtype=np.float32).reshape(14)
     last = np.asarray(last_action, dtype=np.float32).reshape(14)
@@ -795,7 +834,17 @@ def execute_action(
     if env is not None and bool(args.execute):
         if first_action and bool(args.interpolate_first_action):
             interpolate_robot(env, last_action, action, max_step=float(args.first_action_interp_step), flag=flag)
-        obs = env.step(action.astype(np.float32), flag)
+            substeps = [action]
+        else:
+            substeps = build_execution_substeps(last_action, action, args)
+        obs = None
+        sleep_sec = max(0.0, float(getattr(args, "execution_substep_sleep_sec", 0.0)))
+        for idx, substep in enumerate(substeps):
+            obs = env.step(substep.astype(np.float32), flag)
+            if sleep_sec > 0.0 and idx < len(substeps) - 1:
+                time.sleep(sleep_sec)
+        if obs is None:
+            obs = {"joint_positions": action.astype(np.float32)}
         joints = np.asarray(obs["joint_positions"], dtype=np.float32).reshape(14)
         joints[6] = action[6]
         joints[13] = action[13]
@@ -823,6 +872,7 @@ def run_real_inference(args: argparse.Namespace) -> None:
     try:
         print("[INFO] Initializing robot interface ...")
         env = build_robot_env(args)
+        configure_robot_servo_params(env, args)
         if env is not None and bool(args.execute) and not bool(args.skip_robot_reset):
             last_action = reset_robot_to_photo_pose(env)
         elif env is not None:
@@ -1036,6 +1086,30 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--initial_right_gripper", type=float, default=1.0)
     parser.add_argument("--interpolate_first_action", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--first_action_interp_step", type=float, default=0.001)
+    parser.add_argument(
+        "--execution_substeps",
+        type=int,
+        default=1,
+        help="Split each executed policy action into this many smaller robot commands; 1 restores old behavior.",
+    )
+    parser.add_argument(
+        "--execution_substep_sleep_sec",
+        type=float,
+        default=0.0,
+        help="Sleep between execution substeps to reduce start/stop jerk.",
+    )
+    parser.add_argument(
+        "--servo_j_t",
+        type=float,
+        default=0.06,
+        help="Dobot ServoJ trajectory time parameter. Use 0 to leave the robot-server default unchanged.",
+    )
+    parser.add_argument(
+        "--servo_j_gain",
+        type=int,
+        default=300,
+        help="Dobot ServoJ gain parameter. Use 0 to leave the robot-server default unchanged.",
+    )
     parser.add_argument("--max_executed_joint_delta", type=float, default=0.12)
     parser.add_argument("--max_executed_gripper_delta", type=float, default=0.2)
     parser.add_argument("--max_action_delta", type=float, default=0.35)

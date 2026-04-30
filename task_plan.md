@@ -138,6 +138,15 @@ SAM2 streaming tracking migration for real objpc training/eval data
 - [ ] Run on real ZED/robot hardware and inspect `--profile_timing`.
 - **Status:** complete with hardware timing pending
 
+### Phase 17: Real Robot Execution Smoothing
+- [x] Diagnose why real inference can feel abrupt even after action delta limiting.
+- [x] Add execution-side action substeps so each policy action is sent as several smaller robot commands.
+- [x] Expose CLI controls for substep count and inter-substep sleep.
+- [x] Move the default smoothing path down to Dobot `ServoJ(t, gain)` through the xtrainer ZMQ robot server.
+- [x] Verify with unit tests, syntax checks, shell checks, and CLI help visibility.
+- [ ] Tune the smoothing parameters on real hardware.
+- **Status:** complete with hardware tuning pending
+
 ## Decisions Made
 
 | Decision | Rationale |

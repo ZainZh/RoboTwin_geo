@@ -1144,3 +1144,26 @@
   - Verified with `python -m unittest test_sam2_pointcloud_utils` from `policy/DP3/scripts`.
   - Verified with `python -m unittest script.test_real_sam2_object_pointcloud_preview script.test_real_zed_inference_actions`.
   - Verified syntax with `python -m py_compile policy/DP3/scripts/sam2_pointcloud_utils.py script/real_zed_inference/preview_sam2_object_pointcloud.py script/real_zed_inference/real_dp3_inference.py script/test_real_sam2_object_pointcloud_preview.py script/test_real_zed_inference_actions.py`.
+
+### Phase 37: Real Robot Execution Smoothing
+- **Status:** complete with hardware tuning pending
+- Actions taken:
+  - Added RED tests for action substep interpolation, `execute_action(...)` sending multiple robot commands, and parser defaults.
+  - Added `build_execution_substeps(...)` to split each clipped target action into smaller joint/gripper commands.
+  - Updated `execute_action(...)` so non-initial executed policy actions are sent through substeps before returning the final commanded joints.
+  - Added CLI controls `--execution_substeps` and `--execution_substep_sleep_sec`, defaulting to `3` and `0.02`.
+  - Verified with `python -m unittest script.test_real_zed_inference_actions`.
+  - Verified syntax with `python -m py_compile script/real_zed_inference/real_dp3_inference.py script/test_real_zed_inference_actions.py`.
+  - Verified shell syntax with `bash -n policy/DP3/real_infer_baseline.sh policy/DP3/real_infer_semantic_pointwise_hybrid.sh`.
+  - Verified CLI visibility with `python script/real_zed_inference/real_dp3_inference.py --help`.
+
+### Phase 38: Dobot ServoJ Controller-Level Smoothing
+- **Status:** complete with hardware restart/tuning pending
+- Actions taken:
+  - Added RED tests for `DobotApiMove.ServoJ(..., gain=...)`, `DobotRobot.command_joint_state(...)` using configured `servo_j_t/gain`, `DobotRobot.set_servo_params(...)` validation, and real inference startup parameter forwarding.
+  - Updated `include/xtrainer_clover/dobot_control/robots/dobot_api.py` so `ServoJ` accepts a configurable `gain`.
+  - Updated `include/xtrainer_clover/dobot_control/robots/dobot.py` so `DobotRobot` stores `servo_j_t/gain`, validates them, and passes them into `ServoJ`.
+  - Added `set_servo_params` through `RobotEnv`, `BimanualRobot`, `ZMQServerRobot`, and `ZMQClientRobot`.
+  - Updated real DP3 inference to call `configure_robot_servo_params(...)` after connecting to the robot server, with defaults `--servo_j_t 0.06 --servo_j_gain 300`.
+  - Changed client-side execution substep defaults back to `--execution_substeps 1 --execution_substep_sleep_sec 0.0`, leaving substeps as an explicit fallback rather than the default smoothing mechanism.
+  - Added a 3s timeout to the ZMQ `set_servo_params` request so an old, non-restarted robot server fails with a clear restart message instead of hanging indefinitely.

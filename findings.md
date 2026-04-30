@@ -666,6 +666,11 @@
   - The `Action delta safety stop` is triggered by a large joint-space action jump between consecutive commands, not by the camera pipeline.
   - Before the fix, only the first action was interpolated; later DP3 actions were sent directly via `env.step(action)`.
   - Real inference now clips the actually executed arm-joint delta and gripper delta before safety checking, keeping `--max_action_delta` as a hard stop rather than the mechanism for smoothing.
+  - Delta clipping limits how far one command can jump, but it does not remove jerk if a clipped target is sent as a single `env.step`. Real inference now splits each executed action into `--execution_substeps` smaller commands and sleeps `--execution_substep_sleep_sec` between them.
+  - The smoothing happens after policy output and before robot execution, so it does not change DP3 inference, observation encoding, action chunking, or checkpoint compatibility. `--execution_substeps 1` restores the old single-command behavior.
+  - The lower-level control path is `RobotEnv.step -> ZMQClientRobot.command_joint_state -> ZMQServerRobot -> DobotRobot.command_joint_state -> Dobot ServoJ`. `DobotRobot.command_joint_state` previously hard-coded `ServoJ(..., t=0.03, gain=500)`.
+  - The preferred smoothing path now sets Dobot controller-level `ServoJ` parameters once at inference startup through ZMQ. Real inference defaults to `--servo_j_t 0.06 --servo_j_gain 300 --execution_substeps 1`, so the controller handles slower dynamic following instead of client-side multi-step interpolation.
+  - Because `set_servo_params` is served by the robot ZMQ server process, the robot server must be restarted after pulling these code changes. If not restarted, the client-side call can time out and the inference script will report that the server needs restart.
 - SAM2 path portability finding:
   - The control-machine traceback came from resolving `include/SAM2_streaming` through a machine-specific symlink target `/home/zheng/github/SAM2_streaming`.
   - SAM2 root and checkpoint defaults now use `$SAM2_STREAMING_ROOT` / `$SAM2_CHECKPOINT` first, then repository/current-user candidates, instead of hard-coding one workstation username.

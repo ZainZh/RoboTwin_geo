@@ -30,6 +30,53 @@ class RealZedInferenceActionTest(unittest.TestCase):
 
         np.testing.assert_allclose(clipped, action)
 
+    def test_build_execution_substeps_interpolates_after_delta_limit(self):
+        from script.real_zed_inference.real_dp3_inference import build_execution_substeps
+
+        last_action = np.zeros(14, dtype=np.float32)
+        target = np.ones(14, dtype=np.float32) * 0.12
+        args = argparse.Namespace(execution_substeps=3)
+
+        substeps = build_execution_substeps(last_action, target, args)
+
+        self.assertEqual(len(substeps), 3)
+        np.testing.assert_allclose(substeps[0], np.ones(14, dtype=np.float32) * 0.04, atol=1e-6)
+        np.testing.assert_allclose(substeps[1], np.ones(14, dtype=np.float32) * 0.08, atol=1e-6)
+        np.testing.assert_allclose(substeps[2], target, atol=1e-6)
+
+    def test_execute_action_sends_interpolated_substeps_to_robot(self):
+        from script.real_zed_inference.real_dp3_inference import execute_action
+
+        class FakeEnv:
+            def __init__(self):
+                self.commands = []
+
+            def step(self, action, flag):
+                self.commands.append(np.asarray(action, dtype=np.float32).copy())
+                return {"joint_positions": np.asarray(action, dtype=np.float32).copy()}
+
+        env = FakeEnv()
+        last_action = np.zeros(14, dtype=np.float32)
+        action = np.ones(14, dtype=np.float32) * 0.12
+        args = argparse.Namespace(
+            execute=True,
+            max_executed_joint_delta=0.12,
+            max_executed_gripper_delta=0.12,
+            execution_substeps=3,
+            execution_substep_sleep_sec=0.0,
+            disable_action_delta_safety=False,
+            max_action_delta=0.35,
+            interpolate_first_action=False,
+            disable_xyz_safety=True,
+        )
+
+        returned = execute_action(env=env, action=action, last_action=last_action, args=args, first_action=False)
+
+        self.assertEqual(len(env.commands), 3)
+        np.testing.assert_allclose(env.commands[0], np.ones(14, dtype=np.float32) * 0.04, atol=1e-6)
+        np.testing.assert_allclose(env.commands[-1], action, atol=1e-6)
+        np.testing.assert_allclose(returned, action, atol=1e-6)
+
 
 class RealZedInferencePointcloudTest(unittest.TestCase):
     def test_camera_frame_to_output_pc_filters_workspace_before_output_transform(self):
@@ -70,6 +117,34 @@ class RealZedInferencePointcloudTest(unittest.TestCase):
         args = build_arg_parser().parse_args(["--parallel_camera_workers", "3"])
 
         self.assertEqual(args.parallel_camera_workers, 3)
+
+    def test_real_inference_parser_defaults_to_smoothed_execution(self):
+        from script.real_zed_inference.real_dp3_inference import build_arg_parser
+
+        args = build_arg_parser().parse_args([])
+
+        self.assertEqual(args.execution_substeps, 1)
+        self.assertAlmostEqual(args.execution_substep_sleep_sec, 0.0)
+        self.assertAlmostEqual(args.servo_j_t, 0.06)
+        self.assertEqual(args.servo_j_gain, 300)
+
+    def test_configure_robot_servo_params_calls_robot_env(self):
+        from script.real_zed_inference.real_dp3_inference import configure_robot_servo_params
+
+        class FakeEnv:
+            def __init__(self):
+                self.calls = []
+
+            def set_servo_params(self, *, servo_j_t, servo_j_gain):
+                self.calls.append((servo_j_t, servo_j_gain))
+                return {"servo_j_t": servo_j_t, "servo_j_gain": servo_j_gain}
+
+        env = FakeEnv()
+        args = argparse.Namespace(servo_j_t=0.08, servo_j_gain=250)
+
+        configure_robot_servo_params(env, args)
+
+        self.assertEqual(env.calls, [(0.08, 250)])
 
 
 if __name__ == "__main__":
