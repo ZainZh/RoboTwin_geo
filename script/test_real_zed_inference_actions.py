@@ -30,6 +30,38 @@ class RealZedInferenceActionTest(unittest.TestCase):
 
         np.testing.assert_allclose(clipped, action)
 
+    def test_action_delta_change_limit_ramps_command_delta(self):
+        from script.real_zed_inference.real_dp3_inference import prepare_action_for_execution
+
+        last_action = np.zeros(14, dtype=np.float32)
+        action = np.ones(14, dtype=np.float32)
+        previous_delta = np.zeros(14, dtype=np.float32)
+        args = argparse.Namespace(
+            max_executed_joint_delta=0.12,
+            max_executed_gripper_delta=0.2,
+            max_executed_joint_delta_change=0.02,
+            max_executed_gripper_delta_change=0.05,
+        )
+
+        first_command = prepare_action_for_execution(
+            action,
+            last_action,
+            args,
+            previous_command_delta=previous_delta,
+        )
+        second_command = prepare_action_for_execution(
+            action,
+            first_command,
+            args,
+            previous_command_delta=first_command - last_action,
+        )
+
+        arm_indices = [0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12]
+        np.testing.assert_allclose(first_command[arm_indices], np.full((12,), 0.02, dtype=np.float32), atol=1e-6)
+        self.assertAlmostEqual(float(first_command[6]), 0.05, places=6)
+        np.testing.assert_allclose(second_command[arm_indices], np.full((12,), 0.06, dtype=np.float32), atol=1e-6)
+        self.assertAlmostEqual(float(second_command[6]), 0.15, places=6)
+
     def test_build_execution_substeps_interpolates_after_delta_limit(self):
         from script.real_zed_inference.real_dp3_inference import build_execution_substeps
 
@@ -62,6 +94,8 @@ class RealZedInferenceActionTest(unittest.TestCase):
             execute=True,
             max_executed_joint_delta=0.12,
             max_executed_gripper_delta=0.12,
+            max_executed_joint_delta_change=0.0,
+            max_executed_gripper_delta_change=0.0,
             execution_substeps=3,
             execution_substep_sleep_sec=0.0,
             disable_action_delta_safety=False,
@@ -127,6 +161,8 @@ class RealZedInferencePointcloudTest(unittest.TestCase):
         self.assertAlmostEqual(args.execution_substep_sleep_sec, 0.0)
         self.assertAlmostEqual(args.servo_j_t, 0.06)
         self.assertEqual(args.servo_j_gain, 300)
+        self.assertAlmostEqual(args.max_executed_joint_delta_change, 0.0)
+        self.assertAlmostEqual(args.max_executed_gripper_delta_change, 0.0)
 
     def test_configure_robot_servo_params_calls_robot_env(self):
         from script.real_zed_inference.real_dp3_inference import configure_robot_servo_params
@@ -166,6 +202,7 @@ class RealZedInferencePointcloudTest(unittest.TestCase):
             command_action=command,
             observed_after_step=observed,
             action_before_step=before,
+            previous_command_delta=np.zeros(14, dtype=np.float32),
             target_period_sec=0.2,
             step_elapsed_sec=0.15,
         )
@@ -177,6 +214,8 @@ class RealZedInferencePointcloudTest(unittest.TestCase):
         self.assertAlmostEqual(row["policy_gripper_delta"], 0.50, places=6)
         self.assertAlmostEqual(row["command_gripper_delta"], 0.20, places=6)
         self.assertAlmostEqual(row["observed_gripper_delta"], 0.18, places=6)
+        self.assertAlmostEqual(row["command_arm_delta_change"], 0.12, places=6)
+        self.assertAlmostEqual(row["command_gripper_delta_change"], 0.20, places=6)
         self.assertAlmostEqual(row["command_follow_error_arm"], 0.04, places=6)
         self.assertAlmostEqual(row["command_follow_error_gripper"], 0.02, places=6)
         self.assertAlmostEqual(row["target_period_sec"], 0.2, places=6)

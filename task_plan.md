@@ -143,6 +143,8 @@ SAM2 streaming tracking migration for real objpc training/eval data
 - [x] Add execution-side action substeps so each policy action is sent as several smaller robot commands.
 - [x] Expose CLI controls for substep count and inter-substep sleep.
 - [x] Move the default smoothing path down to Dobot `ServoJ(t, gain)` through the xtrainer ZMQ robot server.
+- [x] Add execution-side delta-change limiting to reduce acceleration-like jumps between consecutive commands.
+- [x] Add action diagnostics for policy delta, commanded delta, commanded delta change, and observed execution delta.
 - [x] Verify with unit tests, syntax checks, shell checks, and CLI help visibility.
 - [ ] Tune the smoothing parameters on real hardware.
 - **Status:** complete with hardware tuning pending

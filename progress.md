@@ -1167,3 +1167,17 @@
   - Updated real DP3 inference to call `configure_robot_servo_params(...)` after connecting to the robot server, with defaults `--servo_j_t 0.06 --servo_j_gain 300`.
   - Changed client-side execution substep defaults back to `--execution_substeps 1 --execution_substep_sleep_sec 0.0`, leaving substeps as an explicit fallback rather than the default smoothing mechanism.
   - Added a 3s timeout to the ZMQ `set_servo_params` request so an old, non-restarted robot server fails with a clear restart message instead of hanging indefinitely.
+
+### Phase 39: Real Inference Command Acceleration Limiting
+- **Status:** complete with hardware tuning pending
+- Actions taken:
+  - Interpreted the user's real hardware timing/action logs: raw policy deltas frequently reached `0.08-0.16 rad`, while observed execution deltas were usually smaller than commanded deltas, pointing to abrupt output/chunk targets rather than controller amplification.
+  - Added a RED unit test for `prepare_action_for_execution(..., previous_command_delta=...)` so command delta ramps by `max_executed_*_delta_change` instead of jumping immediately to the velocity cap.
+  - Added `limit_action_delta_change_for_execution(...)` after the existing per-step delta limiter.
+  - Added CLI flags `--max_executed_joint_delta_change` and `--max_executed_gripper_delta_change`, defaulting to `0.0` for backward-compatible disabled behavior.
+  - Threaded `previous_command_delta` through real inference execution and diagnostics so logs/CSV now include `cmd_arm_delta_change` and `cmd_gripper_delta_change`.
+  - Verified with `PYTHONDONTWRITEBYTECODE=1 python -m unittest script.test_real_zed_inference_actions`.
+  - Verified syntax with `PYTHONDONTWRITEBYTECODE=1 python -m py_compile script/real_zed_inference/real_dp3_inference.py script/test_real_zed_inference_actions.py`.
+  - Verified shell wrappers with `bash -n policy/DP3/real_infer_baseline.sh policy/DP3/real_infer_semantic_pointwise_hybrid.sh`.
+  - Verified CLI visibility with `python script/real_zed_inference/real_dp3_inference.py --help | rg -n "max_executed_joint_delta_change|max_executed_gripper_delta_change|reobserve_each_action|action_diagnostics_csv"`.
+  - Verified whitespace with `git diff --check`.
