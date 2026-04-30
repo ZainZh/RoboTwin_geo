@@ -1109,7 +1109,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--zed_depth_mode", default="NEURAL")
     parser.add_argument("--save_rgb_width", type=int, default=0)
     parser.add_argument("--save_rgb_height", type=int, default=0)
-    parser.add_argument("--camera_warmup_timeout_sec", type=float, default=10.0)
+    parser.add_argument("--camera_warmup_timeout_sec", type=float, default=30.0)
     parser.add_argument("--scene_point_num", type=int, default=1024)
     parser.add_argument("--object_point_num", type=int, default=1024)
     parser.add_argument("--min_depth_m", type=float, default=0.05)

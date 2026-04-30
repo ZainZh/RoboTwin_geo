@@ -67,5 +67,13 @@ python script/real_zed_inference/real_dp3_inference.py \
     --enable_sam2_objpc \
     --profile_timing \
     --execute \
+    --control_hz 5 \
+    --servo_j_t 0.10 \
+    --servo_j_gain 200 \
+    --max_executed_joint_delta 0.05 \
+    --max_executed_joint_delta_change 0.01 \
+    --max_executed_gripper_delta 0.05 \
+    --max_executed_gripper_delta_change 0.02 \
+    --action_diagnostics_csv outputs/real_zed_inference/action_diag.csv\
     "${frame_overrides[@]}" \
     "${extra_flags[@]}"

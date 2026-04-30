@@ -441,11 +441,11 @@ def is_within_safe_position(position, x_range, y_range, z_min):
 def check_pose_protection(positions, vel, servo_state):
     protect_err = False
     positions_mm = {key: value * 1000 for key, value in positions.items()}
-    x_range_left = (-450, 290)
-    x_range_right = (-290, 450)
+    x_range_left = (-450, 450)
+    x_range_right = (-450, 450)
     y_range = (-750, -160)
-    z_range_left = 44
-    z_range_right = 42
+    z_range_left = 30
+    z_range_right = 28
 
     if servo_state[0, 1]:
         if vel["left_left"][2] < -1 or vel["left_right"][2] < -1:
