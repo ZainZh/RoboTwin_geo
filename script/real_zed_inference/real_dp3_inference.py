@@ -912,20 +912,33 @@ def maybe_check_xyz_safety(env, args: argparse.Namespace) -> None:
     if pos.shape[0] < 9:
         print(f"[WARN] Cannot run XYZ safety check, expected >=9 values but got {pos.shape}")
         return
+    left_x_min = float(getattr(args, "xyz_left_x_min", -450.0))
+    left_x_max = float(getattr(args, "xyz_left_x_max", 290.0))
+    right_x_min = float(getattr(args, "xyz_right_x_min", -290.0))
+    right_x_max = float(getattr(args, "xyz_right_x_max", 450.0))
+    y_min = float(getattr(args, "xyz_y_min", -750.0))
+    y_max = float(getattr(args, "xyz_y_max", -160.0))
+    left_z_min = float(getattr(args, "xyz_left_z_min", 44.0))
+    right_z_min = float(getattr(args, "xyz_right_z_min", 40.0))
     ok = (
-        (pos[0] > -410)
-        and (pos[0] < 210)
-        and (pos[1] > -700)
-        and (pos[1] < -210)
-        and (pos[2] > 42)
-        and (pos[6] < 410)
-        and (pos[6] > -210)
-        and (pos[7] > -700)
-        and (pos[7] < -210)
-        and (pos[8] > 42)
+        (pos[0] >= left_x_min)
+        and (pos[0] <= left_x_max)
+        and (pos[1] >= y_min)
+        and (pos[1] <= y_max)
+        and (pos[2] > left_z_min)
+        and (pos[6] >= right_x_min)
+        and (pos[6] <= right_x_max)
+        and (pos[7] >= y_min)
+        and (pos[7] <= y_max)
+        and (pos[8] > right_z_min)
     )
     if not ok:
-        raise RuntimeError(f"XYZ safety stop. Current robot XYZrxryrz state: {pos.tolist()}")
+        raise RuntimeError(
+            "XYZ safety stop. "
+            f"Current robot XYZrxryrz state: {pos.tolist()} "
+            f"limits={{left_x:[{left_x_min},{left_x_max}], right_x:[{right_x_min},{right_x_max}], "
+            f"y:[{y_min},{y_max}], left_z>{left_z_min}, right_z>{right_z_min}}}"
+        )
 
 
 def execute_action(
@@ -1549,6 +1562,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max_action_delta", type=float, default=0.35)
     parser.add_argument("--disable_action_delta_safety", action="store_true")
     parser.add_argument("--disable_xyz_safety", action="store_true")
+    parser.add_argument("--xyz_left_x_min", type=float, default=-450.0)
+    parser.add_argument("--xyz_left_x_max", type=float, default=290.0)
+    parser.add_argument("--xyz_right_x_min", type=float, default=-290.0)
+    parser.add_argument("--xyz_right_x_max", type=float, default=450.0)
+    parser.add_argument("--xyz_y_min", type=float, default=-750.0)
+    parser.add_argument("--xyz_y_max", type=float, default=-160.0)
+    parser.add_argument("--xyz_left_z_min", type=float, default=44.0)
+    parser.add_argument("--xyz_right_z_min", type=float, default=40.0)
     parser.add_argument("--show_img", action="store_true")
     parser.add_argument("--reobserve_each_action", action="store_true")
     parser.add_argument("--profile_timing", action="store_true")

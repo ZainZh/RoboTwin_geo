@@ -112,6 +112,67 @@ class RealZedInferenceActionTest(unittest.TestCase):
         np.testing.assert_allclose(env.commands[-1], action, atol=1e-6)
         np.testing.assert_allclose(returned, action, atol=1e-6)
 
+    def test_xyz_safety_uses_wider_run_control_defaults(self):
+        from script.real_zed_inference.real_dp3_inference import maybe_check_xyz_safety
+
+        class FakeEnv:
+            def get_XYZrxryrz_state(self):
+                return np.asarray(
+                    [
+                        -116.45,
+                        -343.10,
+                        216.57,
+                        0.0,
+                        0.0,
+                        0.0,
+                        99.32,
+                        -365.08,
+                        41.61,
+                        0.0,
+                        0.0,
+                        0.0,
+                    ],
+                    dtype=np.float32,
+                )
+
+        args = argparse.Namespace(
+            execute=True,
+            disable_xyz_safety=False,
+            xyz_left_x_min=-450.0,
+            xyz_left_x_max=290.0,
+            xyz_right_x_min=-290.0,
+            xyz_right_x_max=450.0,
+            xyz_y_min=-750.0,
+            xyz_y_max=-160.0,
+            xyz_left_z_min=44.0,
+            xyz_right_z_min=40.0,
+        )
+
+        maybe_check_xyz_safety(FakeEnv(), args)
+
+    def test_xyz_safety_still_rejects_out_of_range_pose(self):
+        from script.real_zed_inference.real_dp3_inference import maybe_check_xyz_safety
+
+        class FakeEnv:
+            def get_XYZrxryrz_state(self):
+                return np.asarray([-500.0, -343.0, 216.0, 0, 0, 0, 99.0, -365.0, 50.0], dtype=np.float32)
+
+        args = argparse.Namespace(
+            execute=True,
+            disable_xyz_safety=False,
+            xyz_left_x_min=-450.0,
+            xyz_left_x_max=290.0,
+            xyz_right_x_min=-290.0,
+            xyz_right_x_max=450.0,
+            xyz_y_min=-750.0,
+            xyz_y_max=-160.0,
+            xyz_left_z_min=44.0,
+            xyz_right_z_min=40.0,
+        )
+
+        with self.assertRaises(RuntimeError):
+            maybe_check_xyz_safety(FakeEnv(), args)
+
     def test_async_action_controller_keeps_sending_last_target_when_buffer_empty(self):
         from script.real_zed_inference.real_dp3_inference import AsyncActionController
 

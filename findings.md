@@ -678,6 +678,8 @@
   - xtrainer `run_inference.py` also uses camera threads plus a main inference/control loop, but its image-only DP/ACT path is light enough that robot commands are not starved for seconds. The same architecture is insufficient for SAM2 + point-cloud + semantic DP3.
   - Real inference now has optional `--async_control`: camera/perception/model inference stays in the main thread, while an `AsyncActionController` thread consumes the latest action chunk at a fixed frequency and repeats the last target when the action buffer is empty. This keeps ServoJ commands alive during slow SAM2/DP3 updates.
   - With async control, `--reobserve_each_action` is ignored because the main thread re-observes once per action-chunk update, while the control thread owns fixed-rate execution.
+  - Real inference XYZ safety previously used the narrower xtrainer `run_inference.py` hard-coded bounds: left x `[-410,210]`, right x `[-210,410]`, y `[-700,-210]`, both z `>42`. The AprilTag calibration path uses `run_control.py::check_pose_protection`, whose workspace is wider: left x `[-450,290]`, right x `[-290,450]`, y `[-750,-160]`, left z `>44`, right z `>42`.
+  - Real inference XYZ safety is now parameterized with CLI flags and defaults to the wider run-control-style bounds, with right z defaulted to `>40mm` to avoid false stops for the current calibrated right-arm low pose around `41.6mm`.
 - SAM2 path portability finding:
   - The control-machine traceback came from resolving `include/SAM2_streaming` through a machine-specific symlink target `/home/zheng/github/SAM2_streaming`.
   - SAM2 root and checkpoint defaults now use `$SAM2_STREAMING_ROOT` / `$SAM2_CHECKPOINT` first, then repository/current-user candidates, instead of hard-coding one workstation username.

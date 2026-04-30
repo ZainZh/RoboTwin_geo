@@ -1196,3 +1196,18 @@
   - Verified shell wrappers with `bash -n policy/DP3/real_infer_baseline.sh policy/DP3/real_infer_semantic_pointwise_hybrid.sh`.
   - Verified CLI visibility with `python script/real_zed_inference/real_dp3_inference.py --help | rg -n "async_control|async_control_hz|async_control_max_idle_repeats|async_control_replace_buffer|max_executed_joint_delta_change"`.
   - Verified whitespace with `git diff --check`.
+
+### Phase 41: Real Inference XYZ Safety Bounds Sync
+- **Status:** complete
+- Actions taken:
+  - Compared real inference XYZ safety against the AprilTag calibration safety path.
+  - Confirmed real inference still used the narrower xtrainer `run_inference.py` hard-coded workspace, while AprilTag calibration uses `run_control.py::check_pose_protection`.
+  - Added RED tests covering the user's stopped pose and an out-of-range pose.
+  - Updated `maybe_check_xyz_safety(...)` to use run-control-style bounds and to include the active limits in the RuntimeError message.
+  - Added CLI flags `--xyz_left_x_min`, `--xyz_left_x_max`, `--xyz_right_x_min`, `--xyz_right_x_max`, `--xyz_y_min`, `--xyz_y_max`, `--xyz_left_z_min`, and `--xyz_right_z_min`.
+  - Set defaults to left x `[-450,290]`, right x `[-290,450]`, y `[-750,-160]`, left z `>44`, right z `>40` for the current rig/test setting.
+  - Verified with `PYTHONDONTWRITEBYTECODE=1 python -m unittest script.test_real_zed_inference_actions`.
+  - Verified syntax with `PYTHONDONTWRITEBYTECODE=1 python -m py_compile script/real_zed_inference/real_dp3_inference.py script/test_real_zed_inference_actions.py`.
+  - Verified shell wrappers with `bash -n policy/DP3/real_infer_baseline.sh policy/DP3/real_infer_semantic_pointwise_hybrid.sh`.
+  - Verified CLI visibility with `python script/real_zed_inference/real_dp3_inference.py --help | rg -n "xyz_left|xyz_right|xyz_y|disable_xyz"`.
+  - Verified whitespace with `git diff --check`.
