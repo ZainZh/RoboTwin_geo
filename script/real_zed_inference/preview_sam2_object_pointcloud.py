@@ -597,8 +597,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--show_img", action="store_true")
     parser.add_argument("--preview_hz", type=float, default=10.0)
     parser.add_argument("--max_frames", type=int, default=-1)
-    parser.add_argument("--print_interval", type=int, default=10)
-    parser.add_argument("--profile_timing", action="store_true")
+    parser.add_argument("--print_interval", type=int, default=2)
+    parser.add_argument("--profile_timing", action="store_true",default=True)
     return parser
 
 
