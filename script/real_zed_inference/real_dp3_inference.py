@@ -1483,7 +1483,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--no_robot", action="store_true")
     parser.add_argument("--skip_robot_reset", action="store_true")
-    parser.add_argument("--max_steps", type=int, default=200)
+    parser.add_argument("--max_steps", type=int, default=2000)
     parser.add_argument("--control_hz", type=float, default=10.0)
     parser.add_argument("--async_control", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument(
