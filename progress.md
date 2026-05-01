@@ -1211,3 +1211,14 @@
   - Verified shell wrappers with `bash -n policy/DP3/real_infer_baseline.sh policy/DP3/real_infer_semantic_pointwise_hybrid.sh`.
   - Verified CLI visibility with `python script/real_zed_inference/real_dp3_inference.py --help | rg -n "xyz_left|xyz_right|xyz_y|disable_xyz"`.
   - Verified whitespace with `git diff --check`.
+
+### Phase 42: Real-ZED Offline Postprocess Calibration Auto-Selection
+- **Status:** complete
+- Actions taken:
+  - Inspected `postprocess_real_zed_sam2_objpc_dataset.py`, `postprocess_raw_to_robotwin_hdf5.py`, real raw episode manifests, and the previously generated `scene_info.json`.
+  - Confirmed the root cause: the SAM2 batch driver defaulted to repo `three_camera_workspace_extrinsics.yaml`, causing `postprocess_episode(...)` to bypass per-episode `calibration_snapshot.yaml`.
+  - Added tests for `resolve_episode_postprocess_settings(...)` so `auto` uses the episode snapshot and only chooses workspace mode when a workspace calibration snapshot exists.
+  - Updated the batch driver defaults to `--calibration_path auto --frame_mode auto`, resolves calibration/frame mode per episode, uses resolved settings for postprocess, and writes resolved settings into output metadata.
+  - Updated the Real-ZED README command to use `auto` calibration/frame mode.
+  - Verified with `python -m unittest script.test_real_zed_collection_pipeline`.
+  - Verified syntax with `python -m py_compile script/real_zed_collection/postprocess/postprocess_real_zed_sam2_objpc_dataset.py script/test_real_zed_collection_pipeline.py`.

@@ -150,6 +150,14 @@ SAM2 streaming tracking migration for real objpc training/eval data
 - [ ] Tune the smoothing parameters on real hardware.
 - **Status:** complete with hardware tuning pending
 
+### Phase 18: Real-ZED Postprocess Calibration Selection
+- [x] Diagnose why offline SAM2 objpc postprocess can produce visibly misaligned fused point clouds.
+- [x] Compare the batch driver calibration defaults against per-episode raw-data manifests.
+- [x] Update the batch driver to prefer collection-time calibration snapshots by default.
+- [x] Preserve explicit calibration override behavior for intentional reprocessing.
+- [x] Verify with targeted unit tests, full real-ZED collection pipeline tests, and syntax checks.
+- **Status:** complete
+
 ## Decisions Made
 
 | Decision | Rationale |

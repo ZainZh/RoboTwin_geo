@@ -754,5 +754,66 @@ class RealZedCollectionPipelineTest(unittest.TestCase):
                     require_per_episode=True,
                 )
 
+    def test_sam2_objpc_batch_auto_calibration_prefers_episode_snapshot(self):
+        from script.real_zed_collection.postprocess.postprocess_real_zed_sam2_objpc_dataset import (
+            resolve_episode_postprocess_settings,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw_episode = root / "raw" / "episode_202604300001"
+            raw_episode.mkdir(parents=True)
+            snapshot = raw_episode / "calibration_snapshot.yaml"
+            snapshot.write_text("type: three_camera_charuco_extrinsics\n", encoding="utf-8")
+            stale_default = root / "repo_default_workspace.yaml"
+            stale_default.write_text("workspace: {}\n", encoding="utf-8")
+            manifest = {
+                "calibration_path": str(stale_default),
+                "calibration_snapshot_path": snapshot.name,
+                "workspace_calibration_path": "",
+                "workspace_calibration_snapshot_path": "",
+            }
+
+            settings = resolve_episode_postprocess_settings(
+                raw_episode_dir=raw_episode,
+                manifest=manifest,
+                calibration_path="auto",
+                frame_mode="auto",
+            )
+
+        self.assertEqual(settings["calibration_path"], str(snapshot.resolve()))
+        self.assertEqual(settings["frame_mode"], "reference_camera")
+
+    def test_sam2_objpc_batch_auto_calibration_prefers_workspace_snapshot_when_available(self):
+        from script.real_zed_collection.postprocess.postprocess_real_zed_sam2_objpc_dataset import (
+            resolve_episode_postprocess_settings,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw_episode = root / "raw" / "episode_202604300001"
+            raw_episode.mkdir(parents=True)
+            snapshot = raw_episode / "calibration_snapshot.yaml"
+            snapshot.write_text("type: three_camera_charuco_extrinsics\n", encoding="utf-8")
+            workspace_snapshot = raw_episode / "workspace_calibration_snapshot.yaml"
+            workspace_snapshot.write_text(
+                "type: three_camera_charuco_extrinsics\nworkspace:\n  bbox_m: {}\n",
+                encoding="utf-8",
+            )
+            manifest = {
+                "calibration_snapshot_path": snapshot.name,
+                "workspace_calibration_snapshot_path": workspace_snapshot.name,
+            }
+
+            settings = resolve_episode_postprocess_settings(
+                raw_episode_dir=raw_episode,
+                manifest=manifest,
+                calibration_path="auto",
+                frame_mode="auto",
+            )
+
+        self.assertEqual(settings["calibration_path"], str(workspace_snapshot.resolve()))
+        self.assertEqual(settings["frame_mode"], "workspace")
+
 if __name__ == "__main__":
     unittest.main()
