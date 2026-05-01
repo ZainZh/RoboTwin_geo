@@ -72,6 +72,9 @@ def camera_label_setting(camera_labels):
 
 
 def zarr_camera_keys_for_labels(camera_labels):
+    if len(camera_labels) == 1:
+        return {str(camera_labels[0]): "head_camera"}
+
     zarr_keys = []
     for idx, label in enumerate(camera_labels):
         zarr_key = RAW_TO_ZARR_CAMERA_KEYS.get(str(label), None)
