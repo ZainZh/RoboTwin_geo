@@ -1289,3 +1289,13 @@
   - Verified with `PYTHONDONTWRITEBYTECODE=1 python -m unittest script.test_real_dp_inference script.test_real_zed_inference_actions`.
   - Verified syntax with `PYTHONDONTWRITEBYTECODE=1 python -m py_compile script/real_zed_inference/real_dp_inference.py script/test_real_dp_inference.py` and `bash -n policy/DP/real_infer.sh policy/DP/scripts/test_real_infer_script_interfaces.sh`.
   - Verified wrapper wiring with `bash policy/DP/scripts/test_real_infer_script_interfaces.sh`, CLI visibility with `python script/real_zed_inference/real_dp_inference.py --help | rg -n "dp_camera_map|async_control|max_executed_joint_delta_change|ckpt_path|camera_labels"`, and whitespace with `git diff --check`.
+
+### Phase 50: Optional-Camera Real-ZED Collection
+- **Status:** complete with hardware run pending
+- Actions taken:
+  - Added RED tests proving `_resolve_cameras(...)` should accept a single camera label from calibration, accept two explicit camera labels/serials without calibration, and reject serial-count mismatch without calibration.
+  - Updated `script/real_zed_collection/collect_zed_robotwin_raw.py` so `_resolve_cameras(...)` accepts any non-empty camera-label list instead of exactly three labels.
+  - If a calibration path is available and the configured serial list length does not match the requested label subset, the script now resolves serials from calibration by label. This covers the common case where the config still has three serials but the CLI overrides `--camera_labels left`.
+  - Updated the argparse description from three-ZED-specific wording to generic ZED collection wording.
+  - Verified with `PYTHONDONTWRITEBYTECODE=1 python -m unittest script.test_real_zed_collection_pipeline`.
+  - Verified syntax with `PYTHONDONTWRITEBYTECODE=1 python -m py_compile script/real_zed_collection/collect_zed_robotwin_raw.py script/test_real_zed_collection_pipeline.py`.

@@ -2,6 +2,7 @@ import json
 import importlib.util
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -16,6 +17,42 @@ class RealZedCollectionPipelineTest(unittest.TestCase):
 
         self.assertEqual(parse_camera_labels("global,ego,side"), ["global", "ego", "side"])
         self.assertEqual(parse_camera_labels(["global", "ego", "side"]), ["global", "ego", "side"])
+
+    def test_collect_resolve_cameras_allows_single_camera_subset_from_calibration(self):
+        from script.real_zed_collection import collect_zed_robotwin_raw as collect_module
+
+        fake_calib = {
+            "global": types.SimpleNamespace(serial_number=111),
+            "left": types.SimpleNamespace(serial_number=222),
+            "right": types.SimpleNamespace(serial_number=333),
+        }
+        args = collect_module.Args(
+            camera_labels="left",
+            zed_serials=[111, 222, 333],
+            calibration_path="/tmp/fake_calibration.yaml",
+        )
+
+        with mock.patch.object(collect_module, "load_three_zed_calibration", return_value=fake_calib):
+            labels, serials = collect_module._resolve_cameras(args)
+
+        self.assertEqual(labels, ["left"])
+        self.assertEqual(serials, [222])
+
+    def test_collect_resolve_cameras_allows_two_explicit_cameras_without_calibration(self):
+        from script.real_zed_collection.collect_zed_robotwin_raw import Args, _resolve_cameras
+
+        labels, serials = _resolve_cameras(
+            Args(camera_labels="global,right", zed_serials=[111, 333], calibration_path="")
+        )
+
+        self.assertEqual(labels, ["global", "right"])
+        self.assertEqual(serials, [111, 333])
+
+    def test_collect_resolve_cameras_rejects_serial_count_mismatch_without_calibration(self):
+        from script.real_zed_collection.collect_zed_robotwin_raw import Args, _resolve_cameras
+
+        with self.assertRaisesRegex(ValueError, "one ZED serial per camera label"):
+            _resolve_cameras(Args(camera_labels="global,right", zed_serials=[111], calibration_path=""))
 
     def test_dp_real_zed_preprocess_can_write_three_camera_zarr(self):
         module_path = Path(__file__).resolve().parents[1] / "policy" / "DP" / "process_data_real_zed.py"

@@ -725,6 +725,10 @@
   - Real DP inference therefore needs an explicit obs-key to live-camera mapping. The new wrapper maps single-camera runs as `head_cam:<camera_label>` and multicam runs as `head_cam:global,left_cam:left,right_cam:right`.
   - The existing DP `DPRunner` and `policy/DP/deploy_policy.py` assume all three camera observations exist, so a real DP inference path must dynamically filter obs keys from `cfg.shape_meta.obs` to support both single-camera and multicam checkpoints.
   - DP image inference does not need SAM2, depth lifting, fused point clouds, workspace point-cloud filtering, or NDF/semantic feature extraction. The new DP path only captures RGB frames and reuses the existing real robot smoothing/safety/async controller for action execution.
+- Optional-camera real-ZED collection finding:
+  - `collect_zed_robotwin_raw.py` already looped over `labels` for thread startup, frame snapshots, manifests, saving, and display, so the main blocker for optional cameras was `_resolve_cameras(...)` enforcing `len(labels) == 3` and `len(serials) == 3`.
+  - The default collection config still carries three serials. If the user overrides only `--camera_labels left`, the parsed `zed_serials` can still be length three. The correct behavior is to use calibration to resolve the requested label subset to serials, not to require editing the config serial list.
+  - Without a calibration path, the script must still require exactly one serial per requested camera label because there is no reliable way to infer which serial belongs to which label.
 
 ---
 *Update this file after every 2 view/browser/search operations.*
