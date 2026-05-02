@@ -111,8 +111,8 @@ python script/real_zed_collection/postprocess/postprocess_real_zed_sam2_objpc_da
   --camera_labels global,left,right \
   --bbox_prompt_root "/media/${USER}/Extreme SSD/geo_mani_data/grasp_mug/sam2_bbox_prompts" \
   --require_per_episode_bboxes \
-  --calibration_path script/real_zed_collection/calibration/three_camera_workspace_extrinsics.yaml \
-  --frame_mode workspace \
+  --calibration_path auto \
+  --frame_mode auto \
   --camera_workspace_mask_root "/media/${USER}/Extreme SSD/geo_mani_data/grasp_mug/camera_workspace_masks" \
   --sam2_checkpoint "/home/zheng/Datasets/sam2/sam2.1_hiera_large.pt" \
   --sam2_config "sam2.1/sam2.1_hiera_l.yaml" \
@@ -123,6 +123,7 @@ python script/real_zed_collection/postprocess/postprocess_real_zed_sam2_objpc_da
 
 By default this batch path stores compact training HDF5 files: `/joint_action/vector`, `/pointcloud`, and `/object_pointcloud/{A,B}`. It does not duplicate RGB-D observations into every training HDF5. Add `--store_observations` only when you explicitly need the images/depth for debugging or another downstream pipeline.
 With `--camera_workspace_mask_root`, SAM2 sees the polygon-limited image domain during tracking and the saved masks/reconstructed point clouds are also restricted to the clicked 2D polygon for each camera. Pass `--disable_mask_input_domain` only if you want SAM2 to track on the full RGB image while still cropping the saved masks/point clouds afterward.
+With `--calibration_path auto --frame_mode auto`, postprocess uses the calibration snapshot saved inside each raw episode. Pass an explicit calibration path only when you intentionally want to override the collection-time calibration.
 SAM2 streaming defaults to `--sam2_autocast_dtype bfloat16`, matching the upstream webcam demo and avoiding CUDA SDPA "No available kernel" failures on environments where float32 attention kernels are unavailable. Use `float16` if your GPU does not support bf16, and `none` only if you explicitly want full-float inference.
 When `--debug` is enabled, the script saves SAM2 mask overlays under `debug/episode*/mask_overlays_sam2/` and merged `{A}/{B}` colored object clouds under `debug/episode*/pointclouds/frame_*_objects_ab.ply`. Use `--debug_stride` and `--debug_max_frames` to keep these previews small.
 If an old repo-side data directory already exists, either move it away or pass `--overwrite_repo_link`. Pass `--no_link_repo_data` only when you do not want `train_objpc.sh` compatibility through a symlink.

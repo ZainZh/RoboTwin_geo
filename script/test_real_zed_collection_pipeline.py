@@ -85,6 +85,68 @@ class RealZedCollectionPipelineTest(unittest.TestCase):
             np.testing.assert_array_equal(zarr_root["meta/episode_ends"][:], np.array([3]))
             self.assertEqual(zarr_root.attrs["source"]["camera_labels"], ["global", "left", "right"])
 
+    def test_dp_real_zed_single_camera_preprocess_writes_selected_camera_as_head_camera(self):
+        module_path = Path(__file__).resolve().parents[1] / "policy" / "DP" / "process_data_real_zed.py"
+        spec = importlib.util.spec_from_file_location("process_data_real_zed_for_test", module_path)
+        process_data_real_zed = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(process_data_real_zed)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw_episode = root / "raw" / "episode_000000"
+            raw_episode.mkdir(parents=True)
+            processed_dir = root / "processed"
+            processed_dir.mkdir()
+            hdf5_path = processed_dir / "episode0.hdf5"
+            meta_path = root / "real_zed_sam2_objpc_meta.json"
+            zarr_path = root / "dp_left_single_camera.zarr"
+
+            frames = []
+            for frame_idx in range(4):
+                rgb = np.zeros((3, 4, 3), dtype=np.uint8)
+                rgb[..., 1] = 20 + frame_idx
+                camera_path = raw_episode / f"left_{frame_idx:06d}.npz"
+                np.savez(camera_path, rgb=rgb)
+                frames.append({"frame_index": frame_idx, "cameras": {"left": str(camera_path.name)}})
+
+            (raw_episode / "manifest.json").write_text(json.dumps({"frames": frames}), encoding="utf-8")
+            with h5py.File(hdf5_path, "w") as root_h5:
+                joint_action = root_h5.create_group("joint_action")
+                joint_action.create_dataset(
+                    "vector",
+                    data=np.arange(4 * 14, dtype=np.float32).reshape(4, 14),
+                )
+            meta_path.write_text(
+                json.dumps(
+                    {
+                        "processed": [
+                            {
+                                "raw_episode_dir": str(raw_episode),
+                                "hdf5_path": str(hdf5_path),
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            process_data_real_zed.build_dp_real_zed_zarr(
+                task_name="grasp_mug",
+                task_config="demo_real_zed_sam2_objpc",
+                expert_data_num=1,
+                camera_labels=["left"],
+                meta_path=meta_path,
+                output_zarr=zarr_path,
+            )
+
+            import zarr
+
+            zarr_root = zarr.open(str(zarr_path), "r")
+            self.assertIn("head_camera", zarr_root["data"])
+            self.assertNotIn("left_camera", zarr_root["data"])
+            self.assertEqual(zarr_root["data/head_camera"].shape, (3, 3, 3, 4))
+            self.assertEqual(zarr_root.attrs["source"]["camera_key_map"], {"left": "head_camera"})
+
     def test_postprocess_writes_robotwin_hdf5_from_raw_episode_and_masks(self):
         from script.real_zed_collection.postprocess.postprocess_raw_to_robotwin_hdf5 import postprocess_episode
 
@@ -753,6 +815,67 @@ class RealZedCollectionPipelineTest(unittest.TestCase):
                     placeholders=["{A}"],
                     require_per_episode=True,
                 )
+
+    def test_sam2_objpc_batch_auto_calibration_prefers_episode_snapshot(self):
+        from script.real_zed_collection.postprocess.postprocess_real_zed_sam2_objpc_dataset import (
+            resolve_episode_postprocess_settings,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw_episode = root / "raw" / "episode_202604300001"
+            raw_episode.mkdir(parents=True)
+            snapshot = raw_episode / "calibration_snapshot.yaml"
+            snapshot.write_text("type: three_camera_charuco_extrinsics\n", encoding="utf-8")
+            stale_default = root / "repo_default_workspace.yaml"
+            stale_default.write_text("workspace: {}\n", encoding="utf-8")
+            manifest = {
+                "calibration_path": str(stale_default),
+                "calibration_snapshot_path": snapshot.name,
+                "workspace_calibration_path": "",
+                "workspace_calibration_snapshot_path": "",
+            }
+
+            settings = resolve_episode_postprocess_settings(
+                raw_episode_dir=raw_episode,
+                manifest=manifest,
+                calibration_path="auto",
+                frame_mode="auto",
+            )
+
+        self.assertEqual(settings["calibration_path"], str(snapshot.resolve()))
+        self.assertEqual(settings["frame_mode"], "reference_camera")
+
+    def test_sam2_objpc_batch_auto_calibration_prefers_workspace_snapshot_when_available(self):
+        from script.real_zed_collection.postprocess.postprocess_real_zed_sam2_objpc_dataset import (
+            resolve_episode_postprocess_settings,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw_episode = root / "raw" / "episode_202604300001"
+            raw_episode.mkdir(parents=True)
+            snapshot = raw_episode / "calibration_snapshot.yaml"
+            snapshot.write_text("type: three_camera_charuco_extrinsics\n", encoding="utf-8")
+            workspace_snapshot = raw_episode / "workspace_calibration_snapshot.yaml"
+            workspace_snapshot.write_text(
+                "type: three_camera_charuco_extrinsics\nworkspace:\n  bbox_m: {}\n",
+                encoding="utf-8",
+            )
+            manifest = {
+                "calibration_snapshot_path": snapshot.name,
+                "workspace_calibration_snapshot_path": workspace_snapshot.name,
+            }
+
+            settings = resolve_episode_postprocess_settings(
+                raw_episode_dir=raw_episode,
+                manifest=manifest,
+                calibration_path="auto",
+                frame_mode="auto",
+            )
+
+        self.assertEqual(settings["calibration_path"], str(workspace_snapshot.resolve()))
+        self.assertEqual(settings["frame_mode"], "workspace")
 
 if __name__ == "__main__":
     unittest.main()

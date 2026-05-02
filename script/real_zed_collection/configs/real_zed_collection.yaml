@@ -22,13 +22,13 @@ robot_camera_calibration_paths:
   - script/real_zed_collection/calibration/robot_camera_apriltag_left_global.yaml
   - script/real_zed_collection/calibration/robot_camera_apriltag_right_global.yaml
 workspace_calibration_path: script/real_zed_collection/calibration/three_camera_workspace_extrinsics.yaml
-workspace_crop_enabled: false
+workspace_crop_enabled: true
 workspace_crop_x_min: -0.35
 workspace_crop_x_max: 0.35
-workspace_crop_y_min: -0.35
-workspace_crop_y_max: 0.35
+workspace_crop_y_min: -0.25
+workspace_crop_y_max: 0.45
 workspace_crop_z_min: 0.
-workspace_crop_z_max: 0.5
+workspace_crop_z_max: 0.45
 workspace_crop_margin_px: 32
 workspace_crop_resize_rgb: false
 workspace_crop_debug_full_frame_interval: 0

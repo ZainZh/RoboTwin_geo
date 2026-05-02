@@ -708,6 +708,11 @@
   - After `fast` object sampling, the next stable-frame bottlenecks were serial per-camera SAM2 tracking and full-scene depth-to-pointcloud construction. The preview now defaults to `--object_only`, so it skips dense full-scene construction unless `--show_scene` or `--no-object_only` is set.
   - The online SAM2 extractor no longer reads `observation["pointcloud"]` when per-camera `depth + cam2world_gl` are available. Dense scene point clouds are only materialized for the legacy scene-projection fallback.
   - Per-camera work now uses a shared worker helper: `--parallel_camera_workers 0` means one worker per active camera, `1` forces serial execution, and positive values cap the worker count. This applies to preview object reconstruction, real DP3 scene construction, and online SAM2 object extraction.
+- Real-ZED offline SAM2 postprocess calibration finding:
+  - The batch driver `postprocess_real_zed_sam2_objpc_dataset.py` previously defaulted to repo-level `script/real_zed_collection/calibration/three_camera_workspace_extrinsics.yaml`, so it passed a non-empty override into `postprocess_episode(...)` and bypassed the per-episode `manifest.json` calibration snapshot.
+  - The inspected raw `grasp_mug` episodes record `calibration_snapshot_path=calibration_snapshot.yaml`, no `workspace_calibration_snapshot_path`, and `workspace_crop_enabled=false`. Their local snapshot has no workspace frame, so the correct auto postprocess frame is `reference_camera` unless an explicit workspace calibration is supplied.
+  - The existing broken processed `scene_info.json` confirmed the symptom: it recorded `calibration_path=/home/zheng/github/RoboTwin_geo/script/real_zed_collection/calibration/three_camera_workspace_extrinsics.yaml` instead of `/media/.../episode_*/calibration_snapshot.yaml`.
+  - The batch driver now defaults to `--calibration_path auto --frame_mode auto`, resolves calibration per episode, prefers workspace snapshots only when they exist, otherwise uses the collection-time calibration snapshot in `reference_camera` mode, and records resolved calibration/frame mode per processed episode.
 
 ---
 *Update this file after every 2 view/browser/search operations.*

@@ -17,8 +17,12 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from script.real_zed_collection.postprocess.postprocess_raw_to_robotwin_hdf5 import parse_object_prompts, postprocess_episode
-from script.real_zed_collection.real_zed_utils import ensure_dir, write_json
+from script.real_zed_collection.postprocess.postprocess_raw_to_robotwin_hdf5 import (
+    _resolve_calibration_path,
+    parse_object_prompts,
+    postprocess_episode,
+)
+from script.real_zed_collection.real_zed_utils import ensure_dir, read_json, write_json
 from script.real_zed_collection.sam2_tracking_utils import (
     DEFAULT_SAM2_CHECKPOINT,
     DEFAULT_SAM2_CONFIG,
@@ -31,12 +35,12 @@ from script.real_zed_collection.select_sam2_bboxes import load_sam2_prompt_recor
 from script.real_zed_collection.workspace_crop_utils import WorkspaceBounds
 
 
-DEFAULT_TASK_NAME = "grasp_mug_new"
+DEFAULT_TASK_NAME = "grasp_mug"
 DEFAULT_TASK_CONFIG = "demo_real_zed_sam2_objpc"
 DEFAULT_OBJECT_PROMPTS = "{A}:cup,{B}:box"
 DEFAULT_CAMERA_LABELS = "global,left,right"
-DEFAULT_CALIBRATION_PATH = Path(__file__).resolve().parents[1] / "calibration" / "three_camera_workspace_extrinsics.yaml"
 REPO_ROOT = Path(__file__).resolve().parents[3]
+AUTO_VALUE_STRINGS = {"", "auto", "manifest"}
 
 
 def default_raw_root(task_name: str = DEFAULT_TASK_NAME, *, user: str | None = None) -> Path:
@@ -181,7 +185,93 @@ def workspace_bounds_from_calibration(calibration_path: str | Path) -> Workspace
     )
 
 
-def workspace_bounds_from_args(args: argparse.Namespace) -> WorkspaceBounds | None:
+def is_auto_value(value: object) -> bool:
+    return str(value or "").strip().lower() in AUTO_VALUE_STRINGS
+
+
+def _manifest_path(raw_episode_dir: str | Path, value: object) -> Path | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    path = Path(text).expanduser()
+    if not path.is_absolute():
+        path = Path(raw_episode_dir).expanduser() / path
+    return path.resolve()
+
+
+def calibration_file_has_workspace(calibration_path: str | Path) -> bool:
+    path = Path(calibration_path).expanduser()
+    if not path.exists():
+        return False
+    with path.open("r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+    if not isinstance(cfg, dict):
+        return False
+    return isinstance(cfg.get("workspace", cfg.get("workspace_frame", None)), dict)
+
+
+def _workspace_calibration_candidates(raw_episode_dir: str | Path, manifest: dict[str, Any]) -> list[Path]:
+    raw_episode_dir = Path(raw_episode_dir).expanduser().resolve()
+    candidates: list[Path] = []
+    keys = [
+        "workspace_calibration_snapshot_path",
+        "workspace_calibration_path",
+        "calibration_snapshot_path",
+    ]
+    if not str(manifest.get("calibration_snapshot_path", "")).strip():
+        keys.append("calibration_path")
+    for key in keys:
+        path = _manifest_path(raw_episode_dir, manifest.get(key, ""))
+        if path is not None and path.exists() and calibration_file_has_workspace(path):
+            candidates.append(path)
+    return candidates
+
+
+def resolve_episode_postprocess_settings(
+    *,
+    raw_episode_dir: str | Path,
+    manifest: dict[str, Any],
+    calibration_path: str | Path,
+    frame_mode: str,
+) -> dict[str, str]:
+    raw_episode_dir = Path(raw_episode_dir).expanduser().resolve()
+    auto_calibration = is_auto_value(calibration_path)
+    requested_frame_mode = str(frame_mode or "auto").strip()
+    if requested_frame_mode not in {"auto", "reference_camera", "workspace"}:
+        raise ValueError("frame_mode must be one of: auto, reference_camera, workspace")
+
+    actual_frame_mode = requested_frame_mode
+    workspace_candidates = _workspace_calibration_candidates(raw_episode_dir, manifest) if auto_calibration else []
+    if requested_frame_mode == "auto":
+        if auto_calibration:
+            actual_frame_mode = "workspace" if workspace_candidates else "reference_camera"
+        else:
+            actual_frame_mode = (
+                "workspace"
+                if calibration_file_has_workspace(calibration_path)
+                else "reference_camera"
+            )
+    elif requested_frame_mode == "workspace" and auto_calibration and not workspace_candidates:
+        # Collection-time calibration is more important than forcing a stale repo workspace file.
+        actual_frame_mode = "reference_camera"
+
+    resolved_path = _resolve_calibration_path(
+        raw_episode_dir,
+        manifest,
+        "" if auto_calibration else calibration_path,
+        frame_mode=actual_frame_mode,
+    )
+    return {
+        "calibration_path": str(resolved_path),
+        "frame_mode": str(actual_frame_mode),
+    }
+
+
+def workspace_bounds_from_args(
+    args: argparse.Namespace,
+    *,
+    calibration_path: str | Path | None = None,
+) -> WorkspaceBounds | None:
     values = [
         args.workspace_crop_x_min,
         args.workspace_crop_x_max,
@@ -203,10 +293,13 @@ def workspace_bounds_from_args(args: argparse.Namespace) -> WorkspaceBounds | No
         )
     if bool(args.disable_workspace_crop):
         return None
-    bounds = workspace_bounds_from_calibration(args.calibration_path)
+    selected_calibration_path = calibration_path if calibration_path is not None else args.calibration_path
+    if is_auto_value(selected_calibration_path):
+        return None
+    bounds = workspace_bounds_from_calibration(selected_calibration_path)
     if bounds is not None:
         return bounds
-    return WorkspaceBounds(x_min=-0.35, x_max=0.35, y_min=-0.35, y_max=0.35, z_min=0.0, z_max=0.5)
+    return None
 
 
 def selected_debug_frame_indices(num_frames: int, *, stride: int, max_frames: int) -> list[int]:
@@ -322,7 +415,6 @@ def process_dataset(args: argparse.Namespace) -> dict[str, Any]:
     if not placeholders:
         raise ValueError("object_prompts must not be empty.")
     camera_labels = _parse_csv(args.camera_labels)
-    workspace_bounds = workspace_bounds_from_args(args)
     bbox_prompt_root = Path(args.bbox_prompt_root).expanduser().resolve()
     camera_workspace_mask_root = resolve_camera_workspace_mask_root(args)
     camera_workspace_masks = (
@@ -351,6 +443,29 @@ def process_dataset(args: argparse.Namespace) -> dict[str, Any]:
         episode_index = int(args.episode_index_offset) + int(local_idx)
         hdf5_path = output_dir / "data" / f"episode{episode_index}.hdf5"
         mask_root = masks_root / f"episode{episode_index}"
+        manifest = read_json(raw_episode_dir / "manifest.json")
+        postprocess_settings = resolve_episode_postprocess_settings(
+            raw_episode_dir=raw_episode_dir,
+            manifest=manifest,
+            calibration_path=args.calibration_path,
+            frame_mode=args.frame_mode,
+        )
+        workspace_bounds = workspace_bounds_from_args(
+            args,
+            calibration_path=postprocess_settings["calibration_path"],
+        )
+        print(
+            "[INFO] "
+            f"{raw_episode_dir.name}: calibration={postprocess_settings['calibration_path']}, "
+            f"frame_mode={postprocess_settings['frame_mode']}"
+        )
+        if str(args.frame_mode) != "auto" and str(args.frame_mode) != postprocess_settings["frame_mode"]:
+            print(
+                "[WARN] "
+                f"{raw_episode_dir.name}: requested frame_mode={args.frame_mode}, "
+                f"but collection-time calibration has no workspace frame; "
+                f"using frame_mode={postprocess_settings['frame_mode']}"
+            )
 
         if tracker_factory is not None:
             bbox_prompts_by_camera, bbox_prompt_path = resolve_episode_bbox_prompts(
@@ -363,7 +478,6 @@ def process_dataset(args: argparse.Namespace) -> dict[str, Any]:
             )
             debug_frame_indices = None
             if debug_root is not None:
-                manifest = yaml.safe_load((raw_episode_dir / "manifest.json").read_text(encoding="utf-8"))
                 frames = manifest.get("frames", []) if isinstance(manifest, dict) else []
                 frame_start = max(0, int(args.start_frame))
                 frame_end = len(frames) if int(args.max_frames_per_episode) <= 0 else min(
@@ -398,14 +512,15 @@ def process_dataset(args: argparse.Namespace) -> dict[str, Any]:
         else:
             bbox_prompt_path = ""
 
-        if hdf5_path.exists() and not bool(args.overwrite_hdf5):
+        skipped_existing_hdf5 = bool(hdf5_path.exists() and not bool(args.overwrite_hdf5))
+        if skipped_existing_hdf5:
             print(f"skip existing hdf5: {hdf5_path}")
         else:
             hdf5_path = postprocess_episode(
                 raw_episode_dir=raw_episode_dir,
                 output_dir=output_dir,
                 episode_index=episode_index,
-                calibration_path=args.calibration_path,
+                calibration_path=postprocess_settings["calibration_path"],
                 camera_labels=camera_labels,
                 object_prompts=object_prompts,
                 mask_root=mask_root,
@@ -413,7 +528,7 @@ def process_dataset(args: argparse.Namespace) -> dict[str, Any]:
                 object_point_num=int(args.object_point_num),
                 min_depth_m=float(args.min_depth_m),
                 max_depth_m=float(args.max_depth_m),
-                frame_mode=args.frame_mode,
+                frame_mode=postprocess_settings["frame_mode"],
                 workspace_crop_bounds=workspace_bounds,
                 workspace_crop_margin_px=int(args.workspace_crop_margin_px),
                 intrinsics_source=args.intrinsics_source,
@@ -446,6 +561,10 @@ def process_dataset(args: argparse.Namespace) -> dict[str, Any]:
                 "mask_root": str(mask_root),
                 "bbox_prompt_path": str(bbox_prompt_path),
                 "debug_pointclouds": debug_pointclouds,
+                "calibration_path": postprocess_settings["calibration_path"],
+                "frame_mode": postprocess_settings["frame_mode"],
+                "workspace_crop_bounds_m": None if workspace_bounds is None else workspace_bounds.as_dict(),
+                "skipped_existing_hdf5": skipped_existing_hdf5,
             }
         )
 
@@ -465,11 +584,10 @@ def process_dataset(args: argparse.Namespace) -> dict[str, Any]:
         "sam2_autocast_dtype": str(args.sam2_autocast_dtype),
         "scene_point_num": int(args.scene_point_num),
         "object_point_num": int(args.object_point_num),
-        "frame_mode": str(args.frame_mode),
+        "requested_frame_mode": str(args.frame_mode),
         "output_frame": str(args.output_frame),
         "robot_camera_calibration_path": str(args.robot_camera_calibration_path),
-        "calibration_path": str(Path(args.calibration_path).expanduser().resolve()),
-        "workspace_crop_bounds_m": None if workspace_bounds is None else workspace_bounds.as_dict(),
+        "requested_calibration_path": str(args.calibration_path),
         "camera_workspace_mask_root": None if camera_workspace_mask_root is None else str(camera_workspace_mask_root),
         "camera_workspace_mask_labels": sorted(camera_workspace_masks.keys()),
         "processed": processed,
@@ -491,8 +609,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--camera_labels", default=DEFAULT_CAMERA_LABELS)
     parser.add_argument("--bbox_prompt_root", default=str(default_bbox_prompt_root()))
     parser.add_argument("--require_per_episode_bboxes", action="store_true", default=False)
-    parser.add_argument("--calibration_path", default=str(DEFAULT_CALIBRATION_PATH))
-    parser.add_argument("--frame_mode", default="workspace", choices=["reference_camera", "workspace"])
+    parser.add_argument("--calibration_path", default="auto")
+    parser.add_argument("--frame_mode", default="auto", choices=["auto", "reference_camera", "workspace"])
     parser.add_argument("--output_frame", default="source", choices=["source", "workspace", "left_base", "right_base"])
     parser.add_argument("--robot_camera_calibration_path", default="")
     parser.add_argument("--start_episode", type=int, default=0)

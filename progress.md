@@ -1211,3 +1211,31 @@
   - Verified shell wrappers with `bash -n policy/DP3/real_infer_baseline.sh policy/DP3/real_infer_semantic_pointwise_hybrid.sh`.
   - Verified CLI visibility with `python script/real_zed_inference/real_dp3_inference.py --help | rg -n "xyz_left|xyz_right|xyz_y|disable_xyz"`.
   - Verified whitespace with `git diff --check`.
+
+### Phase 42: Real-ZED Offline Postprocess Calibration Auto-Selection
+- **Status:** complete
+- Actions taken:
+  - Inspected `postprocess_real_zed_sam2_objpc_dataset.py`, `postprocess_raw_to_robotwin_hdf5.py`, real raw episode manifests, and the previously generated `scene_info.json`.
+  - Confirmed the root cause: the SAM2 batch driver defaulted to repo `three_camera_workspace_extrinsics.yaml`, causing `postprocess_episode(...)` to bypass per-episode `calibration_snapshot.yaml`.
+  - Added tests for `resolve_episode_postprocess_settings(...)` so `auto` uses the episode snapshot and only chooses workspace mode when a workspace calibration snapshot exists.
+  - Updated the batch driver defaults to `--calibration_path auto --frame_mode auto`, resolves calibration/frame mode per episode, uses resolved settings for postprocess, and writes resolved settings into output metadata.
+  - Updated the Real-ZED README command to use `auto` calibration/frame mode.
+  - Verified with `python -m unittest script.test_real_zed_collection_pipeline`.
+  - Verified syntax with `python -m py_compile script/real_zed_collection/postprocess/postprocess_real_zed_sam2_objpc_dataset.py script/test_real_zed_collection_pipeline.py`.
+
+### Phase 43: Real-ZED Collection Workspace Crop Default
+- **Status:** complete
+- Actions taken:
+  - Updated `script/real_zed_collection/configs/real_zed_collection.yaml` so future raw ZED collection enables workspace crop by default.
+  - Set the default crop bounds to x `[-0.35, 0.35]`, y `[-0.25, 0.45]`, z `[0.0, 0.45]` while keeping `workspace_crop_resize_rgb=false`.
+  - Verified config loading with a small YAML parse command.
+  - Verified syntax with `python -m py_compile script/real_zed_collection/collect_zed_robotwin_raw.py`.
+
+### Phase 44: DP Real-ZED Single-Camera Key Compatibility
+- **Status:** complete
+- Actions taken:
+  - Added a regression test proving single-camera DP preprocessing maps a selected real-ZED camera such as `left` into zarr key `head_camera`, matching `RobotImageDataset`.
+  - Updated `policy/DP/process_data_real_zed.py` so any single-camera run writes the selected camera stream as `head_camera`; multi-camera runs still write `head_camera`, `left_camera`, and `right_camera` separately.
+  - Updated `policy/DP/train_real_zed.sh` to detect existing incompatible single-camera zarrs that lack `data/head_camera` and rebuild them automatically.
+  - Verified with `python -m unittest script.test_real_zed_collection_pipeline`.
+  - Verified syntax with `python -m py_compile policy/DP/process_data_real_zed.py script/test_real_zed_collection_pipeline.py` and `bash -n policy/DP/train_real_zed.sh policy/DP/process_data_real_zed.sh policy/DP/train_real_zed_multicam.sh`.
