@@ -453,7 +453,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output_bbox_root", default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--camera_labels", default="global,left,right")
     parser.add_argument("--object_placeholders", default="{A},{B}")
-    parser.add_argument("--frame_index", type=int, default=0)
+    parser.add_argument("--frame_index", type=int, default=100)
     parser.add_argument("--all_episodes", action="store_true", default=True)
     parser.add_argument("--per_episode_subdir", action="store_true", default=False)
     parser.add_argument("--skip_existing", action="store_true", default=True)

@@ -167,6 +167,15 @@ SAM2 streaming tracking migration for real objpc training/eval data
 - [ ] Run on real ZED/robot hardware.
 - **Status:** complete with hardware run pending
 
+### Phase 20: Optional-Camera Real-ZED Collection
+- [x] Remove the raw collection script's hard requirement that exactly three ZED cameras are active.
+- [x] Keep the default three-camera config unchanged.
+- [x] Resolve camera serials from calibration when the requested camera label subset differs from config `zed_serials`.
+- [x] Add unit coverage for one-camera, two-camera, and invalid serial-count cases.
+- [x] Verify collection pipeline tests and syntax without requiring hardware.
+- [ ] Run on real ZED/robot hardware.
+- **Status:** complete with hardware run pending
+
 ## Decisions Made
 
 | Decision | Rationale |

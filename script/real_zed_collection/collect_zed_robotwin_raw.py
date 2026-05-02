@@ -120,7 +120,7 @@ def _load_args_defaults(config_path: Path | None) -> Args:
 
 
 def _parse_args_without_tyro(defaults: Args, cli_args: list[str]) -> Args:
-    parser = argparse.ArgumentParser(description="Collect raw real-robot three-ZED data for RoboTwin/DP3.")
+    parser = argparse.ArgumentParser(description="Collect raw real-robot ZED data for RoboTwin/DP3.")
     for item in fields(Args):
         name = item.name
         default_value = getattr(defaults, name)
@@ -629,12 +629,15 @@ def _resolve_cameras(args: Args) -> tuple[list[str], list[int]]:
         calib = load_three_zed_calibration(args.calibration_path)
         if not labels:
             labels = list(calib.keys())
-        if not serials:
+        if not serials or len(serials) != len(labels):
             serials = [int(calib[label].serial_number) for label in labels]
-    if len(labels) != 3:
-        raise ValueError(f"First version expects exactly 3 camera labels, got {labels}")
-    if len(serials) != 3:
-        raise ValueError("Provide exactly 3 ZED serials or a calibration file with serial_number entries.")
+    if not labels:
+        raise ValueError("Provide at least one camera label.")
+    if len(serials) != len(labels):
+        raise ValueError(
+            f"Provide one ZED serial per camera label, or provide a calibration file. "
+            f"Got labels={labels}, serials={serials}."
+        )
     print(f"[INFO] Collection camera label -> serial mapping: {dict(zip(labels, serials))}")
     return labels, serials
 
