@@ -913,13 +913,13 @@ def maybe_check_xyz_safety(env, args: argparse.Namespace) -> None:
         print(f"[WARN] Cannot run XYZ safety check, expected >=9 values but got {pos.shape}")
         return
     left_x_min = float(getattr(args, "xyz_left_x_min", -450.0))
-    left_x_max = float(getattr(args, "xyz_left_x_max", 290.0))
-    right_x_min = float(getattr(args, "xyz_right_x_min", -290.0))
+    left_x_max = float(getattr(args, "xyz_left_x_max", 450.0))
+    right_x_min = float(getattr(args, "xyz_right_x_min", -450.0))
     right_x_max = float(getattr(args, "xyz_right_x_max", 450.0))
     y_min = float(getattr(args, "xyz_y_min", -750.0))
     y_max = float(getattr(args, "xyz_y_max", -160.0))
-    left_z_min = float(getattr(args, "xyz_left_z_min", 44.0))
-    right_z_min = float(getattr(args, "xyz_right_z_min", 40.0))
+    left_z_min = float(getattr(args, "xyz_left_z_min", 25.0))
+    right_z_min = float(getattr(args, "xyz_right_z_min", 23.0))
     ok = (
         (pos[0] >= left_x_min)
         and (pos[0] <= left_x_max)
