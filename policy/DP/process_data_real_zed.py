@@ -180,7 +180,8 @@ def build_dp_real_zed_zarr(
         "camera_label": str(camera_labels[0]),
         "camera_labels": [str(item) for item in camera_labels],
         "camera_key_map": {str(raw): str(mapped) for raw, mapped in camera_key_map.items()},
-        "meta_path": str(Path(meta_path).expanduser().resolve()),
+        "meta_path": str(Path(meta_path).expanduser().name),
+        "portable": True,
         "expert_data_num": int(expert_data_num),
     }
 
