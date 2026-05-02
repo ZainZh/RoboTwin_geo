@@ -1259,12 +1259,11 @@
   - Found the processed dataset was generated with `workspace_crop_bounds_m=None`; online inference now does workspace filtering before transforming to `right_base`, so train/inference perception distributions can differ.
   - Found `real_infer_semantic_pointwise_hybrid.sh` still has duplicated default task assignments and a wrapper-level semantic checkpoint default that can differ from the checkpoint recorded in the training zarr meta.
 
-### Phase 47: Real Semantic Inference Config Split
+### Phase 47: Real Semantic Inference Interface Cleanup
 - **Status:** complete
 - Actions taken:
-  - Added a shell interface regression test showing semantic real inference can use one `task_config` for live/eval data and a separate checkpoint config for loading trained weights.
-  - Verified the test failed under the old positional interface because the third argument was treated as `expert_data_num`, shifting later arguments into `output_frame`.
-  - Updated `policy/DP3/real_infer_semantic_pointwise_hybrid.sh` so arguments are now `task_name task_config ckpt_config expert_data_num seed gpu_id ...`.
+  - Restored `policy/DP3/real_infer_semantic_pointwise_hybrid.sh` to a single `task_config` interface after user feedback; `ckpt_setting` is again derived as `${task_config}-objpc-semantic-pointwise-hybrid`.
   - Removed duplicated default `task_name/task_config` assignments from the semantic wrapper.
   - Changed the default semantic checkpoint path to the current-user training repo path, while still allowing `SEMANTIC_CKPT_A` to override it.
+  - Updated the shell interface regression test to cover the single-config semantic call and the derived checkpoint setting.
   - Verified with `bash policy/DP3/scripts/test_real_infer_script_interfaces.sh` and `bash -n policy/DP3/real_infer_semantic_pointwise_hybrid.sh policy/DP3/real_infer_baseline.sh policy/DP3/scripts/test_real_infer_script_interfaces.sh`.

@@ -2,30 +2,29 @@
 
 task_name=${1:-grasp_mug}
 task_config=${2:-demo_real_zed_sam2_objpc}
-ckpt_config=${3:-${task_config}}
-ckpt_setting="${ckpt_config}-objpc-semantic-pointwise-hybrid"
-expert_data_num=${4:-32}
-seed=${5:-0}
-gpu_id=${6:-0}
-semantic_ckpt_A=${7:-${SEMANTIC_CKPT_A:-${HOME}/github/3d_semantic_train/outputs/utonia_universal_field/Mug_semantic/mug.pt}}
-semantic_ckpt_B=${8:-none}
-semantic_device=${9:-cuda:0}
-object_placeholders=${10:-\{A\},\{B\}}
-checkpoint_num=${11:-3000}
-semantic_point_num=${12:-128}
+ckpt_setting="${task_config}-objpc-semantic-pointwise-hybrid"
+expert_data_num=${3:-32}
+seed=${4:-0}
+gpu_id=${5:-0}
+semantic_ckpt_A=${6:-${SEMANTIC_CKPT_A:-${HOME}/github/3d_semantic_train/outputs/utonia_universal_field/Mug_semantic/mug.pt}}
+semantic_ckpt_B=${7:-none}
+semantic_device=${8:-cuda:0}
+object_placeholders=${9:-\{A\},\{B\}}
+checkpoint_num=${10:-3000}
+semantic_point_num=${11:-128}
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(cd "${script_dir}/../.." && pwd)
 source "${script_dir}/real_infer_arg_utils.sh"
 
-if [[ "${13:-}" == --* ]]; then
+if [[ "${12:-}" == --* ]]; then
     output_frame_arg=auto
     robot_camera_calibration_path_arg=auto
-    extra_flags=("${@:13}")
+    extra_flags=("${@:12}")
 else
-    output_frame_arg=${13:-auto}
-    robot_camera_calibration_path_arg=${14:-auto}
-    extra_flags=("${@:15}")
+    output_frame_arg=${12:-auto}
+    robot_camera_calibration_path_arg=${13:-auto}
+    extra_flags=("${@:14}")
 fi
 
 output_frame=$(resolve_real_zed_output_frame "${repo_root}" "${task_name}" "${task_config}" "${output_frame_arg}")
