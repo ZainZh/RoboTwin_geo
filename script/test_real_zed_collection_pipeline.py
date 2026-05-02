@@ -84,6 +84,8 @@ class RealZedCollectionPipelineTest(unittest.TestCase):
             self.assertEqual(zarr_root["data/action"].shape, (3, 14))
             np.testing.assert_array_equal(zarr_root["meta/episode_ends"][:], np.array([3]))
             self.assertEqual(zarr_root.attrs["source"]["camera_labels"], ["global", "left", "right"])
+            self.assertEqual(zarr_root.attrs["source"]["meta_path"], "real_zed_sam2_objpc_meta.json")
+            self.assertTrue(zarr_root.attrs["source"]["portable"])
 
     def test_dp_real_zed_single_camera_preprocess_writes_selected_camera_as_head_camera(self):
         module_path = Path(__file__).resolve().parents[1] / "policy" / "DP" / "process_data_real_zed.py"
@@ -146,6 +148,8 @@ class RealZedCollectionPipelineTest(unittest.TestCase):
             self.assertNotIn("left_camera", zarr_root["data"])
             self.assertEqual(zarr_root["data/head_camera"].shape, (3, 3, 3, 4))
             self.assertEqual(zarr_root.attrs["source"]["camera_key_map"], {"left": "head_camera"})
+            self.assertEqual(zarr_root.attrs["source"]["meta_path"], "real_zed_sam2_objpc_meta.json")
+            self.assertTrue(zarr_root.attrs["source"]["portable"])
 
     def test_postprocess_writes_robotwin_hdf5_from_raw_episode_and_masks(self):
         from script.real_zed_collection.postprocess.postprocess_raw_to_robotwin_hdf5 import postprocess_episode

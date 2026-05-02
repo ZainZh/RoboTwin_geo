@@ -1239,3 +1239,12 @@
   - Updated `policy/DP/train_real_zed.sh` to detect existing incompatible single-camera zarrs that lack `data/head_camera` and rebuild them automatically.
   - Verified with `python -m unittest script.test_real_zed_collection_pipeline`.
   - Verified syntax with `python -m py_compile policy/DP/process_data_real_zed.py script/test_real_zed_collection_pipeline.py` and `bash -n policy/DP/train_real_zed.sh policy/DP/process_data_real_zed.sh policy/DP/train_real_zed_multicam.sh`.
+
+### Phase 45: Portable DP Real-ZED Dataset Packaging
+- **Status:** complete
+- Actions taken:
+  - Updated `policy/DP/process_data_real_zed.py` so zarr metadata records only the source meta filename instead of the local absolute `/media/...` path, and marks the zarr as portable.
+  - Added `policy/DP/package_real_zed_data.sh` to package an existing DP real-ZED zarr as a `.tar.gz` plus README for server extraction/training.
+  - The packaging script sanitizes existing zarr attrs before compression, so older locally generated zarrs do not carry host-specific meta paths into the server package.
+  - Verified targeted DP real-ZED preprocessing tests.
+  - Verified script syntax with `bash -n policy/DP/package_real_zed_data.sh` and whitespace with `git diff --check`.
