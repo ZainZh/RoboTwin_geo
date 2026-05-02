@@ -1248,3 +1248,23 @@
   - The packaging script sanitizes existing zarr attrs before compression, so older locally generated zarrs do not carry host-specific meta paths into the server package.
   - Verified targeted DP real-ZED preprocessing tests.
   - Verified script syntax with `bash -n policy/DP/package_real_zed_data.sh` and whitespace with `git diff --check`.
+
+### Phase 46: Real Semantic-Pointwise Hybrid Regression Diagnosis
+- **Status:** investigation complete, fix pending user decision
+- Actions taken:
+  - Inspected the latest `grasp_mug/demo_real_zed_sam2_objpc` HDF5, semantic hybrid zarr, preprocessing scripts, and real inference wrapper.
+  - Confirmed the latest processed dataset is already in `right_base` output frame, so the primary issue is not missing robot-frame conversion.
+  - Found severe `{A}` object-pointcloud outliers in the processed HDF5: 222 affected frames out of 1975 across 32 episodes, while `{B}` has no outlier under the same criterion.
+  - Confirmed the zarr used by `train_semantic_pointwise_hybrid.sh` contains the same outliers in both `point_cloud` and `semantic_point_cloud_A`.
+  - Found the processed dataset was generated with `workspace_crop_bounds_m=None`; online inference now does workspace filtering before transforming to `right_base`, so train/inference perception distributions can differ.
+  - Found `real_infer_semantic_pointwise_hybrid.sh` still has duplicated default task assignments and a wrapper-level semantic checkpoint default that can differ from the checkpoint recorded in the training zarr meta.
+
+### Phase 47: Real Semantic Inference Config Split
+- **Status:** complete
+- Actions taken:
+  - Added a shell interface regression test showing semantic real inference can use one `task_config` for live/eval data and a separate checkpoint config for loading trained weights.
+  - Verified the test failed under the old positional interface because the third argument was treated as `expert_data_num`, shifting later arguments into `output_frame`.
+  - Updated `policy/DP3/real_infer_semantic_pointwise_hybrid.sh` so arguments are now `task_name task_config ckpt_config expert_data_num seed gpu_id ...`.
+  - Removed duplicated default `task_name/task_config` assignments from the semantic wrapper.
+  - Changed the default semantic checkpoint path to the current-user training repo path, while still allowing `SEMANTIC_CKPT_A` to override it.
+  - Verified with `bash policy/DP3/scripts/test_real_infer_script_interfaces.sh` and `bash -n policy/DP3/real_infer_semantic_pointwise_hybrid.sh policy/DP3/real_infer_baseline.sh policy/DP3/scripts/test_real_infer_script_interfaces.sh`.

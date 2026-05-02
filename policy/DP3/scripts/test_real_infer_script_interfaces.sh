@@ -10,7 +10,9 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "${repo_root}/data/unit_real_zed_task/unit_real_zed_cfg"
+mkdir -p "${repo_root}/data/unit_real_zed_task/unit_eval_cfg"
 printf '{"output_frame": "right_base"}\n' > "${repo_root}/data/unit_real_zed_task/unit_real_zed_cfg/real_zed_sam2_objpc_meta.json"
+printf '{"output_frame": "right_base"}\n' > "${repo_root}/data/unit_real_zed_task/unit_eval_cfg/real_zed_sam2_objpc_meta.json"
 
 fake_bin="${tmp_dir}/bin"
 mkdir -p "${fake_bin}"
@@ -33,9 +35,13 @@ grep -F -- 'script/real_zed_collection/calibration/robot_camera_apriltag_right_g
 capture_semantic="${tmp_dir}/semantic_args.txt"
 REAL_INFER_CAPTURE="${capture_semantic}" PATH="${fake_bin}:${PATH}" \
     bash "${repo_root}/policy/DP3/real_infer_semantic_pointwise_hybrid.sh" \
-    unit_real_zed_task unit_real_zed_cfg 31 0 0 \
+    unit_real_zed_task unit_eval_cfg unit_train_cfg 31 0 0 \
     /tmp/unit_semantic_A.pt none cuda:0 "{A},{B}" 3000 128
 
+grep -F -- '--task_config' "${capture_semantic}" >/dev/null
+grep -F -- 'unit_eval_cfg' "${capture_semantic}" >/dev/null
+grep -F -- '--ckpt_setting' "${capture_semantic}" >/dev/null
+grep -F -- 'unit_train_cfg-objpc-semantic-pointwise-hybrid' "${capture_semantic}" >/dev/null
 grep -F -- '--output_frame' "${capture_semantic}" >/dev/null
 grep -F -- 'right_base' "${capture_semantic}" >/dev/null
 grep -F -- '--robot_camera_calibration_path' "${capture_semantic}" >/dev/null
