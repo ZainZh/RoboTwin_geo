@@ -1,5 +1,5 @@
 save_data_path: /media/${USER}/Extreme SSD/geo_mani_data
-project_name: hanging_mug
+project_name: grasp_mug
 
 # Produced by script/real_zed_collection/calibrate_three_zed_extrinsics.py.
 calibration_path: script/real_zed_collection/calibration/three_camera_charuco_extrinsics.yaml

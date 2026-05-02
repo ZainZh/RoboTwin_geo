@@ -9,7 +9,7 @@ expert_data_num=${3:-32}
 seed=${4:-0}
 gpu_id=${5:-0}
 camera_labels=${6:-left}
-checkpoint_num=${7:-3000}
+checkpoint_num=${7:-600}
 shift $(( $# < 7 ? $# : 7 ))
 
 camera_setting=${camera_labels//,/_}
@@ -38,4 +38,16 @@ python script/real_zed_inference/real_dp_inference.py \
     --gpu_id "${gpu_id}" \
     --camera_labels "${camera_labels}" \
     --dp_camera_map "${dp_camera_map}" \
+    --profile_timing \
+    --execute \
+    --async_control \
+    --async_control_hz 25 \
+    --control_hz 5 \
+    --servo_j_t 0.10 \
+    --servo_j_gain 200 \
+    --max_executed_joint_delta 0.012 \
+    --max_executed_joint_delta_change 0.003 \
+    --max_executed_gripper_delta 0.02 \
+    --max_executed_gripper_delta_change 0.06 \
+    --action_diagnostics_csv outputs/real_zed_inference/action_diag_async.csv\
     "$@"
