@@ -1276,3 +1276,16 @@
   - Added `is_real_zed_output_frame_shorthand`, `normalize_real_zed_output_frame_token`, and `normalize_real_zed_calibration_token` to `real_infer_arg_utils.sh`.
   - Updated both `real_infer_semantic_pointwise_hybrid.sh` and `real_infer_baseline.sh` to accept `--right_base/--workspace/--source/--left_base` shorthand while preserving normal Python flags such as `--dry_run`.
   - Verified with `bash policy/DP3/scripts/test_real_infer_script_interfaces.sh` and `bash -n policy/DP3/real_infer_arg_utils.sh policy/DP3/real_infer_semantic_pointwise_hybrid.sh policy/DP3/real_infer_baseline.sh policy/DP3/scripts/test_real_infer_script_interfaces.sh`.
+
+### Phase 49: Real-ZED DP Image Inference
+- **Status:** complete with hardware run pending
+- Actions taken:
+  - User approved an independent DP real inference script with camera capture separated from async robot control.
+  - Re-read DP real-ZED train scripts, DP dataset/config expectations, DP runner limitations, and the existing DP3 real inference control/safety implementation.
+  - Added RED tests for dynamic DP RGB obs-key detection, single-camera `head_cam:<camera>` mapping, RGB resize/normalization, a DP runner that only forwards checkpoint-required camera keys, and safe async/dry-run parser defaults.
+  - Added `script/real_zed_inference/real_dp_inference.py`, which loads DP checkpoints directly, starts lightweight RGB ZED camera threads, builds image observations, and submits DP action chunks to the existing async action controller.
+  - Added `policy/DP/real_infer.sh`, deriving `ckpt_setting` from `task_config` plus camera labels and explicitly mapping single-camera checkpoints to the selected live camera.
+  - Added `policy/DP/scripts/test_real_infer_script_interfaces.sh` for wrapper argument wiring.
+  - Verified with `PYTHONDONTWRITEBYTECODE=1 python -m unittest script.test_real_dp_inference script.test_real_zed_inference_actions`.
+  - Verified syntax with `PYTHONDONTWRITEBYTECODE=1 python -m py_compile script/real_zed_inference/real_dp_inference.py script/test_real_dp_inference.py` and `bash -n policy/DP/real_infer.sh policy/DP/scripts/test_real_infer_script_interfaces.sh`.
+  - Verified wrapper wiring with `bash policy/DP/scripts/test_real_infer_script_interfaces.sh`, CLI visibility with `python script/real_zed_inference/real_dp_inference.py --help | rg -n "dp_camera_map|async_control|max_executed_joint_delta_change|ckpt_path|camera_labels"`, and whitespace with `git diff --check`.

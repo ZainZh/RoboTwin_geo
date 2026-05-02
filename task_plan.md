@@ -158,6 +158,15 @@ SAM2 streaming tracking migration for real objpc training/eval data
 - [x] Verify with targeted unit tests, full real-ZED collection pipeline tests, and syntax checks.
 - **Status:** complete
 
+### Phase 19: Real-ZED DP Image Inference
+- [x] Add a real-ZED DP image-policy inference driver that avoids point-cloud/SAM work.
+- [x] Detect required RGB streams from the loaded checkpoint config instead of assuming three cameras.
+- [x] Reuse the proven real robot safety, ServoJ smoothing, and async action-buffer control pattern.
+- [x] Add shell wrapper(s) for single-camera and multi-camera DP checkpoints.
+- [x] Verify unit behavior, syntax, wrapper wiring, and CLI visibility without requiring hardware.
+- [ ] Run on real ZED/robot hardware.
+- **Status:** complete with hardware run pending
+
 ## Decisions Made
 
 | Decision | Rationale |

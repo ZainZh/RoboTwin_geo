@@ -720,6 +720,11 @@
   - Because the DP3 pointwise preprocess uses farthest-point sampling for hybrid point clouds, even a single distant SAM2/mask/depth outlier is likely to be preserved and becomes a strong spatial token for PointNet.
   - The processed real dataset metadata has `workspace_crop_bounds_m=None` and per-episode `frame_mode=reference_camera`; this recording was not workspace-cropped during postprocess. Online real inference, however, now filters depth points through workspace bounds before transforming to `right_base`, so train/inference object-cloud distributions can differ.
   - `policy/DP3/real_infer_semantic_pointwise_hybrid.sh` still has duplicated default `task_name/task_config` assignments and a wrapper-level default semantic checkpoint under `${HOME}/DataModel/semantic/mug.pt`; those can silently run a different task/model/checkpoint than the latest trained data unless all arguments are passed explicitly.
+- Real-ZED DP image inference finding:
+  - DP single-camera real-ZED training stores the selected camera stream under zarr key `head_camera`, so the checkpoint sees only `head_cam` and does not encode whether that came from `global`, `left`, or `right`.
+  - Real DP inference therefore needs an explicit obs-key to live-camera mapping. The new wrapper maps single-camera runs as `head_cam:<camera_label>` and multicam runs as `head_cam:global,left_cam:left,right_cam:right`.
+  - The existing DP `DPRunner` and `policy/DP/deploy_policy.py` assume all three camera observations exist, so a real DP inference path must dynamically filter obs keys from `cfg.shape_meta.obs` to support both single-camera and multicam checkpoints.
+  - DP image inference does not need SAM2, depth lifting, fused point clouds, workspace point-cloud filtering, or NDF/semantic feature extraction. The new DP path only captures RGB frames and reuses the existing real robot smoothing/safety/async controller for action execution.
 
 ---
 *Update this file after every 2 view/browser/search operations.*
