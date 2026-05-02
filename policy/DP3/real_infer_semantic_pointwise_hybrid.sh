@@ -2,6 +2,8 @@
 
 task_name=${1:-grasp_mug_new}
 task_config=${2:-demo_real_zed_sam2_objpc_rightbase}
+task_name=${1:-grasp_mug}
+task_config=${2:-demo_real_zed_sam2_objpc}
 expert_data_num=${3:-32}
 seed=${4:-0}
 gpu_id=${5:-0}
@@ -68,7 +70,7 @@ python script/real_zed_inference/real_dp3_inference.py \
     --profile_timing \
     --execute \
     --async_control \
-    --async_control_hz 20 \
+    --async_control_hz 25 \
     --control_hz 5 \
     --servo_j_t 0.10 \
     --servo_j_gain 200 \

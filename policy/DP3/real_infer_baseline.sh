@@ -2,7 +2,7 @@
 
 task_name=${1:-grasp_mug}
 task_config=${2:-demo_real_zed_sam2_objpc}
-expert_data_num=${3:-57}
+expert_data_num=${3:-32}
 seed=${4:-0}
 gpu_id=${5:-0}
 checkpoint_num=${6:-3000}
@@ -57,12 +57,12 @@ python script/real_zed_inference/real_dp3_inference.py \
     --profile_timing \
     --execute \
     --async_control \
-    --async_control_hz 20 \
+    --async_control_hz 25 \
     --control_hz 5 \
     --servo_j_t 0.10 \
     --servo_j_gain 200 \
-    --max_executed_joint_delta 0.015 \
-    --max_executed_joint_delta_change 0.004 \
+    --max_executed_joint_delta 0.012 \
+    --max_executed_joint_delta_change 0.003 \
     --max_executed_gripper_delta 0.02 \
     --max_executed_gripper_delta_change 0.06 \
     --action_diagnostics_csv outputs/real_zed_inference/action_diag_async.csv\
