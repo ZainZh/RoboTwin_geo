@@ -65,3 +65,21 @@ REAL_INFER_CAPTURE="${capture_name_fallback}" PATH="${fake_bin}:${PATH}" \
 
 grep -F -- '--output_frame' "${capture_name_fallback}" >/dev/null
 grep -F -- 'right_base' "${capture_name_fallback}" >/dev/null
+
+capture_dashed_frame="${tmp_dir}/dashed_frame_args.txt"
+REAL_INFER_CAPTURE="${capture_dashed_frame}" PATH="${fake_bin}:${PATH}" \
+    bash "${repo_root}/policy/DP3/real_infer_semantic_pointwise_hybrid.sh" \
+    unit_real_zed_task unit_real_zed_cfg 31 0 0 \
+    /tmp/unit_semantic_A.pt none cuda:0 "{A},{B}" 3000 128 --right_base --auto --dry_run
+
+grep -F -- '--output_frame' "${capture_dashed_frame}" >/dev/null
+grep -F -- 'right_base' "${capture_dashed_frame}" >/dev/null
+grep -F -- '--right_base' "${capture_dashed_frame}" && {
+    echo "dashed frame shorthand should be normalized before calling Python" >&2
+    exit 1
+}
+grep -F -- '--auto' "${capture_dashed_frame}" && {
+    echo "dashed auto shorthand should be normalized before calling Python" >&2
+    exit 1
+}
+grep -F -- '--dry_run' "${capture_dashed_frame}" >/dev/null

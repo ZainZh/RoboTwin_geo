@@ -11,7 +11,11 @@ script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(cd "${script_dir}/../.." && pwd)
 source "${script_dir}/real_infer_arg_utils.sh"
 
-if [[ "${7:-}" == --* ]]; then
+if is_real_zed_output_frame_shorthand "${7:-}"; then
+    output_frame_arg=$(normalize_real_zed_output_frame_token "${7:-auto}")
+    robot_camera_calibration_path_arg=$(normalize_real_zed_calibration_token "${8:-auto}")
+    extra_flags=("${@:9}")
+elif [[ "${7:-}" == --* ]]; then
     output_frame_arg=auto
     robot_camera_calibration_path_arg=auto
     extra_flags=("${@:7}")

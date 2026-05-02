@@ -1267,3 +1267,12 @@
   - Changed the default semantic checkpoint path to the current-user training repo path, while still allowing `SEMANTIC_CKPT_A` to override it.
   - Updated the shell interface regression test to cover the single-config semantic call and the derived checkpoint setting.
   - Verified with `bash policy/DP3/scripts/test_real_infer_script_interfaces.sh` and `bash -n policy/DP3/real_infer_semantic_pointwise_hybrid.sh policy/DP3/real_infer_baseline.sh policy/DP3/scripts/test_real_infer_script_interfaces.sh`.
+
+### Phase 48: Real Inference Frame-Argument Shorthand
+- **Status:** complete
+- Actions taken:
+  - Reproduced the user-facing failure mode where `--right_base --auto` after semantic wrapper positional args was forwarded to Python as unknown argparse flags.
+  - Added a regression test ensuring dashed frame shorthands are normalized before invoking `real_dp3_inference.py`.
+  - Added `is_real_zed_output_frame_shorthand`, `normalize_real_zed_output_frame_token`, and `normalize_real_zed_calibration_token` to `real_infer_arg_utils.sh`.
+  - Updated both `real_infer_semantic_pointwise_hybrid.sh` and `real_infer_baseline.sh` to accept `--right_base/--workspace/--source/--left_base` shorthand while preserving normal Python flags such as `--dry_run`.
+  - Verified with `bash policy/DP3/scripts/test_real_infer_script_interfaces.sh` and `bash -n policy/DP3/real_infer_arg_utils.sh policy/DP3/real_infer_semantic_pointwise_hybrid.sh policy/DP3/real_infer_baseline.sh policy/DP3/scripts/test_real_infer_script_interfaces.sh`.

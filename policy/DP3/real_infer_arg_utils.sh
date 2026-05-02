@@ -33,6 +33,51 @@ print(frame, end="")
 PY
 }
 
+is_real_zed_output_frame_shorthand() {
+    case "${1:-}" in
+        --source|--workspace|--left_base|--leftbase|--right_base|--rightbase)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+normalize_real_zed_output_frame_token() {
+    case "${1:-}" in
+        --source)
+            printf "source"
+            ;;
+        --workspace)
+            printf "workspace"
+            ;;
+        --left_base|--leftbase)
+            printf "left_base"
+            ;;
+        --right_base|--rightbase)
+            printf "right_base"
+            ;;
+        *)
+            printf "%s" "${1:-auto}"
+            ;;
+    esac
+}
+
+normalize_real_zed_calibration_token() {
+    case "${1:-}" in
+        --auto)
+            printf "auto"
+            ;;
+        --none)
+            printf "none"
+            ;;
+        *)
+            printf "%s" "${1:-auto}"
+            ;;
+    esac
+}
+
 infer_real_zed_output_frame_from_task_config() {
     local task_config=${1}
     case "${task_config}" in
