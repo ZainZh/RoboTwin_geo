@@ -444,8 +444,8 @@ def check_pose_protection(positions, vel, servo_state):
     x_range_left = (-450, 450)
     x_range_right = (-450, 450)
     y_range = (-750, -160)
-    z_range_left = 30
-    z_range_right = 28
+    z_range_left = 25
+    z_range_right = 23
 
     if servo_state[0, 1]:
         if vel["left_left"][2] < -1 or vel["left_right"][2] < -1:
