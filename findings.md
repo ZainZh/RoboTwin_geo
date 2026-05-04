@@ -729,6 +729,12 @@
   - `collect_zed_robotwin_raw.py` already looped over `labels` for thread startup, frame snapshots, manifests, saving, and display, so the main blocker for optional cameras was `_resolve_cameras(...)` enforcing `len(labels) == 3` and `len(serials) == 3`.
   - The default collection config still carries three serials. If the user overrides only `--camera_labels left`, the parsed `zed_serials` can still be length three. The correct behavior is to use calibration to resolve the requested label subset to serials, not to require editing the config serial list.
   - Without a calibration path, the script must still require exactly one serial per requested camera label because there is no reliable way to infer which serial belongs to which label.
+- Episode `20260502154520` global camera quality finding:
+  - The episode manifest and file layout are structurally complete: 58 frames, camera labels `global,left,right`, no dropped frames due to backpressure, and calibration label mapping is identity.
+  - The `global` channel is not a normal dark image. Every sampled and full-scanned `global` RGB frame is a single constant color `[0,134,0]`, with RGB std exactly zero and frame-to-frame delta zero.
+  - `global` depth is also effectively unusable: valid depth rate is only `0.000448`.
+  - `left` and `right` channels in the same episode are normal, with visible scene content and valid depth rates around `0.94` and `0.88`.
+  - Therefore this is a `global` camera capture failure, not a downstream workspace-crop/postprocess issue. The episode can still be salvaged for pipelines that use only `left` and/or `right`, but should not be used for any checkpoint/config expecting `global`.
 
 ---
 *Update this file after every 2 view/browser/search operations.*
