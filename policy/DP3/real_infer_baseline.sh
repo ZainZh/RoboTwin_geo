@@ -2,7 +2,7 @@
 
 task_name=${1:-grasp_mug}
 task_config=${2:-demo_real_zed_sam2_objpc}
-expert_data_num=${3:-32}
+expert_data_num=${3:-49}
 seed=${4:-0}
 gpu_id=${5:-0}
 checkpoint_num=${6:-3000}

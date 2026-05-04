@@ -1449,7 +1449,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output_frame", choices=["source", "workspace", "left_base", "right_base"], default="source")
     parser.add_argument("--robot_camera_calibration_path", default="")
     parser.add_argument("--serial_remap", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--camera_labels", default="global,left,right")
+    parser.add_argument("--camera_labels", default="global,left")
     parser.add_argument("--zed_serials", default="")
     parser.add_argument("--zed_resolution", default="HD720")
     parser.add_argument("--zed_fps", type=int, default=15)
