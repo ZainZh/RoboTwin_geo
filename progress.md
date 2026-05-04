@@ -1299,3 +1299,13 @@
   - Updated the argparse description from three-ZED-specific wording to generic ZED collection wording.
   - Verified with `PYTHONDONTWRITEBYTECODE=1 python -m unittest script.test_real_zed_collection_pipeline`.
   - Verified syntax with `PYTHONDONTWRITEBYTECODE=1 python -m py_compile script/real_zed_collection/collect_zed_robotwin_raw.py script/test_real_zed_collection_pipeline.py`.
+
+### Phase 51: Real-ZED Episode Global Camera Quality Check
+- **Status:** investigation complete
+- Actions taken:
+  - Inspected `/media/zheng/Extreme SSD/geo_mani_data/grasp_mug/real_zed_raw/episode_20260502154520`.
+  - Confirmed the manifest has 58 frames and lists all three cameras: `global`, `left`, and `right`.
+  - Computed RGB/depth statistics for sampled and full frames.
+  - Found `global` RGB is constant `[0,134,0]` for all 58 frames, RGB std is exactly zero, frame-to-frame RGB delta is zero, and valid depth rate is only `0.000448`.
+  - Found `left` and `right` are normal: nonzero RGB variance and valid depth means around `0.941` and `0.882`.
+  - Saved a contact-sheet preview at `outputs/real_zed_collection/previews/episode_20260502154520_quality_check/rgb_contact_sheet_frames_000_020_057.png`.

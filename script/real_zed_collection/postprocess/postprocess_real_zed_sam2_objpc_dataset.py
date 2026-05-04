@@ -38,7 +38,7 @@ from script.real_zed_collection.workspace_crop_utils import WorkspaceBounds
 DEFAULT_TASK_NAME = "grasp_mug"
 DEFAULT_TASK_CONFIG = "demo_real_zed_sam2_objpc"
 DEFAULT_OBJECT_PROMPTS = "{A}:cup,{B}:box"
-DEFAULT_CAMERA_LABELS = "global,left,right"
+DEFAULT_CAMERA_LABELS = "global,left"
 REPO_ROOT = Path(__file__).resolve().parents[3]
 AUTO_VALUE_STRINGS = {"", "auto", "manifest"}
 
@@ -628,7 +628,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--overwrite_hdf5", action="store_true", default=False)
     parser.add_argument("--no_link_repo_data", action="store_true", default=False)
     parser.add_argument("--overwrite_repo_link", action="store_true", default=False)
-    parser.add_argument("--debug", action="store_true", default=False)
+    parser.add_argument("--debug", action="store_true", default=True)
     parser.add_argument("--debug_stride", type=int, default=10)
     parser.add_argument("--debug_max_frames", type=int, default=5)
     parser.add_argument("--camera_workspace_mask_root", default="")
