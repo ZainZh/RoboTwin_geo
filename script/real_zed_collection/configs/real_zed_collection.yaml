@@ -1,11 +1,13 @@
 save_data_path: /media/${USER}/Extreme SSD/geo_mani_data
-project_name: grasp_mug
+project_name: real_hanging_mug
 
 # Produced by script/real_zed_collection/calibrate_three_zed_extrinsics.py.
 calibration_path: script/real_zed_collection/calibration/three_camera_charuco_extrinsics.yaml
 
+#camera_labels: global,left
 camera_labels: global,left, right
 zed_serials: [38968158,31021548,37856216,]
+#zed_serials: [38968158,31021548]
 zed_resolution: HD1080
 zed_fps: 15
 zed_depth_mode: NEURAL
