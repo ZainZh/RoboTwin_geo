@@ -31,7 +31,8 @@ else
     extra_flags=("${@:14}")
 fi
 
-output_frame=$(resolve_real_zed_output_frame "${repo_root}" "${task_name}" "${task_config}" "${output_frame_arg}")
+#output_frame=$(resolve_real_zed_output_frame "${repo_root}" "${task_name}" "${task_config}" "${output_frame_arg}")
+output_frame=right_base
 robot_camera_calibration_path=$(
     resolve_real_zed_robot_camera_calibration_path \
         "${repo_root}" \

@@ -4,7 +4,7 @@ project_name: grasp_mug
 # Produced by script/real_zed_collection/calibrate_three_zed_extrinsics.py.
 calibration_path: script/real_zed_collection/calibration/three_camera_charuco_extrinsics.yaml
 
-camera_labels: global,left
+camera_labels: global,left, right
 zed_serials: [38968158,31021548,37856216,]
 zed_resolution: HD1080
 zed_fps: 15
