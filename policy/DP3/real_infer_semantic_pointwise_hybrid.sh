@@ -6,7 +6,7 @@ ckpt_setting="${task_config}-objpc-semantic-pointwise-hybrid"
 expert_data_num=${3:-32}
 seed=${4:-0}
 gpu_id=${5:-0}
-semantic_ckpt_A=${6:-${SEMANTIC_CKPT_A:-${HOME}/github/3d_semantic_train/outputs/utonia_universal_field/Mug_semantic/mug.pt}}
+semantic_ckpt_A=${6:-${SEMANTIC_CKPT_A:-${HOME}/DataModel/semantic/mug.pt}}
 semantic_ckpt_B=${7:-none}
 semantic_device=${8:-cuda:0}
 object_placeholders=${9:-\{A\},\{B\}}
@@ -31,7 +31,8 @@ else
     extra_flags=("${@:14}")
 fi
 
-output_frame=$(resolve_real_zed_output_frame "${repo_root}" "${task_name}" "${task_config}" "${output_frame_arg}")
+#output_frame=$(resolve_real_zed_output_frame "${repo_root}" "${task_name}" "${task_config}" "${output_frame_arg}")
+output_frame=right_base
 robot_camera_calibration_path=$(
     resolve_real_zed_robot_camera_calibration_path \
         "${repo_root}" \
