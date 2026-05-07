@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 
 task_name=${1}
 task_config=${2}
@@ -13,6 +14,19 @@ meta_path=${10:-}
 batch_size=${11:-128}
 val_batch_size=${12:-${batch_size}}
 gradient_accumulate_every=${13:-1}
+
+camera_resize_hw_for_type() {
+    case "$1" in
+        L515) echo "180,320" ;;
+        Large_L515) echo "360,640" ;;
+        D435) echo "240,320" ;;
+        Large_D435) echo "480,640" ;;
+        *)
+            echo "Unknown head_camera_type '$1'. Add it to camera_resize_hw_for_type in policy/DP/train_real_zed_multicam.sh." >&2
+            return 1
+            ;;
+    esac
+}
 
 DEBUG=False
 save_ckpt=True
@@ -30,7 +44,8 @@ export HYDRA_FULL_ERROR=1
 export CUDA_VISIBLE_DEVICES=${gpu_id}
 
 if [ ! -d "./${zarr_path}" ]; then
-    bash process_data_real_zed_multicam.sh "${task_name}" "${task_config}" "${expert_data_num}" "${camera_labels}" "${meta_path}"
+    resize_hw="$(camera_resize_hw_for_type "${head_camera_type}")"
+    bash process_data_real_zed_multicam.sh "${task_name}" "${task_config}" "${expert_data_num}" "${camera_labels}" "${meta_path}" "${resize_hw}"
 fi
 
 python train.py --config-name=robot_dp_${action_dim}.yaml \

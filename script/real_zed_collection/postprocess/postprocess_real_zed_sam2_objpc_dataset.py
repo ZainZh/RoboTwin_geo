@@ -611,7 +611,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--require_per_episode_bboxes", action="store_true", default=False)
     parser.add_argument("--calibration_path", default="auto")
     parser.add_argument("--frame_mode", default="auto", choices=["auto", "reference_camera", "workspace"])
-    parser.add_argument("--output_frame", default="source", choices=["source", "workspace", "left_base", "right_base"])
+    parser.add_argument("--output_frame", default="right_base", choices=["source", "workspace", "left_base", "right_base"])
     parser.add_argument("--robot_camera_calibration_path", default="")
     parser.add_argument("--start_episode", type=int, default=0)
     parser.add_argument("--max_episodes", type=int, default=-1)

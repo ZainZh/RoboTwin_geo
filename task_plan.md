@@ -176,6 +176,14 @@ SAM2 streaming tracking migration for real objpc training/eval data
 - [ ] Run on real ZED/robot hardware.
 - **Status:** complete with hardware run pending
 
+### Phase 21: DP Real-ZED Mixed-Resolution Training Fix
+- [x] Diagnose DP zarr preprocessing failure on mixed old/new real-ZED episodes.
+- [x] Make DP real-ZED training wrappers pass a fixed resize target from `head_camera_type`.
+- [x] Stop training immediately if real-ZED preprocessing fails.
+- [x] Add shell coverage for single-camera and multicam wrapper preprocessing args.
+- [x] Verify shell syntax and RoboTwin-environment unit tests.
+- **Status:** complete
+
 ## Decisions Made
 
 | Decision | Rationale |

@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 
 task_name=${1}
 task_config=${2}
@@ -6,10 +7,23 @@ expert_data_num=${3}
 seed=${4}
 action_dim=${5:-14}
 gpu_id=${6}
-camera_label=${7:-left}
+camera_label=${7:-global}
 head_camera_type=${8:-Large_L515}
 resume=${9:-true}
 meta_path=${10:-}
+
+camera_resize_hw_for_type() {
+    case "$1" in
+        L515) echo "180,320" ;;
+        Large_L515) echo "360,640" ;;
+        D435) echo "240,320" ;;
+        Large_D435) echo "480,640" ;;
+        *)
+            echo "Unknown head_camera_type '$1'. Add it to camera_resize_hw_for_type in policy/DP/train_real_zed.sh." >&2
+            return 1
+            ;;
+    esac
+}
 
 DEBUG=False
 save_ckpt=True
@@ -50,7 +64,8 @@ PY
 fi
 
 if [ "${needs_preprocess}" = true ]; then
-    bash process_data_real_zed.sh "${task_name}" "${task_config}" "${expert_data_num}" "${camera_label}" "${meta_path}"
+    resize_hw="$(camera_resize_hw_for_type "${head_camera_type}")"
+    bash process_data_real_zed.sh "${task_name}" "${task_config}" "${expert_data_num}" "${camera_label}" "${meta_path}" "${resize_hw}"
 fi
 
 python train.py --config-name=robot_dp_${action_dim}.yaml \

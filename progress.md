@@ -1309,3 +1309,16 @@
   - Found `global` RGB is constant `[0,134,0]` for all 58 frames, RGB std is exactly zero, frame-to-frame RGB delta is zero, and valid depth rate is only `0.000448`.
   - Found `left` and `right` are normal: nonzero RGB variance and valid depth means around `0.941` and `0.882`.
   - Saved a contact-sheet preview at `outputs/real_zed_collection/previews/episode_20260502154520_quality_check/rgb_contact_sheet_frames_000_020_057.png`.
+
+### Phase 52: DP Real-ZED Mixed-Resolution Training Fix
+- **Status:** complete
+- Actions taken:
+  - Diagnosed the user traceback from `bash train_real_zed.sh grasp_mug demo_real_zed_sam2_objpc 49 0 14 0`.
+  - Confirmed the first 49 processed episodes mix RGB shapes: 32 old `360x640` episodes and 17 new `1080x1920` episodes.
+  - Confirmed `episode_20260502154520` is not in the current processed metadata, so the reported failure is a mixed-resolution zarr issue rather than the previously inspected black-`global` episode.
+  - Added shell regression coverage that `train_real_zed.sh` and `train_real_zed_multicam.sh` pass `360,640` for `Large_L515` into their real-ZED preprocess scripts.
+  - Updated `train_real_zed.sh` and `train_real_zed_multicam.sh` to derive `resize_hw` from `head_camera_type` and forward it to preprocessing.
+  - Added `set -euo pipefail` to the DP real-ZED train/preprocess shell scripts so a preprocessing failure stops before Hydra training starts with a missing zarr.
+  - Verified with `bash policy/DP/scripts/test_real_zed_train_script_interfaces.sh`.
+  - Verified syntax with `bash -n policy/DP/train_real_zed.sh policy/DP/train_real_zed_multicam.sh policy/DP/process_data_real_zed.sh policy/DP/process_data_real_zed_multicam.sh policy/DP/scripts/test_real_zed_train_script_interfaces.sh`.
+  - Verified collection pipeline tests in the RoboTwin environment with `/home/zheng/miniforge3/envs/RoboTwin/bin/python -m unittest script.test_real_zed_collection_pipeline`.

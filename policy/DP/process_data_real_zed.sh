@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 
 task_name=${1}
 task_config=${2}

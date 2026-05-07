@@ -735,6 +735,11 @@
   - `global` depth is also effectively unusable: valid depth rate is only `0.000448`.
   - `left` and `right` channels in the same episode are normal, with visible scene content and valid depth rates around `0.94` and `0.88`.
   - Therefore this is a `global` camera capture failure, not a downstream workspace-crop/postprocess issue. The episode can still be salvaged for pipelines that use only `left` and/or `right`, but should not be used for any checkpoint/config expecting `global`.
+- DP real-ZED mixed-resolution training finding:
+  - `policy/DP/process_data_real_zed.py` expects all images for a zarr key to have identical `C,H,W` after `np.moveaxis`; otherwise `np.asarray(camera_arrays[zarr_key])` fails with an inhomogeneous-shape `ValueError`.
+  - The current `grasp_mug/demo_real_zed_sam2_objpc` processed metadata's first 49 episodes mix image sizes: 32 old episodes at `360x640` and 17 new workspace-cropped episodes at `1080x1920`.
+  - The training command's later Hydra `PathNotFoundError` is a secondary symptom: `train_real_zed.sh` continued after preprocessing failed and tried to train on a zarr path that had not been created.
+  - The correct compatibility boundary is DP preprocessing, not raw collection. DP training should resize real-ZED RGB to the configured `head_camera_type` resolution before zarr creation, matching `train.py`'s image shape setup.
 
 ---
 *Update this file after every 2 view/browser/search operations.*
