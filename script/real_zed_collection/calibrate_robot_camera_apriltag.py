@@ -586,40 +586,64 @@ def start_camera_detection_worker(
     return thread
 
 
+def _apply_button_state_transition(
+    *,
+    now_keys: np.ndarray,
+    last_keys_status: np.ndarray,
+    start_press_status: np.ndarray,
+    keys_press_count: np.ndarray,
+    command_state: np.ndarray,
+    timestamp: float,
+    button_a_press_start: list[float] | None = None,
+) -> float:
+    if button_a_press_start is None:
+        button_a_press_start = [float(timestamp)]
+    now_keys = np.asarray(now_keys, dtype=np.int64)
+    dev_keys = now_keys - last_keys_status
+    for i in range(2):
+        if dev_keys[i, 0] == -1:
+            button_a_press_start[0] = float(timestamp)
+            start_press_status[i, 0] = 1
+        if dev_keys[i, 0] == 1 and start_press_status[i, 0]:
+            start_press_status[i, 0] = 0
+            duration = float(timestamp) - float(button_a_press_start[0])
+            if duration < 0.5:
+                keys_press_count[i, 0] += 1
+                command_state[i, 0] = 1 if keys_press_count[i, 0] % 2 == 1 else 0
+                print(f"ButtonA: [{i}] {'unlock' if command_state[i, 0] else 'lock'}", command_state)
+            elif duration > 1:
+                keys_press_count[i, 1] += 1
+                command_state[i, 1] = 1 if keys_press_count[i, 1] % 2 == 1 else 0
+                print(f"ButtonA: [{i}] {'servo' if command_state[i, 1] else 'stop servo'}")
+
+    for i in range(2):
+        if dev_keys[i, 1] == -1:
+            start_press_status[i, 1] = 1
+        if dev_keys[i, 1] == 1 and start_press_status[i, 1]:
+            start_press_status[i, 1] = 0
+            keys_press_count[0, 2] += 1
+            command_state[0, 2] = 1
+
+    last_keys_status[...] = now_keys
+    return float(button_a_press_start[0])
+
+
 def button_monitor_realtime(agent) -> None:
-    last_keys_status = np.array(([0, 0], [0, 0]))
+    last_keys_status = np.asarray(agent.get_keys(), dtype=np.int64).copy()
     start_press_status = np.array(([0, 0], [0, 0]))
     keys_press_count = np.array(([0, 0, 0], [0, 0, 0]))
-    tic = time.time()
+    button_a_press_start = [time.time()]
 
     while True:
-        now_keys = agent.get_keys()
-        dev_keys = now_keys - last_keys_status
-        for i in range(2):
-            if dev_keys[i, 0] == -1:
-                tic = time.time()
-                start_press_status[i, 0] = 1
-            if dev_keys[i, 0] == 1 and start_press_status[i, 0]:
-                start_press_status[i, 0] = 0
-                toc = time.time()
-                if toc - tic < 0.5:
-                    keys_press_count[i, 0] += 1
-                    what_to_do[i, 0] = 1 if keys_press_count[i, 0] % 2 == 1 else 0
-                    print(f"ButtonA: [{i}] {'unlock' if what_to_do[i, 0] else 'lock'}", what_to_do)
-                elif toc - tic > 1:
-                    keys_press_count[i, 1] += 1
-                    what_to_do[i, 1] = 1 if keys_press_count[i, 1] % 2 == 1 else 0
-                    print(f"ButtonA: [{i}] {'servo' if what_to_do[i, 1] else 'stop servo'}")
-
-        for i in range(2):
-            if dev_keys[i, 1] == -1:
-                start_press_status[i, 1] = 1
-            if dev_keys[i, 1] == 1:
-                start_press_status[i, 1] = 0
-                keys_press_count[0, 2] += 1
-                what_to_do[0, 2] = 1
-
-        last_keys_status = now_keys
+        _apply_button_state_transition(
+            now_keys=agent.get_keys(),
+            last_keys_status=last_keys_status,
+            start_press_status=start_press_status,
+            keys_press_count=keys_press_count,
+            command_state=what_to_do,
+            timestamp=time.time(),
+            button_a_press_start=button_a_press_start,
+        )
 
 
 def _arm_slice(arm: str) -> slice:
@@ -835,6 +859,7 @@ def run_interactive_collection(args: argparse.Namespace) -> dict[str, Any]:
     camera_thread = start_camera_detection_worker(stream, args, latest_camera, camera_stop_event)
 
     env, agent, modules = _init_robot(args)
+    what_to_do[:] = 0
     button_thread = threading.Thread(target=button_monitor_realtime, args=(agent,), daemon=True)
     button_thread.start()
 

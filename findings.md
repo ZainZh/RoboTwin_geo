@@ -744,6 +744,10 @@
   - Real semantic DP3 inference uses an async control thread by default, so an in-process reset must stop stale action playback before commanding the robot back to the photo pose.
   - A terminal keyboard listener can set a shared reset event immediately, allowing the async controller to stop consuming/repeating actions even while the main perception/policy thread is still inside ZED/SAM2/DP3 work.
   - Reset should clear DP3 observation history and action-smoothing state. SAM2 tracking should remain active by default to avoid repeated box selection, with an explicit option to clear it when objects have moved or tracking is suspect.
+- Robot-camera AprilTag calibration button finding:
+  - The calibration script initialized `last_keys_status` as all zeros and treated Button B `dev_keys == 1` as capture without requiring a prior press edge.
+  - On real hardware, the initial idle Button-B state can be read as the released value, so startup can look like a release edge and set `what_to_do[0,2] = 1` before the user acts.
+  - Button B should mirror Button A edge semantics: only a release after a detected press can trigger capture, and the monitor should baseline from the current hardware key state.
 
 ---
 *Update this file after every 2 view/browser/search operations.*

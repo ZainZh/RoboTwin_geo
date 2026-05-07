@@ -1334,3 +1334,13 @@
   - Added `--reset_sam2_on_keyboard_reset`; default behavior keeps active SAM2 prompts/tracking across resets.
   - Added unit coverage for keyboard command handling, async external-stop behavior, and parser defaults.
   - Verified real-ZED inference action tests, Python syntax, shell syntax, wrapper interface tests, CLI visibility, and whitespace checks.
+
+### Phase 54: Robot-Camera AprilTag Calibration First-Sample Fix
+- **Status:** complete with hardware run pending
+- Actions taken:
+  - Diagnosed the first unusable calibration sample as a false Button-B release event at startup.
+  - Added a test proving Button B capture now requires a press edge before the release edge.
+  - Refactored button-state transition handling into a testable helper.
+  - Initialized the button monitor from the current hardware key state instead of assuming all-zero state.
+  - Cleared the global command state before starting the calibration button thread.
+  - Verified the targeted test, full robot-camera calibration tests, Python syntax, and whitespace checks.

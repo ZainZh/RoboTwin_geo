@@ -11,6 +11,7 @@ import numpy as np
 from script.real_zed_collection.calibrate_three_zed_extrinsics import load_collection_camera_mapping
 from script.real_zed_collection.calibrate_robot_camera_apriltag import (
     LatestCameraDetection,
+    _apply_button_state_transition,
     _resolve_camera_serial,
     candidate_aruco_dictionary_names,
     invert_transform,
@@ -168,6 +169,42 @@ class RobotCameraAprilTagCalibrationTest(unittest.TestCase):
         self.assertIsNotNone(latest.snapshot())
         self.assertGreaterEqual(len(capture_calls), 1)
         self.assertFalse(thread.is_alive())
+
+    def test_button_b_capture_requires_press_before_release(self):
+        last_keys = np.array(([0, 0], [0, 0]))
+        start_press = np.array(([0, 0], [0, 0]))
+        keys_press_count = np.array(([0, 0, 0], [0, 0, 0]))
+        command_state = np.array(([0, 0, 0], [0, 0, 0]))
+
+        _apply_button_state_transition(
+            now_keys=np.array(([0, 1], [0, 1])),
+            last_keys_status=last_keys,
+            start_press_status=start_press,
+            keys_press_count=keys_press_count,
+            command_state=command_state,
+            timestamp=time.time(),
+        )
+
+        self.assertEqual(command_state[0, 2], 0)
+
+        _apply_button_state_transition(
+            now_keys=np.array(([0, 0], [0, 0])),
+            last_keys_status=last_keys,
+            start_press_status=start_press,
+            keys_press_count=keys_press_count,
+            command_state=command_state,
+            timestamp=time.time(),
+        )
+        _apply_button_state_transition(
+            now_keys=np.array(([0, 1], [0, 1])),
+            last_keys_status=last_keys,
+            start_press_status=start_press,
+            keys_press_count=keys_press_count,
+            command_state=command_state,
+            timestamp=time.time(),
+        )
+
+        self.assertEqual(command_state[0, 2], 1)
 
     def test_solve_recovers_base_from_camera_for_moving_tag(self):
         camera_from_base = _axis_angle_transform([0.3, -0.2, 1.0], 0.55, [0.45, -0.25, 0.8])
