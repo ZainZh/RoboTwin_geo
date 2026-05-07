@@ -184,6 +184,14 @@ SAM2 streaming tracking migration for real objpc training/eval data
 - [x] Verify shell syntax and RoboTwin-environment unit tests.
 - **Status:** complete
 
+### Phase 22: Real DP3 In-Process Episode Reset
+- [x] Add a non-blocking keyboard command path for real DP3 inference.
+- [x] Make `r` stop any async controller, return the robot to the initial photo pose, reset policy/controller state, and restart the episode budget.
+- [x] Make `q` stop inference without restarting the Python process.
+- [x] Keep SAM2 prompts/tracking by default, with an opt-in flag to clear SAM2 state on reset.
+- [x] Verify behavior with hardware-free unit tests, syntax checks, and wrapper checks.
+- **Status:** complete with hardware run pending
+
 ## Decisions Made
 
 | Decision | Rationale |

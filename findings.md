@@ -740,6 +740,10 @@
   - The current `grasp_mug/demo_real_zed_sam2_objpc` processed metadata's first 49 episodes mix image sizes: 32 old episodes at `360x640` and 17 new workspace-cropped episodes at `1080x1920`.
   - The training command's later Hydra `PathNotFoundError` is a secondary symptom: `train_real_zed.sh` continued after preprocessing failed and tried to train on a zarr path that had not been created.
   - The correct compatibility boundary is DP preprocessing, not raw collection. DP training should resize real-ZED RGB to the configured `head_camera_type` resolution before zarr creation, matching `train.py`'s image shape setup.
+- Real DP3 in-process reset finding:
+  - Real semantic DP3 inference uses an async control thread by default, so an in-process reset must stop stale action playback before commanding the robot back to the photo pose.
+  - A terminal keyboard listener can set a shared reset event immediately, allowing the async controller to stop consuming/repeating actions even while the main perception/policy thread is still inside ZED/SAM2/DP3 work.
+  - Reset should clear DP3 observation history and action-smoothing state. SAM2 tracking should remain active by default to avoid repeated box selection, with an explicit option to clear it when objects have moved or tracking is suspect.
 
 ---
 *Update this file after every 2 view/browser/search operations.*

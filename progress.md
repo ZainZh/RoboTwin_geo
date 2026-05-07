@@ -1322,3 +1322,15 @@
   - Verified with `bash policy/DP/scripts/test_real_zed_train_script_interfaces.sh`.
   - Verified syntax with `bash -n policy/DP/train_real_zed.sh policy/DP/train_real_zed_multicam.sh policy/DP/process_data_real_zed.sh policy/DP/process_data_real_zed_multicam.sh policy/DP/scripts/test_real_zed_train_script_interfaces.sh`.
   - Verified collection pipeline tests in the RoboTwin environment with `/home/zheng/miniforge3/envs/RoboTwin/bin/python -m unittest script.test_real_zed_collection_pipeline`.
+
+### Phase 53: Real DP3 In-Process Episode Reset
+- **Status:** complete with hardware run pending
+- Actions taken:
+  - User approved adding an in-process reset key for real semantic DP3 inference so repeated 2000-step trials do not require restarting the full robot/ZED/SAM2/DP3 stack.
+  - Planned the safe reset path around stopping the async action controller before moving the robot back to the initial photo pose.
+  - Added a non-blocking terminal keyboard listener for `r` reset and `q` quit.
+  - Connected the listener to `AsyncActionController` through an external stop event so reset requests stop stale action playback before robot reset.
+  - Refactored real DP3 inference episode initialization so startup and keyboard reset both clear DP3 observation history and apply the configured initial gripper state.
+  - Added `--reset_sam2_on_keyboard_reset`; default behavior keeps active SAM2 prompts/tracking across resets.
+  - Added unit coverage for keyboard command handling, async external-stop behavior, and parser defaults.
+  - Verified real-ZED inference action tests, Python syntax, shell syntax, wrapper interface tests, CLI visibility, and whitespace checks.

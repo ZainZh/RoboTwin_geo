@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import os
+import select
 import sys
 import threading
 import time
@@ -77,6 +79,112 @@ def print_warning(*args):
 def print_error(*args):
     """Print error with red."""
     print("".join(["\033[1m\033[91m", _preprocess_print(*args), "\033[0m"]))
+
+
+class KeyboardCommandListener:
+    """Non-blocking terminal command listener for long real-robot runs."""
+
+    def __init__(
+        self,
+        *,
+        enabled: bool = True,
+        reset_key: str = "r",
+        quit_key: str = "q",
+        stream=None,
+    ):
+        self.enabled = bool(enabled)
+        self.reset_key = str(reset_key or "r")[:1].lower()
+        self.quit_key = str(quit_key or "q")[:1].lower()
+        self.stream = sys.stdin if stream is None else stream
+        self._commands: deque[str] = deque()
+        self._condition = threading.Condition()
+        self._reset_event = threading.Event()
+        self._quit_event = threading.Event()
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._old_termios = None
+
+    @property
+    def reset_event(self) -> threading.Event:
+        return self._reset_event
+
+    def reset_requested(self) -> bool:
+        return self._reset_event.is_set()
+
+    def quit_requested(self) -> bool:
+        return self._quit_event.is_set()
+
+    def clear_reset_request(self) -> None:
+        self._reset_event.clear()
+
+    def pop_commands(self) -> list[str]:
+        with self._condition:
+            commands = list(self._commands)
+            self._commands.clear()
+            return commands
+
+    def handle_key(self, key: str) -> None:
+        normalized = str(key or "")[:1].lower()
+        if not normalized:
+            return
+        with self._condition:
+            if normalized == self.reset_key:
+                self._commands.append("reset")
+                self._reset_event.set()
+                self._condition.notify_all()
+            elif normalized == self.quit_key:
+                self._commands.append("quit")
+                self._quit_event.set()
+                self._condition.notify_all()
+
+    def start(self) -> None:
+        if not self.enabled or self._thread is not None:
+            return
+        if not hasattr(self.stream, "fileno") or not self.stream.isatty():
+            print_warning("[WARN] Keyboard reset disabled because stdin is not a TTY.")
+            return
+        try:
+            import termios
+            import tty
+
+            fd = self.stream.fileno()
+            self._old_termios = termios.tcgetattr(fd)
+            tty.setcbreak(fd)
+        except Exception as exc:
+            print_warning(f"[WARN] Keyboard reset disabled; failed to configure terminal: {exc}")
+            self._old_termios = None
+            return
+        self._thread = threading.Thread(target=self._run, name="KeyboardCommandListener", daemon=True)
+        self._thread.start()
+        print_info(
+            f"[INFO] Keyboard commands enabled: press '{self.reset_key}' to reset episode, "
+            f"'{self.quit_key}' to quit."
+        )
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+            self._thread = None
+        if self._old_termios is not None:
+            try:
+                import termios
+
+                termios.tcsetattr(self.stream.fileno(), termios.TCSADRAIN, self._old_termios)
+            except Exception as exc:
+                print_warning(f"[WARN] Failed to restore terminal mode: {exc}")
+            self._old_termios = None
+
+    def _run(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                ready, _, _ = select.select([self.stream], [], [], 0.05)
+                if ready:
+                    key = self.stream.read(1)
+                    self.handle_key(key)
+            except Exception as exc:
+                print_warning(f"[WARN] Keyboard command listener stopped: {exc}")
+                return
 
 
 
@@ -730,6 +838,71 @@ def current_joint_vector(env, fallback: np.ndarray, *, use_last_gripper: bool = 
     return joints
 
 
+def reset_model_observation_history(model) -> None:
+    if hasattr(model, "env_runner") and hasattr(model.env_runner, "reset_obs"):
+        model.env_runner.reset_obs()
+
+
+def initialize_episode_action(
+    *,
+    env,
+    model,
+    args: argparse.Namespace,
+    allow_robot_reset: bool,
+    fallback_action: np.ndarray | None = None,
+) -> np.ndarray:
+    reset_model_observation_history(model)
+    if env is not None and bool(args.execute) and bool(allow_robot_reset):
+        action = reset_robot_to_photo_pose(env)
+    elif env is not None:
+        print("[INFO] Reading initial robot joint state ...")
+        action = np.asarray(env.get_obs()["joint_positions"], dtype=np.float32).reshape(14).copy()
+    elif fallback_action is not None:
+        action = np.asarray(fallback_action, dtype=np.float32).reshape(14).copy()
+    else:
+        action = np.zeros(14, dtype=np.float32)
+    action[6] = float(args.initial_left_gripper)
+    action[13] = float(args.initial_right_gripper)
+    return clamp_action(action)
+
+
+def restore_sam2_prompt_records(target: dict[str, dict[str, object]], source: Mapping[str, dict[str, object]]) -> None:
+    target.clear()
+    target.update(copy.deepcopy(dict(source)))
+
+
+def handle_requested_episode_reset(
+    *,
+    env,
+    model,
+    args: argparse.Namespace,
+    keyboard_listener: KeyboardCommandListener,
+    sam2_tracking_state_by_camera: dict[str, Any],
+    sam2_bbox_prompts_by_camera: dict[str, dict[str, object]],
+    sam2_loaded_prompts_by_camera: Mapping[str, dict[str, object]],
+    fallback_action: np.ndarray,
+) -> np.ndarray:
+    for command in keyboard_listener.pop_commands():
+        if command == "reset":
+            print_info("[INFO] Keyboard reset requested.")
+        elif command == "quit":
+            print_info("[INFO] Keyboard quit requested.")
+    keyboard_listener.clear_reset_request()
+    if bool(getattr(args, "reset_sam2_on_keyboard_reset", False)):
+        sam2_tracking_state_by_camera.clear()
+        restore_sam2_prompt_records(sam2_bbox_prompts_by_camera, sam2_loaded_prompts_by_camera)
+        print_info("[INFO] Cleared SAM2 tracking state for keyboard reset.")
+    last_action = initialize_episode_action(
+        env=env,
+        model=model,
+        args=args,
+        allow_robot_reset=True,
+        fallback_action=fallback_action,
+    )
+    print_info(f"[INFO] Episode reset complete. Restarting up to {int(args.max_steps)} steps.")
+    return last_action
+
+
 def clamp_action(action: np.ndarray) -> np.ndarray:
     out = np.asarray(action, dtype=np.float32).reshape(14).copy()
     out[6] = float(np.clip(out[6], 0.0, 1.0))
@@ -981,9 +1154,17 @@ def execute_action(
 
 
 class AsyncActionController:
-    def __init__(self, *, env, args: argparse.Namespace, initial_action: np.ndarray):
+    def __init__(
+        self,
+        *,
+        env,
+        args: argparse.Namespace,
+        initial_action: np.ndarray,
+        external_stop_event: threading.Event | None = None,
+    ):
         self.env = env
         self.args = args
+        self.external_stop_event = external_stop_event
         self._latest_action = clamp_action(initial_action)
         self._previous_command_delta = np.zeros(14, dtype=np.float32)
         self._last_target_action = self._latest_action.copy()
@@ -1090,7 +1271,11 @@ class AsyncActionController:
         period = 0.0 if hz <= 0.0 else 1.0 / hz
         idle_repeats = 0
         try:
-            while not self._stop_event.is_set() and self.step_count < int(getattr(self.args, "max_steps", 200)):
+            while (
+                not self._stop_event.is_set()
+                and not (self.external_stop_event is not None and self.external_stop_event.is_set())
+                and self.step_count < int(getattr(self.args, "max_steps", 200))
+            ):
                 loop_start = time.perf_counter()
                 raw_action, idle = self._next_action()
                 if raw_action is None:
@@ -1180,32 +1365,36 @@ def run_real_inference(args: argparse.Namespace) -> None:
     sam2_runtime = None
     sam2_tracking_state_by_camera: dict[str, Any] = {}
     sam2_bbox_prompts_by_camera: dict[str, dict[str, object]] = {}
+    sam2_loaded_prompts_by_camera: dict[str, dict[str, object]] = {}
 
     print("[INFO] Starting ZED cameras ...")
     live = start_zed_cameras(args)
     env = None
+    keyboard_listener = KeyboardCommandListener(
+        enabled=bool(args.keyboard_control),
+        reset_key=str(args.keyboard_reset_key),
+        quit_key=str(args.keyboard_quit_key),
+    )
     action_diagnostic_file = None
     action_diagnostic_writer = None
     try:
         print("[INFO] Initializing robot interface ...")
         env = build_robot_env(args)
         configure_robot_servo_params(env, args)
-        if env is not None and bool(args.execute) and not bool(args.skip_robot_reset):
-            last_action = reset_robot_to_photo_pose(env)
-        elif env is not None:
-            print("[INFO] Reading initial robot joint state ...")
-            raw = np.asarray(env.get_obs()["joint_positions"], dtype=np.float32).reshape(14)
-            last_action = raw.copy()
-        else:
-            last_action = np.zeros(14, dtype=np.float32)
-        last_action[6] = float(args.initial_left_gripper)
-        last_action[13] = float(args.initial_right_gripper)
+        keyboard_listener.start()
+        last_action = initialize_episode_action(
+            env=env,
+            model=model,
+            args=args,
+            allow_robot_reset=not bool(args.skip_robot_reset),
+        )
 
         if needs_sam2_objpc:
             print("[INFO] Loading SAM2 runtime for object point clouds ...")
             sam2_runtime = load_sam2_runtime(args, placeholders, live.labels)
             _, _, loaded_prompts = sam2_runtime
-            sam2_bbox_prompts_by_camera.update(loaded_prompts)
+            sam2_loaded_prompts_by_camera = copy.deepcopy(loaded_prompts)
+            restore_sam2_prompt_records(sam2_bbox_prompts_by_camera, sam2_loaded_prompts_by_camera)
 
         if not bool(args.execute):
             print("[INFO] Dry-run mode: model actions are printed but not sent to the robot. Pass --execute to move.")
@@ -1215,7 +1404,22 @@ def run_real_inference(args: argparse.Namespace) -> None:
                 print_warning("[WARN] --reobserve_each_action is ignored when --async_control is enabled.")
             controller: AsyncActionController | None = None
             try:
-                while controller is None or controller.step_count < int(args.max_steps):
+                while (controller is None or controller.step_count < int(args.max_steps)) and not keyboard_listener.quit_requested():
+                    if keyboard_listener.reset_requested():
+                        if controller is not None:
+                            controller.stop()
+                            controller = None
+                        last_action = handle_requested_episode_reset(
+                            env=env,
+                            model=model,
+                            args=args,
+                            keyboard_listener=keyboard_listener,
+                            sam2_tracking_state_by_camera=sam2_tracking_state_by_camera,
+                            sam2_bbox_prompts_by_camera=sam2_bbox_prompts_by_camera,
+                            sam2_loaded_prompts_by_camera=sam2_loaded_prompts_by_camera,
+                            fallback_action=last_action,
+                        )
+                        continue
                     if controller is not None:
                         controller.raise_if_error()
                         joints = controller.latest_action()
@@ -1225,6 +1429,8 @@ def run_real_inference(args: argparse.Namespace) -> None:
                     print("[TRACE] Building live point-cloud observation ...", flush=True)
                     with profile_section(chunk_timings, "build_obs_pre", bool(args.profile_timing)):
                         observation, dense_scene = build_robotwin_observation(args=args, live=live, joint_vector=joints)
+                    if keyboard_listener.reset_requested() or keyboard_listener.quit_requested():
+                        continue
                     if needs_sam2_objpc:
                         print("[TRACE] Updating SAM2 object point clouds ...", flush=True)
                         tracker_factory, extract_all_fn, _ = sam2_runtime
@@ -1240,6 +1446,8 @@ def run_real_inference(args: argparse.Namespace) -> None:
                                 tracking_state_by_camera=sam2_tracking_state_by_camera,
                                 bbox_prompts_by_camera=sam2_bbox_prompts_by_camera,
                             )
+                    if keyboard_listener.reset_requested() or keyboard_listener.quit_requested():
+                        continue
                     if bool(args.show_img):
                         with profile_section(chunk_timings, "show_img_pre", bool(args.profile_timing)):
                             maybe_show_cameras(observation, live.labels)
@@ -1250,8 +1458,15 @@ def run_real_inference(args: argparse.Namespace) -> None:
                     print("[TRACE] Running DP3 policy inference ...", flush=True)
                     with profile_section(chunk_timings, "dp3_policy", bool(args.profile_timing)):
                         actions = np.asarray(model.get_action(), dtype=np.float32).reshape(-1, 14)
+                    if keyboard_listener.reset_requested() or keyboard_listener.quit_requested():
+                        continue
                     if controller is None:
-                        controller = AsyncActionController(env=env, args=args, initial_action=joints)
+                        controller = AsyncActionController(
+                            env=env,
+                            args=args,
+                            initial_action=joints,
+                            external_stop_event=keyboard_listener.reset_event,
+                        )
                         controller.start()
                     controller.submit_actions(actions)
                     if bool(args.profile_timing):
@@ -1263,6 +1478,9 @@ def run_real_inference(args: argparse.Namespace) -> None:
                         )
                 if controller is not None:
                     controller.raise_if_error()
+                if keyboard_listener.quit_requested():
+                    keyboard_listener.pop_commands()
+                    print_info("[INFO] Keyboard quit requested. Stopping real inference.")
             finally:
                 if controller is not None:
                     controller.stop()
@@ -1278,12 +1496,33 @@ def run_real_inference(args: argparse.Namespace) -> None:
             action_diagnostic_file = diagnostics_path.open("w", newline="", encoding="utf-8")
             print(f"[INFO] Writing action diagnostics CSV: {diagnostics_path}")
         while action_step < int(args.max_steps):
+            if keyboard_listener.quit_requested():
+                keyboard_listener.pop_commands()
+                print_info("[INFO] Keyboard quit requested. Stopping real inference.")
+                return
+            if keyboard_listener.reset_requested():
+                last_action = handle_requested_episode_reset(
+                    env=env,
+                    model=model,
+                    args=args,
+                    keyboard_listener=keyboard_listener,
+                    sam2_tracking_state_by_camera=sam2_tracking_state_by_camera,
+                    sam2_bbox_prompts_by_camera=sam2_bbox_prompts_by_camera,
+                    sam2_loaded_prompts_by_camera=sam2_loaded_prompts_by_camera,
+                    fallback_action=last_action,
+                )
+                action_step = 0
+                first_action = True
+                previous_command_delta = np.zeros(14, dtype=np.float32)
+                continue
             chunk_timings: dict[str, float] = {}
             with profile_section(chunk_timings, "robot_obs_pre", bool(args.profile_timing)):
                 joints = current_joint_vector(env, last_action)
             print("[TRACE] Building live point-cloud observation ...", flush=True)
             with profile_section(chunk_timings, "build_obs_pre", bool(args.profile_timing)):
                 observation, dense_scene = build_robotwin_observation(args=args, live=live, joint_vector=joints)
+            if keyboard_listener.reset_requested() or keyboard_listener.quit_requested():
+                continue
             if needs_sam2_objpc:
                 print("[TRACE] Updating SAM2 object point clouds ...", flush=True)
                 tracker_factory, extract_all_fn, _ = sam2_runtime
@@ -1296,9 +1535,11 @@ def run_real_inference(args: argparse.Namespace) -> None:
                         camera_names=live.labels,
                         tracker_factory=tracker_factory,
                         extract_all_fn=extract_all_fn,
-                        tracking_state_by_camera=sam2_tracking_state_by_camera,
-                        bbox_prompts_by_camera=sam2_bbox_prompts_by_camera,
-                    )
+                            tracking_state_by_camera=sam2_tracking_state_by_camera,
+                            bbox_prompts_by_camera=sam2_bbox_prompts_by_camera,
+                        )
+            if keyboard_listener.reset_requested() or keyboard_listener.quit_requested():
+                continue
             if bool(args.show_img):
                 with profile_section(chunk_timings, "show_img_pre", bool(args.profile_timing)):
                     maybe_show_cameras(observation, live.labels)
@@ -1309,6 +1550,8 @@ def run_real_inference(args: argparse.Namespace) -> None:
             print("[TRACE] Running DP3 policy inference ...", flush=True)
             with profile_section(chunk_timings, "dp3_policy", bool(args.profile_timing)):
                 actions = np.asarray(model.get_action(), dtype=np.float32).reshape(-1, 14)
+            if keyboard_listener.reset_requested() or keyboard_listener.quit_requested():
+                continue
             if bool(args.profile_timing):
                 chunk_timings["chunk_total"] = sum(chunk_timings.values())
                 print_info(
@@ -1319,6 +1562,8 @@ def run_real_inference(args: argparse.Namespace) -> None:
 
             for action in actions:
                 if action_step >= int(args.max_steps):
+                    break
+                if keyboard_listener.reset_requested() or keyboard_listener.quit_requested():
                     break
                 action_loop_start = time.time()
                 step_timings: dict[str, float] = {}
@@ -1420,6 +1665,7 @@ def run_real_inference(args: argparse.Namespace) -> None:
     finally:
         if action_diagnostic_file is not None:
             action_diagnostic_file.close()
+        keyboard_listener.stop()
         live.stop()
         if bool(args.show_img):
             cv2.destroyAllWindows()
@@ -1490,6 +1736,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sam2_bbox_prompt_path", default="")
     parser.add_argument("--sam2_interactive_init", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--sam2_min_mask_points", type=int, default=16)
+    parser.add_argument(
+        "--reset_sam2_on_keyboard_reset",
+        action="store_true",
+        help="Clear online SAM2 tracking state on keyboard reset; defaults to keeping active tracks/prompts.",
+    )
 
     parser.add_argument("--robot_port", type=int, default=6001)
     parser.add_argument("--hostname", default="127.0.0.1")
@@ -1497,6 +1748,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no_robot", action="store_true")
     parser.add_argument("--skip_robot_reset", action="store_true")
     parser.add_argument("--max_steps", type=int, default=2000)
+    parser.add_argument("--keyboard_control", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--keyboard_reset_key", default="r")
+    parser.add_argument("--keyboard_quit_key", default="q")
     parser.add_argument("--control_hz", type=float, default=10.0)
     parser.add_argument("--async_control", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument(

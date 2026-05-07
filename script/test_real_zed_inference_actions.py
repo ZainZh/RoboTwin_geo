@@ -265,6 +265,69 @@ class RealZedInferenceActionTest(unittest.TestCase):
         np.testing.assert_allclose(env.commands[0], np.ones(14, dtype=np.float32) * 0.1, atol=1e-6)
         np.testing.assert_allclose(env.commands[1], np.ones(14, dtype=np.float32) * 0.2, atol=1e-6)
 
+    def test_keyboard_command_listener_records_reset_and_quit(self):
+        from script.real_zed_inference.real_dp3_inference import KeyboardCommandListener
+
+        listener = KeyboardCommandListener(enabled=False, reset_key="r", quit_key="q")
+
+        listener.handle_key("r")
+        self.assertTrue(listener.reset_requested())
+        self.assertEqual(listener.pop_commands(), ["reset"])
+        listener.clear_reset_request()
+        self.assertFalse(listener.reset_requested())
+
+        listener.handle_key("q")
+        self.assertTrue(listener.quit_requested())
+        self.assertEqual(listener.pop_commands(), ["quit"])
+
+    def test_async_action_controller_stops_on_external_reset_event(self):
+        from script.real_zed_inference.real_dp3_inference import AsyncActionController
+        import threading
+
+        class FakeEnv:
+            def __init__(self):
+                self.commands = []
+
+            def step(self, action, flag):
+                self.commands.append(np.asarray(action, dtype=np.float32).copy())
+                return {"joint_positions": np.asarray(action, dtype=np.float32).copy()}
+
+        reset_event = threading.Event()
+        env = FakeEnv()
+        args = argparse.Namespace(
+            execute=True,
+            async_control_hz=100.0,
+            async_control_max_idle_repeats=100,
+            max_steps=50,
+            max_executed_joint_delta=0.5,
+            max_executed_gripper_delta=0.5,
+            max_executed_joint_delta_change=0.0,
+            max_executed_gripper_delta_change=0.0,
+            execution_substeps=1,
+            execution_substep_sleep_sec=0.0,
+            disable_action_delta_safety=True,
+            max_action_delta=0.35,
+            interpolate_first_action=False,
+            disable_xyz_safety=True,
+            profile_timing=False,
+            action_diagnostics_csv="",
+        )
+        controller = AsyncActionController(
+            env=env,
+            args=args,
+            initial_action=np.zeros(14, dtype=np.float32),
+            external_stop_event=reset_event,
+        )
+        controller.start()
+        controller.submit_actions([np.ones(14, dtype=np.float32) * 0.2])
+        controller.wait_until_steps(1, timeout_sec=1.0)
+        reset_event.set()
+        stopped_step = controller.step_count
+        time.sleep(0.05)
+        controller.stop()
+
+        self.assertLessEqual(controller.step_count, stopped_step + 1)
+
 
 class RealZedInferencePointcloudTest(unittest.TestCase):
     def test_camera_frame_to_output_pc_filters_workspace_before_output_transform(self):
@@ -319,6 +382,10 @@ class RealZedInferencePointcloudTest(unittest.TestCase):
         self.assertAlmostEqual(args.max_executed_gripper_delta_change, 0.0)
         self.assertFalse(args.async_control)
         self.assertAlmostEqual(args.async_control_hz, 0.0)
+        self.assertTrue(args.keyboard_control)
+        self.assertEqual(args.keyboard_reset_key, "r")
+        self.assertEqual(args.keyboard_quit_key, "q")
+        self.assertFalse(args.reset_sam2_on_keyboard_reset)
 
     def test_configure_robot_servo_params_calls_robot_env(self):
         from script.real_zed_inference.real_dp3_inference import configure_robot_servo_params
