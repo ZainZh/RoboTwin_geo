@@ -1,5 +1,145 @@
 # Findings & Decisions
 
+## Real Three-ZED Collection Pipeline (2026-04-24)
+
+### Existing xtrainer control path
+- `include/xtrainer_clover/experiments/run_control.py` uses three RealSense RGB camera threads, `BimanualAgent`, two `DobotAgent`s, `RobotEnv`, and `ZMQClientRobot`.
+- The main loop preserves button-driven lock/servo/recording semantics through the shared `what_to_do` state.
+- During DP recording, the script saves one pkl per frame through `scripts.format_obs.save_dp_frame(...)`.
+- The saved DP frame currently contains robot `obs`, `control`, activation flags, and RGB images named `base_rgb`, `left_wrist_rgb`, and `right_wrist_rgb`.
+- The current xtrainer collection path does not record depth, camera intrinsics/extrinsics, per-camera point clouds, fused scene point clouds, or object point clouds.
+
+### Real-ZED DP image baseline notes (2026-04-27)
+- `policy/DP` is an image-based DP baseline. Its original preprocess/dataset path only writes and loads `head_camera`, while `deploy_policy.py` already constructs `head_cam`, `left_cam`, and `right_cam` observations during inference.
+- `MultiImageObsEncoder` already supports multiple RGB keys through `shape_meta.obs`; the missing pieces were a multi-camera zarr layout and a dataset/config that exposes all three image observations.
+- The real-ZED raw RGB frames are `360x640`, so `Large_L515` is the correct camera config for this real image baseline unless the frames are explicitly resized during preprocessing.
+- The compact SAM2 objpc HDF5 files do not store `/observation/*/rgb`, but `real_zed_sam2_objpc_meta.json` links each processed episode back to the raw episode directory. DP image zarr generation should therefore read RGB from raw ZED frame NPZs and joint vectors from the compact HDF5.
+- The three-camera branch maps raw camera labels as `global -> head_camera`, `left -> left_camera`, and `right -> right_camera`; DP training sees those as `head_cam`, `left_cam`, and `right_cam`.
+
+### RoboTwin `policy/DP` vs xtrainer `ModelTrain/dp` (2026-04-28)
+- RoboTwin `policy/DP` is a Hydra/zarr-based fork of the diffusion_policy image workspace. It preprocesses RoboTwin HDF5 or real-ZED raw/meta into zarr with `head_camera`, optional `left_camera/right_camera`, `state`, `action`, and `meta/episode_ends`.
+- xtrainer `ModelTrain/dp` is a standalone training pipeline around `Agent`, `Dataset`, and `DiffusionPolicy`. It reads xtrainer trajectory folders of per-frame `.pkl` files, optionally loads images lazily or through memmap, and builds train/eval split from directory names.
+- RoboTwin DP default is `horizon=8`, `n_obs_steps=3`, `n_action_steps=6`, `num_epochs=600`, `batch_size=128`, action dim 14/16 by config, image ResNet18 feature dim 512 per camera, and ImageNet normalization.
+- xtrainer DP default is `pred_horizon=16`, `obs_horizon=1`, `action_horizon=8`, `epochs=300`, `batch_size=32`, action dim fixed at 14 in `Agent`, ResNet18 projected to `image_output_size=32` per camera, image resize to `240x320`, random crop to `216x288`, and normalization with mean/std 128 for RGB.
+- RoboTwin DP conditions diffusion through `MultiImageObsEncoder` global condition and uses `DiffusionUnetImagePolicy`; xtrainer DP manually concatenates encoded modalities in order `eef, hand_pos, img, pos, touch` and feeds a custom `ConditionalUnet1D`.
+- RoboTwin DP currently uses only RGB + joint vector for real-ZED DP baseline; xtrainer DP can select `representation_type` such as `img-pos`, `eef`, `hand_pos`, `touch`, and `depth`, with optional delta action modes.
+
+### Real DP3 inference requirements (2026-04-28)
+- xtrainer `experiments/run_inference.py` commands the real robot with 14D joint actions through `RobotEnv.step(action, np.array([1,1]))`, clamps gripper dimensions `6` and `13` into `[0,1]`, and initializes observations from `env.get_obs()["joint_positions"]`.
+- RoboTwin DP3 deployment should reuse `policy/DP3/deploy_policy.py:get_model()` plus `encode_obs(...)`, because that path already loads the correct checkpoint, EMA setting, NDF/semantic models, and DP3 `RobotRunner` action queue.
+- For the user's baseline `train.sh` model, the real observation only needs `joint_action/vector` and a fused `/pointcloud` with shape `[1024,6]`.
+- For the user's `train_semantic_pointwise_hybrid.sh` model, the real observation needs both the hybrid main context point cloud and `object_pointcloud/{A,B}` so `encode_obs(...)` can compute `semantic_point_cloud_A` from the semantic checkpoint.
+- Existing `policy/DP3/scripts/sam2_pointcloud_utils.py` can produce `{A}/{B}` object point clouds online if the observation contains per-camera `rgb`, `intrinsic_cv`, and `extrinsic_cv`; this matches the real-ZED live camera frames once they are transformed into the workspace/world frame.
+- `RobotRunner.get_action(policy, observation)` accepts one encoded observation at a time and returns an action chunk. A real execution script should update the DP3 observation cache, iterate the returned actions, send them to `RobotEnv.step`, and rebuild live observations between actions.
+- For real-ZED online SAM2 projection, `extrinsic_cv` must be world-to-camera. The live inference script therefore stores `invert_transform(T_world_from_camera)` in `observation/<camera>/extrinsic_cv` while keeping `cam2world_gl` as `T_world_from_camera`.
+- The real inference wrappers default to dry-run mode and require `--execute` to command the robot. This prevents accidentally moving hardware during model/camera/prompt checks.
+- Real control machines should not need full RoboTwin simulator dependencies for DP3 real inference. The blocking import chain was `policy/DP3/deploy_policy.py` importing `sapien.core` and `envs` at module import time, even though real inference only needs `get_model` and `encode_obs`.
+- A second unnecessary real-inference dependency chain was `deploy_policy.py -> object_pointcloud_utils.py -> ndf_feature_utils.py`. Baseline and semantic-pointwise-hybrid real inference do not need NDF, so both direct and indirect NDF imports should be lazy.
+
+### Robot-camera calibration design notes (2026-04-28)
+- xtrainer/RoboTwin teleoperation uses Button A short press for lock/unlock, Button A long press for servo, and Button B rising edge for recording/green-light events.
+- `RobotEnv.get_obs()["ee_pos_quat"]` is currently zero-filled in xtrainer's Dobot driver, so robot-camera calibration cannot rely on that field.
+- The usable robot pose source is `RobotEnv.get_XYZrxryrz_state()`, which returns concatenated left/right Cartesian poses `[x,y,z,rx,ry,rz]` from Dobot `GetPose()`.
+- For an AprilTag cube held by the gripper and observed by a fixed external camera, each sample gives `T_base_from_gripper_i` from the robot and `T_camera_from_tag_i` from tag PnP.
+- This is a target-on-gripper / fixed-camera calibration. With OpenCV `calibrateRobotWorldHandEye`, map algorithm world to the fixed camera frame and algorithm camera to the moving tag frame:
+  - input `world2cam` as `T_tag_from_camera_i = inverse(T_camera_from_tag_i)`
+  - input `base2gripper` as `T_gripper_from_base_i = inverse(T_base_from_gripper_i)`
+  - output `base2world` as `T_camera_from_base`, whose inverse is the needed `T_base_from_camera`
+  - output `gripper2cam` as `T_tag_from_gripper`, which is the fixed tag/cube mounting transform
+- Left and right arms should be calibrated separately because xtrainer exposes separate left/right Dobot base frames.
+- Implemented `script/real_zed_collection/calibrate_robot_camera_apriltag.py` as a standalone interactive collector/solver. It opens one ZED by calibration label or serial number, detects ArUco/AprilTag markers with OpenCV ArUco, captures samples with Button B, and writes `t_camera_from_base`, `t_base_from_camera`, `t_tag_from_gripper`, per-sample residuals, debug images, and raw sample JSON/YAML.
+- The calibration script keeps xtrainer-style Button A lock/servo behavior and reuses the same servo safety checks from `collect_zed_robotwin_raw.py`.
+- The default pose conversion assumes Dobot Cartesian pose units are millimeters and Euler angles are degrees (`--pose_xyz_unit mm --pose_rotation_mode euler_deg --pose_euler_order xyz`); these are explicit CLI parameters so hardware validation can adjust convention if needed.
+- The marker detector now accepts `--marker_dictionary`, including explicit dictionaries such as `DICT_4X4_50` and an `auto` mode that tries common ArUco and AprilTag dictionaries. For the user's single-face ArUco marker with id 4, run with `--tag_id 4` and either the known dictionary or `--marker_dictionary auto`.
+- Three-ZED extrinsic calibration and robot-camera calibration now default to `script/real_zed_collection/configs/real_zed_collection.yaml` for `camera_labels`/`zed_serials`. Explicit `--serials` in three-ZED calibration and explicit `--zed_serial` in robot-camera calibration still override this config.
+- Robot-camera calibration now runs ZED frame capture and marker detection in a background worker thread. The robot control loop reads the latest camera snapshot and records `camera_frame_age_sec` for every captured sample, so image processing latency is visible without blocking servo control.
+- Real-ZED HDF5 postprocessing and real DP3 inference now support `output_frame` values `source`, `workspace`, `left_base`, and `right_base`. For `left_base/right_base`, the code composes each camera transform as `T_base_from_robot_camera @ inverse(T_source_from_robot_camera) @ T_source_from_camera_i`, so scene and object point clouds plus `cam2world_gl/extrinsic_cv` are expressed in the selected arm base frame.
+- When postprocessing outputs to a robot base frame, workspace 3D crop bounds are not applied after the frame transform, because those bounds live in workspace/source coordinates. Use collection-time workspace crop or 2D workspace masks when training in base frame.
+
+### Existing DP3 training data expectations
+- `policy/DP3/scripts/process_data.py` expects RoboTwin-style HDF5 episodes under `data/<task>/<task_config>/data/episode{i}.hdf5`.
+- The minimum baseline DP3 fields are `/joint_action/vector` and `/pointcloud`.
+- Object-pointcloud and pointwise feature branches read optional `/object_pointcloud/{placeholder}` datasets.
+- `policy/DP3/scripts/object_pointcloud_utils.py` loads `/observation/head_camera/intrinsic_cv`, `extrinsic_cv`, `cam2world_gl`, and `mesh_segmentation` as simulator fallback metadata, but if `/object_pointcloud/{A}` exists the preprocessors use it directly.
+- Existing NDF, semantic, Utonia, and interaction branches can all reuse canonical object point clouds and generate their own feature zarr outputs later.
+
+### Design implication
+- Real-world collection should not try to mimic simulator actor segmentation online. It should record calibrated RGB-D/pointcloud data once, then derive `/pointcloud` and `/object_pointcloud/{A,B,...}` in a postprocess step using real segmentation masks.
+- A model-agnostic canonical HDF5 episode is the correct compatibility boundary. Model-specific zarr preprocessing should remain separate and reuse the existing DP3 scripts.
+
+### Calibration findings
+- `/home/zheng/github/geometry_awareness_manipulation/scripts/tools/calibrate_three_zed_charuco_extrinsics.py` opens three ZED cameras, detects one shared Charuco board across multiple poses, and writes `three_camera_charuco_extrinsics.yaml`.
+- Its output contains per-camera serial numbers, camera intrinsics, residual statistics, and `relative_to_reference.<label>.t_ref_from_cam`.
+- This is sufficient for three-ZED relative fusion in the reference camera frame.
+- It is not sufficient by itself to define the canonical robot training frame. For DP3-style real data, we still need either `T_robot_base_from_ref_camera` or an explicit table/world frame transform that is fixed across collection and inference.
+- Existing scripts in `geometry_awareness_manipulation` include robot/base-related utilities such as `detect_charuco_to_robot_point.py`, but the new RoboTwin real collection path should treat reference-camera-to-robot-base calibration as a first-class config input.
+
+### First implementation
+- Added `script/real_zed_collection/` as a separate execution folder so real collection code does not mix with `policy/DP3`.
+- `collect_zed_robotwin_raw.py` keeps the original button semantics and robot joint-space recording path while replacing RealSense RGB capture with three ZED RGB-D capture threads.
+- Raw data is saved as one manifest plus per-frame `robot_*.npz` and `<camera>_*.npz` files.
+- `segment_objects_sam.py` is separate from collection and writes masks under `<mask_root>/<placeholder>/<camera>/mask_XXXXXX.png`.
+- `postprocess_raw_to_robotwin_hdf5.py` converts one raw episode plus masks into RoboTwin-compatible HDF5 with `/joint_action/vector`, `/pointcloud`, `/object_pointcloud/{placeholder}`, and per-camera observation groups.
+- First version uses `frame_mode=reference_camera`; robot-base/table-frame support remains an explicit extension.
+
+### Workspace crop extension requirements (2026-04-27)
+- The collected raw data currently uses the `global` ZED camera as the reference/world frame. This is useful for fusion but awkward for stable physical workspace crop ranges.
+- The desired next version should define an explicit `workspace` frame from a deliberately placed Charuco board after camera extrinsic calibration.
+- Calibration health can be checked without robot hand-eye calibration by detecting the same workspace board from multiple ZEDs, transforming each camera's `T_cam_from_board` into the current reference frame, and measuring pairwise residuals. Large translation/rotation residuals indicate the three-camera extrinsics or physical camera positions have drifted.
+- Future collection should be allowed to save cropped RGB/depth to reduce disk use, but each cropped frame must preserve enough metadata for later point-cloud reconstruction: crop pixel box, adjusted crop intrinsics, original image/depth shape, `T_workspace_from_camera`, and workspace bbox parameters.
+- It is safer to optionally save occasional full-frame debug snapshots even when normal frames are cropped.
+
+### Workspace crop implementation notes (2026-04-27)
+- `script/real_zed_collection/calibrate_workspace_frame.py` defines the workspace frame from a single deliberately placed Charuco board and writes a calibration YAML that still contains the original three-camera calibration plus `workspace` and `relative_to_workspace` sections.
+- Calibration health is measured by transforming each camera's observed board pose into the reference-camera frame and comparing all samples against the averaged anchor pose.
+- `load_three_zed_calibration(..., frame_mode="workspace")` now returns `t_world_from_cam` as `T_workspace_from_camera`.
+- Live cropped collection stores cropped `rgb`, cropped `depth_m`, crop-adjusted `camera_matrix`, original shapes, ROI boxes, workspace bounds, and `t_workspace_from_camera` per camera NPZ.
+- When `frame_mode=workspace`, postprocess and point-cloud export prefer `workspace_calibration_snapshot_path` / `workspace_calibration_path` from the manifest.
+- Existing full raw episodes can be reprocessed with `postprocess_raw_to_robotwin_hdf5.py --frame_mode workspace --workspace_crop_* ...`; this crops fused scene/object point clouds in workspace coordinates and stores cropped per-camera RGB/depth observations.
+- The first workspace anchor file treated Charuco board +Z as workspace +Z. For the user's tabletop setup, board +Z points into the table, so the correct long-term convention is `workspace +Z = board -Z` with a right-handed rotation `diag(1,-1,-1)`.
+- Old raw episodes can have camera label and serial order mismatches. The observed example mapped `raw global -> calibration right`, `raw left -> calibration global`, and `raw right -> calibration left`. Serial-based remapping is now the correct default for preview/postprocess/cropped collection.
+- With cropped collection and `workspace_crop_resize_rgb=false`, RGB is saved at the crop ROI's native camera resolution. Full-frame HD1080 RGB for all three cameras would add about 18 MB/frame uncompressed before any depth data, so full-frame RGB should be kept as debug snapshots unless compressed image storage is added.
+
+## New Task: `pour_kettle_mug` (2026-04-16)
+
+### Requirements
+- Implement a new environment task named `pour_kettle_mug`.
+- Use only the left arm.
+- Grasp `009_kettle`, keep `039_mug` untouched on the table, and move the spout above the mug before tilting into a pouring pose.
+- Use geometry-only success criteria; no liquid simulation is required.
+- Randomize the mug position within a small region.
+- Integrate the task with:
+  - dynamic task import from `envs.{task_name}`
+  - language instruction generation via `description/task_instruction/{task}.json`
+  - object-pointcloud placeholder mapping
+  - eval step limit configuration
+
+### Research Findings
+- `script/collect_data.py` and related entrypoints dynamically import tasks by `envs.{task_name}` and instantiate a same-named class.
+- `Base_Task._init_task_env_()` initializes the scene, robot, camera, and calls `load_actors()` before running `play_once()`.
+- `009_kettle` is a URDF articulation asset with:
+  - contact point `0` on `link_1` usable as a handle grasp point
+  - functional point `0` on `link_2` usable as a spout proxy
+- `039_mug` is a standard actor asset with:
+  - multiple contact points for generic grasping
+  - functional point `1` at the mug bottom, suitable as a base reference for approximating the mug opening center
+- Existing object descriptions already exist for both `009_kettle` and `039_mug`, so no new object-description JSON files are needed.
+- Existing lightweight tests in `script/` prefer parsing source files or checking config/text integration rather than requiring a full simulator rollout.
+
+### Implementation Direction
+- Favor a source-level integration test first, not a heavy simulator test.
+- Use a minimal new test to verify:
+  - the task source exists
+  - the class name matches the module name
+  - the source includes the expected info placeholders and pointcloud-target wiring assumptions where possible
+- Then implement the environment file and task metadata changes.
+
+### Verification Findings
+- The new source-level integration test `python script/test_pour_kettle_mug_task_integration.py` now passes with `5` tests.
+- `python -m py_compile envs/pour_kettle_mug.py script/test_pour_kettle_mug_task_integration.py envs/object_pointcloud_targets.py` passes.
+- Direct runtime module import for any `envs.*` task currently fails in this shell environment because `sapien` is not installed here; the same failure occurs for an existing task (`envs.place_object_basket`), so this is an environment limitation rather than a `pour_kettle_mug`-specific regression.
+- Remaining risk: the final pouring quaternion and spawn ranges have not been validated in a live simulator rollout inside this session.
+
 ## Requirements
 - User explicitly invoked `planning-with-files`.
 - Initialize persistent planning files in the project root for this repository.
@@ -151,6 +291,8 @@
 - `train_ndf_pointwise.sh` correctly forwards `ndf_dgcnn_placeholders`
 - `train_semantic_pointwise.sh` now defaults back to `batch_size=256`, `val_batch_size=batch_size`, and `use_ema=true`
 - `use_ema` in this codebase means training and saving an exponential moving average copy of the policy weights. In practice it usually stabilizes eval and often gives a modest improvement, but the impact is task-dependent rather than guaranteed to be large.
+- New task on 2026-04-13: explain how `train_ndf_pointwise_hybrid.sh` combines baseline object-PCD observations with NDF pointwise features, then build the analogous `semantic_pointwise_hybrid` path.
+- New task on 2026-04-14: add actorseg-based hybrid training/eval for both NDF and semantic, mirroring the successful `objpc + feature-branch` hybrid structure while using mask-project-fuse object point clouds like `train_objpc_actorseg`.
 - User-provided experiment evidence: the existing global-NDF path (`train_ndf.sh` / `robot_dp3_ndf`) was already tested using `policy/DP3/checkpoints/hanging_mug-demo_clean_3d_object_pc-objpc-ndf-50_0`, and it caused a severe behavioral regression: the robot often failed to approach the mug, consistent with losing or underusing object location information.
 - This is consistent with the current global-NDF integration design:
 - `compute_ndf_feature(...)` explicitly normalizes the object point cloud by centering and scaling it before extracting the descriptor, making the NDF feature pose-invariant by construction, see `normalize_object_point_cloud(...)` in [ndf_feature_utils.py](/home/zheng/github/RoboTwin_geo/policy/DP3/scripts/ndf_feature_utils.py#L431).
@@ -193,9 +335,199 @@
 - `bash -n policy/DP3/process_data_ndf_pointwise_hybrid.sh` passed
 - `bash -n policy/DP3/train_ndf_pointwise_hybrid.sh` passed
 - `bash -n policy/DP3/eval_ndf_pointwise_hybrid.sh` passed
+- `train_ndf_pointwise_hybrid.sh` keeps the baseline merged raw `point_cloud` because its preprocess wrapper adds `--keep_feature_placeholders_in_context`, while still injecting `ndf_point_cloud_A/B` through `+task.dataset.extra_obs_keys=[...]` and dynamic shape overrides. This is the exact pattern to mirror for a semantic hybrid.
+- The current semantic pointwise path still removes feature placeholders from the main `point_cloud`:
+  - offline preprocessing in `process_data_semantic_pointwise.py` sets `context_placeholders = placeholders - feature_placeholders`
+  - runtime `deploy_policy.py` only keeps feature placeholders in the main `point_cloud` when `use_ndf_pointwise_hybrid=True`
+  - there is no `use_semantic_pointwise_hybrid` branch yet
+- The minimum semantic-hybrid delta is therefore:
+  - allow semantic preprocessing to accept `--keep_feature_placeholders_in_context`
+  - add a thin wrapper `process_data_semantic_pointwise_hybrid.py`
+  - add matching `train/eval/process` shell entrypoints and Hydra config/task-config names
+  - extend runtime `deploy_policy.py` with a `use_semantic_pointwise_hybrid` mode that reuses the same context-building helper as NDF hybrid
+- The requested `semantic_pointwise_hybrid` path has now been implemented with the same observation structure as the NDF hybrid:
+  - main `point_cloud` keeps the baseline merged raw ObjPC
+  - `semantic_point_cloud_A/B` remain extra point-cloud branches
+  - low-dim `agent_pos` is unchanged
+- Important encoder clarification:
+  - DP3 does not concatenate raw point cloud, semantic pointwise cloud, and agent state at the point level
+  - instead, [DP3Encoder](/home/zheng/github/RoboTwin_geo/policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/model/vision/pointnet_extractor.py#L194) encodes each point-cloud key with its own PointNet extractor, encodes low-dim state with a separate MLP, then concatenates the branch-level features
+  - therefore `semantic_pointwise_hybrid` means `f_raw_objpc || f_semantic_pointwise || f_agent_pos`, not `[xyz|rgb|semantic|state]` inside one shared PointNet
+- New semantic hybrid entrypoints now exist:
+  - `policy/DP3/scripts/process_data_semantic_pointwise_hybrid.py`
+  - `policy/DP3/process_data_semantic_pointwise_hybrid.sh`
+  - `policy/DP3/train_semantic_pointwise_hybrid.sh`
+  - `policy/DP3/eval_semantic_pointwise_hybrid.sh`
+- New task on 2026-04-14 (later): add a richer actor-segmentation data collection config so actorseg extraction can use per-camera raw geometry instead of the already-downsampled scene pointcloud, and verify how close the upgraded actorseg clouds are to `object_pointcloud`.
+- Current actorseg offline training data in `data/hanging_mug/demo_clean_3d_actorseg/data/episode0.hdf5` contains:
+  - `observation/*/actor_segmentation`
+  - `observation/*/intrinsic_cv`
+  - `observation/*/extrinsic_cv`
+  - `observation/*/cam2world_gl`
+  - RGB
+  - a precomputed whole-scene `pointcloud (T, 1024, 6)`
+- The same file does **not** contain per-camera raw `Position` buffers or depth maps, so current actorseg training cannot be losslessly upgraded to `objpc`-quality extraction without recollecting data.
+- The current actorseg collection configs also confirm this limitation:
+  - `task_config/demo_clean_3d_actorseg.yml` has `depth: false`
+  - `task_config/demo_randomized_3d_actorseg.yml` has `depth: false`
+  - both keep `actor_segmentation: true` and `pointcloud: true`
+- The current `objpc` path and current actorseg path are structurally different:
+  - `objpc` in `envs/camera/camera.py` directly filters raw per-camera `Position` pixels by actor ids from `Segmentation[..., 1]`, merges per-camera object points, then downsamples per object
+  - actorseg in `policy/DP3/scripts/actorseg_pointcloud_utils.py` starts from an already-downsampled whole-scene `pointcloud` and projects those sparse points back into actor-segmentation images to recover A/B
+- Because the whole-scene `pointcloud` is already downsampled to `1024` points in `envs/camera/camera.py` before actorseg extraction sees it, current actorseg can differ substantially from `objpc`, especially for fine structures like mug handles and rack hooks.
+- If actorseg extraction is changed to use the same per-camera raw `Position` buffer as `objpc`, together with the same actor-segmentation truth mask and the same cameras, then actorseg and `objpc` should become very close in practice. The major current gap is implementation order, not label quality.
+- New task on 2026-04-14 (later): raise the `object_pointcloud` path to 5000 points without breaking existing 1024-point checkpoints.
+- Current `object_pc` training and evaluation cannot be switched to 5000 points by changing only the collection config:
+  - collection-side `object_pointcloud.point_num` controls how many real object points are saved into HDF5
+  - preprocessing `process_data_objpc.py` still defaults to `--target_num_points 1024`
+  - DP3 task config `demo_task_objpc.yaml` still declares `point_cloud.shape: [1024, 6]`
+- Existing collected `demo_clean_3d_object_pc` data is already stored as `object_pointcloud/{A,B}: (T, 1024, 6)`, so it cannot be losslessly upgraded to real 5000-point object clouds without recollection.
+- To avoid breaking existing 1024-point checkpoints, a separate 5000-point path is safer than mutating the current default path in place.
+- The new isolated 5000-point ObjPC path now exists:
+  - collection configs:
+    - `task_config/demo_clean_3d_object_pc_5000.yml`
+    - `task_config/demo_randomized_3d_object_pc_5000.yml`
+  - DP3 configs:
+    - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/task/demo_task_objpc_5000.yaml`
+    - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/robot_dp3_objpc_5000.yaml`
+  - scripts:
+    - `policy/DP3/train_objpc_5000.sh`
+    - `policy/DP3/eval_objpc_5000.sh`
+- `policy/DP3/process_data_objpc.sh` now accepts an explicit fifth positional argument `target_num_points`, so the 5000-point training path can preprocess to 5000 without changing the old 1024-point path.
+- Training impact expectation for `1024 -> 5000`:
+  - point count grows by about `4.88x`
+  - PointNet/point-cloud encoding cost and memory usually increase substantially, often near-linearly in practice
+  - training speed should be expected to drop noticeably and GPU memory usage to rise materially
+- New task on 2026-04-14 (later): keep the hybrid main raw `point_cloud` branch at `1024`, but raise only the NDF / semantic feature point-cloud branches to `5000`.
+- Current DP3 hybrid structure makes this feasible:
+  - `point_cloud` and `ndf_point_cloud_*` / `semantic_point_cloud_*` are encoded as separate branches
+  - they are concatenated after branch-level encoding
+  - there is no requirement that the raw branch and feature branch use the same point count or per-point alignment
+- Important limitation:
+  - if the underlying object point cloud source is still only `1024` real points, requesting `5000` feature points only causes repeated resampling / padding, not new geometry information
+  - therefore the new `feature5000` path only makes sense together with recollected `5000`-point `object_pc` data
+- A new isolated `feature5000` hybrid path now exists for both NDF and semantic:
+  - NDF:
+    - `policy/DP3/process_data_ndf_pointwise_hybrid_feat5000.sh`
+    - `policy/DP3/train_ndf_pointwise_hybrid_feat5000.sh`
+    - `policy/DP3/eval_ndf_pointwise_hybrid_feat5000.sh`
+    - `policy/DP3/scripts/process_data_ndf_pointwise_hybrid_feat5000.py`
+    - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/task/demo_task_ndf_pointwise_hybrid_feat5000.yaml`
+    - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/robot_dp3_ndf_pointwise_hybrid_feat5000.yaml`
+  - Semantic:
+    - `policy/DP3/process_data_semantic_pointwise_hybrid_feat5000.sh`
+    - `policy/DP3/train_semantic_pointwise_hybrid_feat5000.sh`
+    - `policy/DP3/eval_semantic_pointwise_hybrid_feat5000.sh`
+    - `policy/DP3/scripts/process_data_semantic_pointwise_hybrid_feat5000.py`
+    - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/task/demo_task_semantic_pointwise_hybrid_feat5000.yaml`
+    - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/robot_dp3_semantic_pointwise_hybrid_feat5000.yaml`
+- The new `feature5000` paths keep:
+  - main raw `point_cloud.shape = [1024, 6]`
+  - `ndf_point_cloud_*` / `semantic_point_cloud_*` default point count = `5000`
+  - distinct train/eval/checkpoint naming via the suffix `-feat5000`
+- New task on 2026-04-15: fix `process_data_semantic_pointwise_hybrid_feat5000.sh` being killed during preprocessing.
+- Root cause of the `Killed` failure:
+  - `process_data_semantic_pointwise.py` and `process_data_ndf_pointwise.py` originally accumulated every frame of `point_cloud`, feature point clouds, `state`, and `action` in Python lists and only wrote zarr at the very end.
+  - With `semantic_num_points=5000`, a single semantic frame is about `5000 x (3+128) x 4 bytes ~= 2.5 MB`.
+  - For roughly `16750` training frames in a 50-demo `hanging_mug` run, semantic pointwise arrays alone are about `40.9 GB` before accounting for raw point clouds, actions/states, and Python container overhead.
+  - Therefore the shell-side `Killed` is consistent with the Linux OOM killer, not with a Python exception or checkpoint incompatibility.
+- The fix was applied at the shared base preprocess layer, not just the feat5000 wrappers:
+  - `policy/DP3/scripts/process_data_semantic_pointwise.py`
+  - `policy/DP3/scripts/process_data_ndf_pointwise.py`
+- Both preprocessors now:
+  - open or resume a replay buffer with `open_or_reset_replay_buffer(...)`
+  - build arrays only for one episode at a time
+  - append that episode immediately with `append_episode_to_buffer(...)`
+  - update metadata JSON after each episode
+- New shared metadata helper:
+  - `policy/DP3/scripts/pointwise_preprocess_meta.py`
+- Because the fix is in the base preprocess scripts, all wrapper paths that call them inherit the improvement automatically:
+  - regular pointwise
+  - hybrid
+  - feat5000 wrappers
+- The new `feat5000` training wrappers were also hardened against stale partial preprocess directories:
+  - `policy/DP3/train_semantic_pointwise_hybrid_feat5000.sh`
+  - `policy/DP3/train_ndf_pointwise_hybrid_feat5000.sh`
+- They now validate that the target zarr contains at least `data/point_cloud`, `data/state`, `data/action`, and `meta/episode_ends` before skipping preprocessing. This avoids the old “directory exists but preprocess died halfway” failure mode after an OOM kill.
+  - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/robot_dp3_semantic_pointwise_hybrid.yaml`
+  - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/task/demo_task_semantic_pointwise_hybrid.yaml`
+- Fresh verification evidence for the semantic hybrid work:
+  - `python policy/DP3/scripts/test_semantic_pointwise_hybrid.py` passed with `3` tests
+  - `python policy/DP3/scripts/test_ndf_pointwise_hybrid.py` still passed with `3` tests
+  - `python -m py_compile policy/DP3/deploy_policy.py policy/DP3/scripts/process_data_semantic_pointwise.py policy/DP3/scripts/process_data_semantic_pointwise_hybrid.py policy/DP3/scripts/test_semantic_pointwise_hybrid.py` passed
+  - `bash -n policy/DP3/process_data_semantic_pointwise_hybrid.sh` passed
+  - `bash -n policy/DP3/train_semantic_pointwise_hybrid.sh` passed
+  - `bash -n policy/DP3/eval_semantic_pointwise_hybrid.sh` passed
+- New debugging result on 2026-04-14 for `eval_ndf_pointwise_hybrid.sh`:
+  - The checkpoint mismatch was not caused by a changed model definition in training.
+  - The user invocation omitted the explicit empty `ndf_dgcnn_placeholders` argument:
+    - intended order: `... ndf_device ndf_dgcnn_placeholders object_placeholders checkpoint_num`
+    - actual call placed `"{A},{B}"` into `ndf_dgcnn_placeholders` and `3000` into `object_placeholders`
+  - Evidence:
+    - eval log showed `[DP3Encoder] point cloud keys: ['point_cloud']`, which means `ndf_point_cloud_A` was never injected into the eval model shape meta
+    - the checkpoint state dict *does* contain `obs_encoder.extractors.ndf_point_cloud_A.*`, which proves the training run that produced it had the NDF hybrid branch enabled
+  - Therefore the checkpoint is structurally consistent with hybrid training; the eval-time CLI parsing was wrong.
+  - Fix implemented: `policy/DP3/ndf_pointwise_arg_utils.sh` now normalizes both the explicit and legacy call forms, and the following scripts now auto-correct the omitted-empty-argument form:
+    - `policy/DP3/eval_ndf_pointwise_hybrid.sh`
+    - `policy/DP3/train_ndf_pointwise_hybrid.sh`
+    - `policy/DP3/eval_ndf_pointwise.sh`
+    - `policy/DP3/train_ndf_pointwise.sh`
+- Current actorseg+hybrid design constraint:
+  - training must use actorseg-projected fused object clouds as the main `point_cloud`
+  - hybrid branches must still add `ndf_point_cloud_A/B` or `semantic_point_cloud_A/B` on top of that raw actorseg point cloud
+  - eval must perform the same online actorseg extraction once per placeholder and reuse that same per-placeholder cloud for both the main merged `point_cloud` and the feature branches
+- The cleanest implementation path is to add separate pipelines rather than mutating existing working ones:
+  - `objpc_actorseg_ndf_pointwise_hybrid`
+  - `objpc_actorseg_semantic_pointwise_hybrid`
+- Actorseg hybrid runtime support is now implemented in `deploy_policy.py` by reusing the per-placeholder actorseg-extracted point clouds for both:
+  - the merged raw `point_cloud`
+  - the `ndf_point_cloud_A/B` or `semantic_point_cloud_A/B` feature branches
+  This keeps online eval semantics aligned with offline preprocessing.
+- New actorseg hybrid preprocessing entrypoints now exist:
+  - `policy/DP3/scripts/process_data_ndf_pointwise_actorseg_hybrid.py`
+  - `policy/DP3/scripts/process_data_semantic_pointwise_actorseg_hybrid.py`
+  - `policy/DP3/process_data_ndf_pointwise_actorseg_hybrid.sh`
+  - `policy/DP3/process_data_semantic_pointwise_actorseg_hybrid.sh`
+- New actorseg hybrid train/eval entrypoints now exist:
+  - `policy/DP3/train_ndf_pointwise_actorseg_hybrid.sh`
+  - `policy/DP3/train_semantic_pointwise_actorseg_hybrid.sh`
+  - `policy/DP3/eval_ndf_pointwise_actorseg_hybrid.sh`
+  - `policy/DP3/eval_semantic_pointwise_actorseg_hybrid.sh`
+- New Hydra configs now exist:
+  - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/robot_dp3_objpc_actorseg_ndf_pointwise_hybrid.yaml`
+  - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/robot_dp3_objpc_actorseg_semantic_pointwise_hybrid.yaml`
+  - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/task/demo_task_objpc_actorseg_ndf_pointwise_hybrid.yaml`
+  - `policy/DP3/3D-Diffusion-Policy/diffusion_policy_3d/config/task/demo_task_objpc_actorseg_semantic_pointwise_hybrid.yaml`
+- Targeted regression coverage now exists in `policy/DP3/scripts/test_actorseg_pointwise_hybrid.py`, proving:
+  - actorseg+NDF hybrid keeps merged raw actorseg `point_cloud` and emits `ndf_point_cloud_A`
+  - actorseg+semantic hybrid keeps merged raw actorseg `point_cloud` and emits `semantic_point_cloud_A`
+- Fresh verification evidence for the actorseg hybrid work:
+  - `python policy/DP3/scripts/test_actorseg_pointwise_hybrid.py` passed with `2` tests
+  - `python policy/DP3/scripts/test_ndf_pointwise_hybrid.py` still passed with `3` tests
+  - `python policy/DP3/scripts/test_semantic_pointwise_hybrid.py` still passed with `3` tests
+  - `bash policy/DP3/scripts/test_ndf_pointwise_arg_utils.sh` passed
+  - `python -m py_compile policy/DP3/deploy_policy.py policy/DP3/scripts/process_data_ndf_pointwise_actorseg_hybrid.py policy/DP3/scripts/process_data_semantic_pointwise_actorseg_hybrid.py policy/DP3/scripts/test_actorseg_pointwise_hybrid.py` passed
+  - `bash -n` passed for:
+    - `policy/DP3/process_data_ndf_pointwise_actorseg_hybrid.sh`
+    - `policy/DP3/process_data_semantic_pointwise_actorseg_hybrid.sh`
+    - `policy/DP3/train_ndf_pointwise_actorseg_hybrid.sh`
+    - `policy/DP3/train_semantic_pointwise_actorseg_hybrid.sh`
+    - `policy/DP3/eval_ndf_pointwise_actorseg_hybrid.sh`
+    - `policy/DP3/eval_semantic_pointwise_actorseg_hybrid.sh`
 - Follow-up bug found during first real user run: `process_data_ndf_pointwise_hybrid.py` originally forwarded `--output_suffix` as two argv items, and the value `-objpc-ndf-pointwise-hybrid` was parsed as a new option because it starts with `-`.
 - Root-cause fix: `policy/DP3/scripts/process_data_ndf_pointwise_hybrid.py` now builds argv through `build_hybrid_argv(...)` and passes `--output_suffix=-objpc-ndf-pointwise-hybrid` as an attached option.
 - The regression test `policy/DP3/scripts/test_ndf_pointwise_hybrid.py` now includes a dedicated wrapper-argv check for this case and passes with `3` tests.
+- Additional NDF-loading finding: the warning
+  `unexpected_keys=['decoder.vector_basis.map_to_feat.weight', 'decoder.fc_vec_alpha.weight', 'decoder.fc_vec_alpha.bias']`
+  is generally benign for the current DP3 pointwise NDF path when `missing_keys=[]`.
+- Reason:
+- `policy/DP3/scripts/ndf_feature_utils.py` builds `VNNOccNet(..., return_features=True, return_vector_features=False)` and loads checkpoints with `strict=False`.
+- The reported unexpected keys belong to the optional decoder vector-feature head, which is only instantiated when `return_vector_features=True`, see `vnn_occupancy_net_pointnet_dgcnn.py`.
+- Current DP3 feature extraction only calls `model.forward_latent(z, pts)` / `model.forward_latent(z, query)` and uses the regular `features` output, not `vector_features`.
+- Therefore this exact warning means “the checkpoint contains extra decoder weights that the current loader ignores,” not “the main encoder/decoder weights are missing.”
+- Risk rule:
+- acceptable: `missing_keys=[]` and only optional vector-feature decoder keys are unexpected
+- suspicious: any `missing_keys`, or unexpected keys under encoder / core decoder blocks / backbone family mismatch
 
 ## Technical Decisions
 | Decision | Rationale |
@@ -242,6 +574,184 @@
 
 ## Visual/Browser Findings
 - None yet.
+
+## New Findings
+- `policy/DP3/ndf_pointwise_arg_utils.sh` had a bash-specific default-value bug: inside quoted parameter expansion, the escaped placeholder default `\{A\},\{B\}` was preserved literally and reached Python as `["\\{A}", "\\{B}"]`.
+- That bug only surfaced when users omitted `object_placeholders`, which is why earlier explicit-placeholder invocations worked while the actorseg hybrid default path failed at `require_actor_id_targets(...)`.
+- The direct semantic actorseg hybrid shell scripts were not failing for the same reason, but aligning them to the same plain `DEFAULT_OBJECT_PLACEHOLDERS="{A},{B}"` convention removes ambiguity and future-proofs the interface.
+- The user explicitly does not want compatibility branches for eval invocation. For the pointwise eval family, the desired contract is the same as `eval_semantic_pointwise_hybrid.sh`: the third positional argument is already the full `ckpt_setting`, and scripts should forward it unchanged instead of deriving suffixes from `task_config`.
+- The new shell regression test captures the final argv sent to `script/eval_policy.py`, which is the right verification layer for these wrappers because it checks the observable interface rather than shell internals.
+- `objpc` and `actorseg` are not equivalent in the current implementation. `objpc` filters raw per-camera `Position` buffers by actor id first and only then downsamples per object, while `actorseg` starts from the already-downsampled combined scene `observation["pointcloud"]` and then projects that sparse cloud back into segmentation masks.
+- Because of that ordering difference, `actorseg` currently loses object detail much earlier than `objpc`, especially for small structures like mug handles and rack hooks. This explains why `objpc` can outperform `actorseg` even when both use simulator truth labels.
+- Real ZED raw dataset discovery for `grasp_mug`:
+  - raw root: `/media/zheng/Extreme SSD/geo_mani_data/grasp_mug/real_zed_raw`
+  - episodes with manifests: 61
+  - raw camera labels: `global,left,right`
+  - old raw manifest serial mapping differs from calibration labels, so serial-based remapping must stay enabled during postprocess.
+- For real-data object masks, SAM3 is the better first implementation target on this machine:
+  - SAM3 checkpoint exists: `/home/zheng/Datasets/sam3/sam3.pt`
+  - configured SAM2 checkpoint is absent: `/home/zheng/Datasets/sam_gdino/sam_checkpoints/sam2.1_hiera_large.pt`
+  - DP3 online eval already has `SAM3ProjectiveTracker`, allowing the same text-refresh plus bbox-reuse behavior to be reused for inference.
+- Real objpc HDF5 should be compact by default:
+  - `policy/DP3/scripts/object_pointcloud_utils.py::load_hdf5` only reads `/joint_action/vector`, `/pointcloud`, and `/object_pointcloud/*` for `process_data_objpc.py`.
+  - Storing full RGB-D observations in every real training HDF5 unnecessarily duplicates raw data and can dominate disk usage, especially for old recordings where RGB is resized to match 1080p depth during postprocess.
+  - The new SAM3 objpc batch driver therefore defaults to no observation storage and exposes `--store_observations` for debugging/downstream use.
+- Local SAM3 smoke result:
+  - On this sandbox, `torch.cuda.is_available()` is false, so SAM3 falls back to CPU.
+  - A 1-frame/3-camera/2-object smoke completed and wrote non-empty masks for most camera/object pairs, but full dataset processing should be run in the normal GPU-visible environment with `--sam3_device cuda:0` or `--sam3_device auto`.
+- For training, saving processed real data directly on the SSD is feasible as long as DP3 sees a repo-side path:
+  - `train_objpc.sh` still expects `../../data/<task>/<task_config>` from `policy/DP3`.
+  - The batch postprocess script now writes the actual data to `/media/${USER}/Extreme SSD/geo_mani_data/<task>/robotwin_objpc/<task_config>` by default.
+  - It creates `data/<task>/<task_config>` as a symlink to the SSD output unless `--no_link_repo_data` is passed.
+- Debug preview mode should be sampled, not full-frame/full-episode by default:
+  - mask overlays are PNGs and can be many files across 3 cameras x 2 objects x N frames.
+  - merged `{A}/{B}` PLY previews are useful for sanity checking segmentation/projection alignment, and `--debug_stride` plus `--debug_max_frames` keeps them bounded.
+- Workspace-projected 2D ROI alone is not sufficient for the current real ZED view:
+  - With the saved workspace bbox, the projected RGB ROI spans the full 640x360 frame for all three cameras.
+  - Therefore saved SAM masks now also use per-frame depth-based gating: each mask pixel is kept only if its depth point transforms into the workspace bbox.
+  - Manual `--mask_roi_xyxy` remains useful as an extra coarse image-space restriction, but the 3D guarantee comes from depth-based workspace filtering.
+- The user prefers explicit 2D image-domain workspace masks over depth/3D workspace gating for SAM:
+  - `select_camera_workspace_masks.py` now lets the user click a polygon on each camera's first RGB frame.
+  - Passing `--camera_workspace_mask_root` makes SAM3 see only the clicked polygon image domain: the image is cropped to the polygon bbox and pixels outside the polygon are zeroed before tracker inference.
+  - Saved SAM masks and HDF5 point clouds also use only pixels inside the clicked polygon.
+  - Old cached masks from a non-polygon run are treated as incompatible and regenerated in polygon mode.
+  - In this mode, depth workspace filtering is disabled by default to avoid reintroducing the previous behavior.
+- Real SAM3 mask quality diagnosis:
+  - Existing `*_workspace_mask_sam3_smoke` outputs were not generated with polygon input-domain SAM; their metadata has `sam_input_domain=0`, so those previews can look worse than the intended polygon-input pipeline.
+  - A fresh 1-frame run with the real per-camera polygon masks confirmed `sam_input_domain=True` for all six camera/object masks.
+  - With prompt `{A}:mug`, the left-camera `{A}` mask was empty, while the same frame and polygon domain with `{A}:cup` produced a non-empty left-camera mask. This points to prompt wording / low-resolution text detection as the main failure mode, not SAM's segmentation capacity.
+  - The raw RGB frames used by the saved data are `640x360`, so SAM3 is operating on low-resolution images. This can make small/partially occluded objects much more prompt-sensitive than normal high-resolution SAM demos.
+  - SAM3 mask cache validity now includes the object prompt text, so changing `{A}:mug` to `{A}:cup` regenerates affected masks instead of silently reusing stale results.
+- SAM2 streaming replacement direction:
+  - `include/SAM2_streaming` is a symlink to `/home/zheng/github/SAM2_streaming` and provides a real-time `SAM2CameraPredictor`.
+  - The core API is `build_sam2_camera_predictor(config, checkpoint)`, then `predictor.load_first_frame(frame)`, `predictor.add_new_prompt(frame_idx=0, obj_id=id, bbox=[[x0,y0],[x1,y1]])`, and later `predictor.track(frame)`.
+  - `demo_webcam_box.py` confirms the intended manual initialization flow: user draws a bbox once, then subsequent frames use tracker memory instead of text prompts.
+  - Local SAM2 checkpoint discovery found `/home/zheng/Datasets/sam2/sam2.1_hiera_large.pt`; matching config exists at `include/SAM2_streaming/configs/sam2.1/sam2.1_hiera_l.yaml`.
+  - The active Python environment can import `sam2.build_sam.build_sam2_camera_predictor` and has Hydra/OmegaConf installed.
+  - The streaming predictor code hard-codes CUDA devices in its state initialization, so practical use should be on the GPU runtime. A wrapper should own device setup and fail clearly if CUDA/SAM2 deps are unavailable.
+  - New real-data segmentation should be bbox-initialized SAM2 tracking, not SAM3 text detection. This removes the main observed failure mode: prompt sensitivity under low-resolution RGB.
+- SAM2 streaming implementation findings:
+  - The new active real-data path uses `sam2_tracking_utils.py`, `select_sam2_bboxes.py`, `segment_objects_sam2.py`, and `postprocess/postprocess_real_zed_sam2_objpc_dataset.py`.
+  - `postprocess_real_zed_sam2_objpc_dataset.py` imports no SAM3/Ultralytics code; legacy SAM/SAM3 active scripts and DP3 entrypoints have been removed so the maintained real-data segmentation path is SAM2-only.
+  - The bbox prompt file is per camera and per placeholder, so `{A}` and `{B}` can be manually initialized independently in `global,left,right`.
+  - SAM2 receives the polygon-limited RGB input domain by default when `--camera_workspace_mask_root` is passed, matching the user's requested “only segment inside clicked workspace” behavior.
+  - The generated HDF5 boundary remains the same compact objpc format: `/joint_action/vector`, `/pointcloud`, and `/object_pointcloud/{A,B}`, so `policy/DP3/process_data_objpc.sh` and `train_objpc.sh` stay compatible.
+- SAM2 online eval implementation findings:
+  - `robot_dp3_objpc_sam2` is architecture-compatible with normal `objpc` checkpoints; the difference is only how `point_cloud` is reconstructed online in `deploy_policy.py`.
+  - `eval_objpc_sam2.sh` accepts an explicit `ckpt_setting`, so it can evaluate checkpoints trained with `train_objpc.sh` on `demo_real_zed_sam2_objpc` without requiring a separate SAM2 training suffix.
+  - The online path tracks all placeholders together per camera, then projects each SAM2 mask back into the current scene point cloud. This avoids advancing the SAM2 streaming state once per placeholder inside a single policy observation.
+  - If `--sam2_bbox_prompt_path` is provided, bbox prompts are reused; otherwise the first frame opens interactive OpenCV bbox selection windows. Interactive prompts are cleared on episode reset so stale boxes are not silently reused across episodes.
+- SAM2 SDPA runtime error finding:
+  - The traceback ending in `RuntimeError: No available kernel` came from `torch.nn.functional.scaled_dot_product_attention` inside the SAM2 mask decoder.
+  - The preceding warnings are the diagnostic signal: Q/K/V were `float`, while the available Flash/Memory Efficient attention kernels require `Half` or `BFloat16`; CUDNN SDPA was also disabled.
+  - `include/SAM2_streaming/demo_webcam_box.py` opens a global `torch.autocast(device_type="cuda", dtype=torch.bfloat16)` context before using the camera predictor, but the first wrapper implementation did not.
+  - The fix is to run `load_first_frame`, `add_new_prompt`, and `track` under CUDA autocast. The wrapper now defaults to `--sam2_autocast_dtype bfloat16`, with `float16` and `none` exposed for hardware-specific fallback.
+- SAM2 per-episode bbox finding:
+  - SAM2 tracker state must be reset and initialized per recorded episode, not per training epoch.
+  - The tracker was already recreated inside `segment_episode_sam2(...)`, but the batch driver initially loaded one global `sam2_bbox_prompts.json` and reused it for every raw episode.
+  - That global prompt reuse is only safe if every episode starts with the same image-space object pose. For randomized real data, each raw episode needs its own first-frame `{A}/{B}` bboxes.
+  - The batch driver now prefers `sam2_bbox_prompts/<raw_episode_name>/sam2_bbox_prompts.json`, then `episode<index>/sam2_bbox_prompts.json`, then `episode_<index:06d>/sam2_bbox_prompts.json`, with global `sam2_bbox_prompts.json` only as fallback unless `--require_per_episode_bboxes` is set.
+- Real-ZED direct-run import finding:
+  - Running `python script/real_zed_collection/select_sam2_bboxes.py` can omit the repository root from `sys.path`, so absolute imports like `from script.real_zed_collection...` fail with `ModuleNotFoundError: No module named 'script'`.
+  - Direct-run real-ZED entry scripts should insert `Path(__file__).resolve().parents[2]` or `parents[3]` for postprocess scripts before importing `script.*`.
+- Real-ZED right-base task-config finding:
+  - The current `grasp_mug_new` processed HDF5 data is linked at `data/grasp_mug_new/demo_real_zed_sam2_objpc`, and its meta records `output_frame=right_base`.
+  - Training with `task_config=demo_real_zed_sam2_objectpc_rightbase` fails because no repo data link exists at `data/grasp_mug_new/demo_real_zed_sam2_objectpc_rightbase`.
+  - A failed baseline preprocessing run can leave an empty zarr directory under `policy/DP3/data`, so reusing that exact wrong config can skip preprocessing unless the zarr is rebuilt.
+- Real-ZED inference frame-interface finding:
+  - Real inference scripts now expose `output_frame` and robot-camera calibration as positional optional args rather than hiding them in passthrough flags.
+  - `auto` resolution first reads `data/<task>/<task_config>/real_zed_sam2_objpc_meta.json`; if that file is unavailable, it infers `right_base`, `left_base`, or `workspace` from the `task_config` name.
+  - For `right_base` or `left_base`, `auto` calibration resolves to the default `robot_camera_apriltag_<arm>_global.yaml` under `script/real_zed_collection/calibration`.
+- Real-ZED action step finding:
+  - The `Action delta safety stop` is triggered by a large joint-space action jump between consecutive commands, not by the camera pipeline.
+  - Before the fix, only the first action was interpolated; later DP3 actions were sent directly via `env.step(action)`.
+  - Real inference now clips the actually executed arm-joint delta and gripper delta before safety checking, keeping `--max_action_delta` as a hard stop rather than the mechanism for smoothing.
+  - Delta clipping limits how far one command can jump, but it does not remove jerk if a clipped target is sent as a single `env.step`. Real inference now splits each executed action into `--execution_substeps` smaller commands and sleeps `--execution_substep_sleep_sec` between them.
+  - The smoothing happens after policy output and before robot execution, so it does not change DP3 inference, observation encoding, action chunking, or checkpoint compatibility. `--execution_substeps 1` restores the old single-command behavior.
+  - The lower-level control path is `RobotEnv.step -> ZMQClientRobot.command_joint_state -> ZMQServerRobot -> DobotRobot.command_joint_state -> Dobot ServoJ`. `DobotRobot.command_joint_state` previously hard-coded `ServoJ(..., t=0.03, gain=500)`.
+  - The preferred smoothing path now sets Dobot controller-level `ServoJ` parameters once at inference startup through ZMQ. Real inference defaults to `--servo_j_t 0.06 --servo_j_gain 300 --execution_substeps 1`, so the controller handles slower dynamic following instead of client-side multi-step interpolation.
+  - Because `set_servo_params` is served by the robot ZMQ server process, the robot server must be restarted after pulling these code changes. If not restarted, the client-side call can time out and the inference script will report that the server needs restart.
+  - User hardware logs showed `pred_arm_delta` frequently around `0.08-0.16 rad`, with commands sometimes clipped at `cmd_arm_delta=0.1200`. Observed execution deltas were usually smaller than the command, so the main issue is not controller-side amplification; it is abrupt policy/chunk target changes plus a stiff follower.
+  - Single-step velocity limiting reduces command magnitude but does not prevent jerk when the commanded delta jumps from one step to the next. Real inference now exposes `--max_executed_joint_delta_change` and `--max_executed_gripper_delta_change` to limit the change in commanded delta between consecutive steps.
+  - `--reobserve_each_action` changes the loop from open-loop chunk playback to closed-loop re-observation after every executed action. It can reduce chunk-boundary drift, but it is much slower because each action re-runs robot observation, ZED point-cloud construction, SAM2 object extraction, observation encoding, and model observation update.
+  - Current real semantic DP3 logs show the main thread can spend about 1.6s in `build_obs + sam2 + encode + dp3_policy` before executing a 6-action chunk. This creates a stop-and-go control stream even when per-action velocity/acceleration limits are active.
+  - xtrainer `run_inference.py` also uses camera threads plus a main inference/control loop, but its image-only DP/ACT path is light enough that robot commands are not starved for seconds. The same architecture is insufficient for SAM2 + point-cloud + semantic DP3.
+  - Real inference now has optional `--async_control`: camera/perception/model inference stays in the main thread, while an `AsyncActionController` thread consumes the latest action chunk at a fixed frequency and repeats the last target when the action buffer is empty. This keeps ServoJ commands alive during slow SAM2/DP3 updates.
+  - With async control, `--reobserve_each_action` is ignored because the main thread re-observes once per action-chunk update, while the control thread owns fixed-rate execution.
+  - Real inference XYZ safety previously used the narrower xtrainer `run_inference.py` hard-coded bounds: left x `[-410,210]`, right x `[-210,410]`, y `[-700,-210]`, both z `>42`. The AprilTag calibration path uses `run_control.py::check_pose_protection`, whose workspace is wider: left x `[-450,290]`, right x `[-290,450]`, y `[-750,-160]`, left z `>44`, right z `>42`.
+  - Real inference XYZ safety is now parameterized with CLI flags and defaults to the wider run-control-style bounds, with right z defaulted to `>40mm` to avoid false stops for the current calibrated right-arm low pose around `41.6mm`.
+- SAM2 path portability finding:
+  - The control-machine traceback came from resolving `include/SAM2_streaming` through a machine-specific symlink target `/home/zheng/github/SAM2_streaming`.
+  - SAM2 root and checkpoint defaults now use `$SAM2_STREAMING_ROOT` / `$SAM2_CHECKPOINT` first, then repository/current-user candidates, instead of hard-coding one workstation username.
+  - If a repository symlink is stale on another machine, the resolver falls back to the current user's `~/github/SAM2_streaming` and `~/Datasets/sam2/sam2.1_hiera_large.pt`.
+  - The real semantic checkpoint default now also uses `$SEMANTIC_CKPT_A` or the current user's `~/github/3d_semantic_train/...` path.
+- SAM2 online bbox UI finding:
+  - The real inference bbox selector crashed on single clicks because it normalized zero-area boxes during preview.
+  - The online selector now treats zero-area boxes as invalid UI state instead of throwing, and it scales HD images down to a 1280x720 display canvas while mapping mouse coordinates back to the original image.
+- Real semantic inference SAM2 latency finding:
+  - `script/real_zed_inference/zed_sam2_realtime_bbox.py` is a lightweight benchmark path: one ZED camera, `DEPTH_MODE.NONE`, default `HD720`, RGB resized to width 640, and one SAM2 tracker.
+  - `script/real_zed_inference/real_dp3_inference.py` is much heavier: three ZED cameras, default `HD1080`, `DEPTH_MODE.NEURAL`, full depth-to-point-cloud construction for every camera, point-cloud merge/resample, SAM2 tracking, semantic feature extraction, DP3 inference, and robot control.
+  - Camera acquisition in real DP3 inference is already threaded, similar in spirit to `include/xtrainer_clover/experiments/run_inference.py`. The heavy perception pipeline after snapshots still runs synchronously in the policy main loop.
+  - The current online SAM2 object point-cloud path projects the fused dense scene point cloud back into each camera mask in `_select_scene_points_by_mask(...)`. With three cameras and two placeholders this performs six dense-scene projections per SAM2 update.
+  - For `output_frame=right_base` / `left_base`, `pointcloud_crop_bounds` is currently `None`, so the dense scene passed to SAM2 object extraction can be the full multi-camera point cloud rather than a cropped workspace cloud. This can make the projection step dominate latency and makes the observed 15s stall plausible even if SAM2 tracking itself is fast.
+- Real SAM2 online latency fix finding:
+  - Real inference now builds scene points by lifting each camera depth to the workspace frame, applying the configured 3D workspace bounds, and only then transforming surviving points into the requested output frame.
+  - Online SAM2 object point clouds now use each camera's `mask + depth + intrinsic` directly. The mask is resized back to the depth map when SAM2 runs on a downscaled image.
+  - The object point cloud path applies the same workspace-frame 3D bounds before transforming points to `workspace`, `right_base`, or `left_base`, so workspace-outside points do not enter semantic/DP3 observations.
+  - SAM2 tracking input defaults to width 640 through `--sam2_image_width`, while ZED capture defaults to `HD720`. Prompt files that include `image_shape_hw` preserve that metadata so bbox/point prompts can be scaled to the tracker image.
+  - Real inference workspace ROI projection now uses live ZED intrinsics instead of calibration-file intrinsics, so changing `--zed_resolution` does not make image-space cropping use stale focal length/principal point values.
+  - `script/real_zed_inference/preview_sam2_object_pointcloud.py` isolates the online perception path from DP3 and robot control: it starts live ZED capture, initializes SAM2 prompts, reconstructs workspace-filtered `{A}/{B}` point clouds, and refreshes them in an Open3D window.
+  - The preview script supports single-object checks through `--object_placeholders "{A}"`, headless FPS checks through `--no_open3d`, and larger Open3D rendering through `--point_size`, `--open3d_width`, `--open3d_height`, and `--reset_view_each_frame`.
+  - Open3D zoom-out can appear broken when only a small object point cloud is rendered because the legacy visualizer clamps zoom around the current geometry bounding box. The preview now adds a workspace LineSet by default through `--show_workspace_box`, which acts as a view anchor and gives the mouse wheel a larger zoom range.
+  - The preview script now has fine-grained `--profile_timing` output for `snapshot_frames`, per-camera RGB/depth alignment, per-camera depth-to-scene-pointcloud, scene merge/resample, per-camera SAM2 resize/create/initialize/track, per-camera/per-placeholder depth lift, object merge/resample, Open3D update, RGB preview, and total loop time.
+  - The preview timing showed online object merge dominated stable frames because `merge_object_point_clouds` used farthest point sampling. Online SAM2 object point clouds now expose `--online_object_resample fast|fps`, defaulting to `fast` for real preview/inference while leaving offline training preprocess behavior unchanged.
+  - After `fast` object sampling, the next stable-frame bottlenecks were serial per-camera SAM2 tracking and full-scene depth-to-pointcloud construction. The preview now defaults to `--object_only`, so it skips dense full-scene construction unless `--show_scene` or `--no-object_only` is set.
+  - The online SAM2 extractor no longer reads `observation["pointcloud"]` when per-camera `depth + cam2world_gl` are available. Dense scene point clouds are only materialized for the legacy scene-projection fallback.
+  - Per-camera work now uses a shared worker helper: `--parallel_camera_workers 0` means one worker per active camera, `1` forces serial execution, and positive values cap the worker count. This applies to preview object reconstruction, real DP3 scene construction, and online SAM2 object extraction.
+- Real-ZED offline SAM2 postprocess calibration finding:
+  - The batch driver `postprocess_real_zed_sam2_objpc_dataset.py` previously defaulted to repo-level `script/real_zed_collection/calibration/three_camera_workspace_extrinsics.yaml`, so it passed a non-empty override into `postprocess_episode(...)` and bypassed the per-episode `manifest.json` calibration snapshot.
+  - The inspected raw `grasp_mug` episodes record `calibration_snapshot_path=calibration_snapshot.yaml`, no `workspace_calibration_snapshot_path`, and `workspace_crop_enabled=false`. Their local snapshot has no workspace frame, so the correct auto postprocess frame is `reference_camera` unless an explicit workspace calibration is supplied.
+  - The existing broken processed `scene_info.json` confirmed the symptom: it recorded `calibration_path=/home/zheng/github/RoboTwin_geo/script/real_zed_collection/calibration/three_camera_workspace_extrinsics.yaml` instead of `/media/.../episode_*/calibration_snapshot.yaml`.
+  - The batch driver now defaults to `--calibration_path auto --frame_mode auto`, resolves calibration per episode, prefers workspace snapshots only when they exist, otherwise uses the collection-time calibration snapshot in `reference_camera` mode, and records resolved calibration/frame mode per processed episode.
+- Real semantic-pointwise hybrid poor-grasp diagnosis:
+  - The latest processed `data/grasp_mug/demo_real_zed_sam2_objpc` metadata records `output_frame=right_base`, and each `scene_info.json` episode also records `output_frame=right_base`. The main failure is therefore not simply “training was not in robot coordinates.”
+  - The current HDF5 object cloud for `{A}` contains severe outliers in many episodes, while `{B}` is clean. Across 32 episodes, `{A}` has 222 bad frames out of 1975 frames, with coordinates as large as roughly `[-2.176, -2.012, -1.009]` in right-base coordinates.
+  - The semantic hybrid zarr inherits these `{A}` outliers: `semantic_point_cloud_A` for `grasp_mug-demo_real_zed_sam2_objpc-32` has 244 outlier points out of 248704 sampled points, and both `point_cloud` and `semantic_point_cloud_A` show the same bad xyz locations.
+  - Because the DP3 pointwise preprocess uses farthest-point sampling for hybrid point clouds, even a single distant SAM2/mask/depth outlier is likely to be preserved and becomes a strong spatial token for PointNet.
+  - The processed real dataset metadata has `workspace_crop_bounds_m=None` and per-episode `frame_mode=reference_camera`; this recording was not workspace-cropped during postprocess. Online real inference, however, now filters depth points through workspace bounds before transforming to `right_base`, so train/inference object-cloud distributions can differ.
+  - `policy/DP3/real_infer_semantic_pointwise_hybrid.sh` still has duplicated default `task_name/task_config` assignments and a wrapper-level default semantic checkpoint under `${HOME}/DataModel/semantic/mug.pt`; those can silently run a different task/model/checkpoint than the latest trained data unless all arguments are passed explicitly.
+- Real-ZED DP image inference finding:
+  - DP single-camera real-ZED training stores the selected camera stream under zarr key `head_camera`, so the checkpoint sees only `head_cam` and does not encode whether that came from `global`, `left`, or `right`.
+  - Real DP inference therefore needs an explicit obs-key to live-camera mapping. The new wrapper maps single-camera runs as `head_cam:<camera_label>` and multicam runs as `head_cam:global,left_cam:left,right_cam:right`.
+  - The existing DP `DPRunner` and `policy/DP/deploy_policy.py` assume all three camera observations exist, so a real DP inference path must dynamically filter obs keys from `cfg.shape_meta.obs` to support both single-camera and multicam checkpoints.
+  - DP image inference does not need SAM2, depth lifting, fused point clouds, workspace point-cloud filtering, or NDF/semantic feature extraction. The new DP path only captures RGB frames and reuses the existing real robot smoothing/safety/async controller for action execution.
+- Optional-camera real-ZED collection finding:
+  - `collect_zed_robotwin_raw.py` already looped over `labels` for thread startup, frame snapshots, manifests, saving, and display, so the main blocker for optional cameras was `_resolve_cameras(...)` enforcing `len(labels) == 3` and `len(serials) == 3`.
+  - The default collection config still carries three serials. If the user overrides only `--camera_labels left`, the parsed `zed_serials` can still be length three. The correct behavior is to use calibration to resolve the requested label subset to serials, not to require editing the config serial list.
+  - Without a calibration path, the script must still require exactly one serial per requested camera label because there is no reliable way to infer which serial belongs to which label.
+- Episode `20260502154520` global camera quality finding:
+  - The episode manifest and file layout are structurally complete: 58 frames, camera labels `global,left,right`, no dropped frames due to backpressure, and calibration label mapping is identity.
+  - The `global` channel is not a normal dark image. Every sampled and full-scanned `global` RGB frame is a single constant color `[0,134,0]`, with RGB std exactly zero and frame-to-frame delta zero.
+  - `global` depth is also effectively unusable: valid depth rate is only `0.000448`.
+  - `left` and `right` channels in the same episode are normal, with visible scene content and valid depth rates around `0.94` and `0.88`.
+  - Therefore this is a `global` camera capture failure, not a downstream workspace-crop/postprocess issue. The episode can still be salvaged for pipelines that use only `left` and/or `right`, but should not be used for any checkpoint/config expecting `global`.
+- DP real-ZED mixed-resolution training finding:
+  - `policy/DP/process_data_real_zed.py` expects all images for a zarr key to have identical `C,H,W` after `np.moveaxis`; otherwise `np.asarray(camera_arrays[zarr_key])` fails with an inhomogeneous-shape `ValueError`.
+  - The current `grasp_mug/demo_real_zed_sam2_objpc` processed metadata's first 49 episodes mix image sizes: 32 old episodes at `360x640` and 17 new workspace-cropped episodes at `1080x1920`.
+  - The training command's later Hydra `PathNotFoundError` is a secondary symptom: `train_real_zed.sh` continued after preprocessing failed and tried to train on a zarr path that had not been created.
+  - The correct compatibility boundary is DP preprocessing, not raw collection. DP training should resize real-ZED RGB to the configured `head_camera_type` resolution before zarr creation, matching `train.py`'s image shape setup.
+- Real DP3 in-process reset finding:
+  - Real semantic DP3 inference uses an async control thread by default, so an in-process reset must stop stale action playback before commanding the robot back to the photo pose.
+  - A terminal keyboard listener can set a shared reset event immediately, allowing the async controller to stop consuming/repeating actions even while the main perception/policy thread is still inside ZED/SAM2/DP3 work.
+  - Reset should clear DP3 observation history and action-smoothing state. SAM2 tracking should remain active by default to avoid repeated box selection, with an explicit option to clear it when objects have moved or tracking is suspect.
+- Robot-camera AprilTag calibration button finding:
+  - The calibration script initialized `last_keys_status` as all zeros and treated Button B `dev_keys == 1` as capture without requiring a prior press edge.
+  - On real hardware, the initial idle Button-B state can be read as the released value, so startup can look like a release edge and set `what_to_do[0,2] = 1` before the user acts.
+  - Button B should mirror Button A edge semantics: only a release after a detected press can trigger capture, and the monitor should baseline from the current hardware key state.
+- Optional-camera Real-ZED extrinsic calibration finding:
+  - `calibrate_three_zed_extrinsics.py` already iterates over the active stream list for capture, Charuco detection, relative transform averaging, display, and YAML writing, so the fixed-three limitation was only in argument parsing/runtime validation.
+  - The script now derives the active camera set from `real_zed_collection.yaml` or explicit CLI labels/serials and requires any 2+ unique cameras. A one-camera Charuco extrinsic solve remains invalid because there is no inter-camera transform to estimate.
+  - The saved YAML keeps the existing `type: three_camera_charuco_extrinsics` compatibility string but now records `camera_count` so downstream tools can distinguish two-camera and three-camera calibration outputs.
 
 ---
 *Update this file after every 2 view/browser/search operations.*

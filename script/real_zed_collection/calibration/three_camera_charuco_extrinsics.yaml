@@ -1,0 +1,350 @@
+type: three_camera_charuco_extrinsics
+calibration_mode: interactive_multi_pose_enter
+charuco_config_name: charuco_300_9x14_20mm_15mm
+charuco_config:
+  path: /home/clover/github/RoboTwin_geo/script/real_zed_collection/charuco_config/charuco_300_9x14_20mm_15mm.yaml
+  resolved_dictionary: DICT_5X5_100
+  board_name: charuco-300
+  squares_x: 14
+  squares_y: 9
+  square_length_mm: 20
+  marker_length_mm: 15
+  dictionary: DICT_5*5
+zed_resolution: HD1080
+zed_fps: 15
+zed_image_control_request:
+  auto_exposure: false
+  exposure: 22
+  gain: 12
+  whitebalance_temp: null
+serial_source: collection_config:/home/clover/github/RoboTwin_geo/script/real_zed_collection/configs/real_zed_collection.yaml
+requested_serials: []
+discovered_serials:
+- 37856216
+- 38968158
+camera_count: 2
+num_positions_target: 20
+num_positions_collected: 20
+samples_per_position_target: 1
+position_timeout_sec: 15.0
+reference_camera: global
+generated_at_unix_sec: 1778217328.567171
+cameras:
+  global:
+    serial_number: 38968158
+    camera_matrix:
+    - - 1065.7520751953125
+      - 0.0
+      - 991.7492065429688
+    - - 0.0
+      - 1065.7520751953125
+      - 551.849365234375
+    - - 0.0
+      - 0.0
+      - 1.0
+    dist_coeffs:
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    image_controls:
+      auto_exposure: false
+      exposure: 22
+      gain: 12
+      whitebalance_auto: true
+      whitebalance_temp: null
+    t_cam_from_board:
+    - - -0.9458702092710478
+      - -0.3207706723989908
+      - 0.04935304382163795
+      - 0.2694586714013504
+    - - 0.2157247364943644
+      - -0.5077946845673387
+      - 0.8340308126103995
+      - 0.07164883627676386
+    - - -0.24247141124305405
+      - 0.7995315716391851
+      - 0.5495060333428328
+      - 0.5695327534398883
+    - - 0.0
+      - 0.0
+      - 0.0
+      - 1.0
+    t_board_from_cam:
+    - - -0.9458702092710478
+      - 0.2157247364943644
+      - -0.24247141124305405
+      - 0.3775119140580731
+    - - -0.3207706723989908
+      - -0.5077946845673387
+      - 0.7995315716391851
+      - -0.3325420800318603
+    - - 0.04935304382163795
+      - 0.8340308126103995
+      - 0.5495060333428328
+      - -0.38601762696186465
+    - - 0.0
+      - 0.0
+      - 0.0
+      - 1.0
+    residual:
+      mean_rotation_deg: 0.00016491264661742589
+      mean_translation_m: 1.8961716503549842e-12
+      median_rotation_deg: 0.00016034878705436633
+      median_translation_m: 1.8536463907716962e-12
+  back:
+    serial_number: 37856216
+    camera_matrix:
+    - - 1057.2576904296875
+      - 0.0
+      - 977.742919921875
+    - - 0.0
+      - 1057.2576904296875
+      - 559.1422119140625
+    - - 0.0
+      - 0.0
+      - 1.0
+    dist_coeffs:
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    image_controls:
+      auto_exposure: false
+      exposure: 22
+      gain: 12
+      whitebalance_auto: true
+      whitebalance_temp: null
+    t_cam_from_board:
+    - - 0.9168068692087334
+      - 0.39811096076415653
+      - -0.031190182602670286
+      - -0.16655013771450555
+    - - -0.2804679870593577
+      - 0.6975462409207293
+      - 0.6593685995033599
+      - -0.05049945108397373
+    - - 0.28425846127462884
+      - -0.5957658136345106
+      - 0.7511725650589182
+      - 0.5341426839810284
+    - - 0.0
+      - 0.0
+      - 0.0
+      - 1.0
+    t_board_from_cam:
+    - - 0.9168068692087334
+      - -0.2804679870593577
+      - 0.28425846127462884
+      - -0.013303746518352848
+    - - 0.39811096076415653
+      - 0.6975462409207293
+      - -0.5957658136345106
+      - 0.41975508833198916
+    - - -0.031190182602670286
+      - 0.6593685995033599
+      - 0.7511725650589182
+      - -0.3731303069043713
+    - - 0.0
+      - 0.0
+      - 0.0
+      - 1.0
+    residual:
+      mean_rotation_deg: 0.08060593136458624
+      mean_translation_m: 0.0007498718986307312
+      median_rotation_deg: 0.07095939654048647
+      median_translation_m: 0.0006974297469977793
+relative_to_reference:
+  global:
+    t_ref_from_cam:
+    - - 1.0
+      - 0.0
+      - 0.0
+      - 0.0
+    - - 0.0
+      - 1.0
+      - 0.0
+      - 0.0
+    - - 0.0
+      - 0.0
+      - 1.0
+      - 0.0
+    - - 0.0
+      - 0.0
+      - 0.0
+      - 1.0
+    t_cam_from_ref:
+    - - 1.0
+      - 0.0
+      - 0.0
+      - 0.0
+    - - 0.0
+      - 1.0
+      - 0.0
+      - 0.0
+    - - 0.0
+      - 0.0
+      - 1.0
+      - 0.0
+    - - 0.0
+      - 0.0
+      - 0.0
+      - 1.0
+  back:
+    t_ref_from_cam:
+    - - -0.9963200011634274
+      - 0.07583886836849957
+      - -0.03993646602177553
+      - 0.12851138264730017
+    - - -0.029282883134356303
+      - 0.13672431548541586
+      - 0.9901762339638995
+      - -0.4550898151335371
+    - - 0.08055413104901987
+      - 0.9877018414461809
+      - -0.13400038944057058
+      - 0.704253946898727
+    - - 0.0
+      - 0.0
+      - 0.0
+      - 1.0
+    t_cam_from_ref:
+    - - -0.9963200011634274
+      - -0.029282883134356303
+      - 0.08055413104901987
+      - 0.05798155430621105
+    - - 0.07583886836849957
+      - 0.13672431548541586
+      - 0.9877018414461809
+      - -0.6431172345715387
+    - - -0.03993646602177553
+      - 0.9901762339638995
+      - -0.13400038944057058
+      - 0.5501217128802467
+    - - 0.0
+      - 0.0
+      - 0.0
+      - 1.0
+positions:
+- index: 1
+  sample_count: 1
+  board_world_xyz_ref_m:
+  - 0.2694586714013504
+  - 0.07164883627676386
+  - 0.5695327534398883
+- index: 2
+  sample_count: 1
+  board_world_xyz_ref_m:
+  - 0.24959434375467032
+  - 0.12664455180295672
+  - 0.48263582181631126
+- index: 3
+  sample_count: 1
+  board_world_xyz_ref_m:
+  - 0.16068591836530244
+  - -0.018882757494206114
+  - 0.6219234594580236
+- index: 4
+  sample_count: 1
+  board_world_xyz_ref_m:
+  - -0.019601467147363934
+  - -0.06115317152331732
+  - 0.7002286424242741
+- index: 5
+  sample_count: 1
+  board_world_xyz_ref_m:
+  - 0.15402430922448407
+  - -0.10342225046875343
+  - 0.6953759249323175
+- index: 6
+  sample_count: 1
+  board_world_xyz_ref_m:
+  - 0.27685569787185527
+  - -0.046301593923660435
+  - 0.596272565893803
+- index: 7
+  sample_count: 1
+  board_world_xyz_ref_m:
+  - 0.10597861067714015
+  - -0.00998211223341741
+  - 0.5875766299496744
+- index: 8
+  sample_count: 1
+  board_world_xyz_ref_m:
+  - -0.1708856286322019
+  - -0.021370985000694526
+  - 0.750731184559577
+- index: 9
+  sample_count: 1
+  board_world_xyz_ref_m:
+  - -0.020143562786951594
+  - -0.002379280135352134
+  - 0.6098135716958476
+- index: 10
+  sample_count: 1
+  board_world_xyz_ref_m:
+  - -0.047267314004838405
+  - -0.000313822895612716
+  - 0.708135198712561
+- index: 11
+  sample_count: 1
+  board_world_xyz_ref_m:
+  - 0.07036778635343775
+  - 0.12706997836501177
+  - 0.4998747462360711
+- index: 12
+  sample_count: 1
+  board_world_xyz_ref_m:
+  - -0.017939010730973284
+  - 0.06925119342588572
+  - 0.4961634399054539
+- index: 13
+  sample_count: 1
+  board_world_xyz_ref_m:
+  - -0.17610966781876203
+  - 0.09055184441028721
+  - 0.4902227792717652
+- index: 14
+  sample_count: 1
+  board_world_xyz_ref_m:
+  - -0.1005830587848792
+  - 0.02254260107437078
+  - 0.6714187675051201
+- index: 15
+  sample_count: 1
+  board_world_xyz_ref_m:
+  - 0.005895498980679359
+  - 0.024445141330219095
+  - 0.5717437975720374
+- index: 16
+  sample_count: 1
+  board_world_xyz_ref_m:
+  - -0.07785189654148485
+  - 0.07360698165732883
+  - 0.49820617283841695
+- index: 17
+  sample_count: 1
+  board_world_xyz_ref_m:
+  - 0.06081185382395783
+  - 0.08527523329792779
+  - 0.433101927951995
+- index: 18
+  sample_count: 1
+  board_world_xyz_ref_m:
+  - 0.18896290368470367
+  - 0.05659291053308127
+  - 0.5147807585421604
+- index: 19
+  sample_count: 1
+  board_world_xyz_ref_m:
+  - 0.1399407982310799
+  - -0.05079164613347329
+  - 0.6834663272007874
+- index: 20
+  sample_count: 1
+  board_world_xyz_ref_m:
+  - 0.06578081020729905
+  - 0.025211309008216675
+  - 0.6593641211947402

@@ -1,0 +1,13 @@
+object_prompts:
+  "{A}": mug
+  "{B}": rack
+
+camera_labels:
+  - global
+  - ego
+  - side
+
+scene_point_num: 1024
+object_point_num: 1024
+min_depth_m: 0.05
+max_depth_m: 3.0

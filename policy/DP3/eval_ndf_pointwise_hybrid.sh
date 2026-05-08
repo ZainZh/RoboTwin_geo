@@ -3,18 +3,17 @@
 policy_name=DP3
 task_name=${1}
 task_config=${2}
-expert_data_num=${3}
-seed=${4}
-gpu_id=${5}
-ndf_ckpt_A=${6:-none}
-ndf_ckpt_B=${7:-none}
-ndf_device=${8:-cuda:0}
-ndf_dgcnn_placeholders=${9:-}
-object_placeholders=${10:-\{A\},\{B\}}
-checkpoint_num=${11:-3000}
-ndf_point_num=${12:-128}
-
-ckpt_setting=${task_config}-objpc-ndf-pointwise-hybrid
+ckpt_setting=${3}-objpc-ndf-pointwise-hybrid
+expert_data_num=${4}
+seed=${5}
+gpu_id=${6}
+ndf_ckpt_A=${7:-none}
+ndf_ckpt_B=${8:-none}
+ndf_device=${9:-cuda:0}
+ndf_dgcnn_placeholders=${10:-}
+object_placeholders=${11:-\{A\},\{B\}}
+checkpoint_num=${12:-3000}
+ndf_point_num=${13:-128}
 
 extra_overrides=()
 if [ "${ndf_ckpt_A}" != "none" ] && [ -n "${ndf_ckpt_A}" ]; then

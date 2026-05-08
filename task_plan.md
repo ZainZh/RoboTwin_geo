@@ -1,70 +1,236 @@
-# Task Plan: Diagnose NDF Underperformance and Add a Hybrid NDF Pointwise Path
+# Task Plan: Real Three-ZED Data Collection For DP3
 
 ## Goal
-Investigate why `train_ndf_pointwise` is flat or slightly worse than `train_objpc`, determine whether the main cause is evaluation setup, training recipe mismatch, incorrect usage, or the representation itself, and implement a new `ndf_pointwise_hybrid` path that preserves baseline merged object-PCD inputs while adding NDF pointwise features.
+
+Design a real-robot data collection pipeline that keeps the robot-control behavior consistent with `include/xtrainer_clover/experiments/run_control.py`, records synchronized data from three ZED cameras, and postprocesses each demonstration once into simulator-compatible RoboTwin/DP3 training data that can feed objpc, NDF, semantic, Utonia, and future feature branches.
 
 ## Current Phase
-Phase 6
+
+Real-ZED extrinsic calibration now supports 2+ configured cameras
 
 ## Phases
 
-### Phase 1: Experiment Surface Audit
-- [x] Restore planning context from prior work
-- [x] Identify the relevant train/eval scripts, configs, preprocessing paths, and runtime observation injection logic
-- [x] Confirm whether the current comparison is a pure representation comparison
+### Phase 1: Context Discovery
+- [x] Read the existing real-robot control and save loop.
+- [x] Read existing xtrainer frame serialization.
+- [x] Read DP3 HDF5/zarr preprocessing expectations.
 - **Status:** complete
 
-### Phase 2: Representation Path Comparison
-- [x] Compare `objpc`, `ndf_pointwise`, and `semantic_pointwise` dataset construction
-- [x] Compare online eval feature injection for NDF vs semantic
-- [x] Compare encoder/model structure seen by DP3
+### Phase 2: Pipeline Design
+- [x] Separate raw recording from canonical postprocessing.
+- [x] Define the canonical HDF5 fields needed by current DP3 preprocessors.
+- [x] Identify where real data must differ from simulator actor/object point clouds.
+- **Status:** in_progress
+
+### Phase 3: User Review
+- [x] Present architecture and trade-offs.
+- [x] Get approval before writing collection/postprocess scripts.
 - **Status:** complete
 
-### Phase 3: Evidence Gathering
-- [x] Inspect actual saved run overrides and dataset metadata for the existing `hanging_mug` experiments
-- [x] Check whether the configured NDF checkpoint / backbone pairing is plausible
-- [x] Check whether the current benchmark emphasizes novel-object generalization
+### Phase 4: Implementation
+- [x] Add the real ZED collection script.
+- [x] Add the raw-to-RoboTwin-HDF5 postprocess script.
+- [x] Add SAM-mask generation script.
+- [x] Add validation utilities for point cloud alignment and field compatibility.
 - **Status:** complete
 
-### Phase 4: Root-Cause Synthesis
-- [x] Rank the most likely causes using code and artifact evidence
-- [x] Distinguish “benchmark does not show NDF advantage” from “current NDF usage is flawed”
-- [x] Propose a minimal next experiment matrix to disambiguate the causes
+### Phase 5: Verification
+- [x] Add and run unit coverage for raw-to-HDF5 conversion.
+- [x] Run Python syntax checks on new scripts.
+- [ ] Run on real ZED/robot hardware.
+- **Status:** complete with hardware run pending
+
+### Phase 6: Workspace Anchor And Cropped Capture
+- [x] Add a standalone workspace-anchor script that uses a placed Charuco board to define a stable workspace/world frame.
+- [x] Add calibration-health checks comparing per-camera board poses after transforming into the current reference frame.
+- [x] Add reusable workspace crop utilities for 3D bbox projection, 2D ROI clipping, image/depth crop, and crop-adjusted intrinsics.
+- [x] Update real ZED raw collection so future recordings can save cropped RGB/depth with workspace metadata while retaining optional full-frame debug snapshots.
+- [x] Verify geometry utilities and collection script syntax without requiring real hardware.
+- **Status:** complete with hardware run pending
+
+### Phase 7: Real SAM3 ObjPC Dataset Postprocessing
+- [x] Add an offline SAM3 mask generator for `{A}=mug` and `{B}=box` that can reuse bbox prompts between frames.
+- [x] Add a batch driver that converts raw real-ZED episodes into `data/<task>/<task_config>/data/episode*.hdf5`.
+- [x] Keep the output compatible with `policy/DP3/train_objpc.sh` without changing existing DP3 training scripts.
+- [x] Verify helper behavior, syntax, and a small pilot conversion path.
+- [ ] Run full SAM3 postprocessing over all real episodes on a GPU-visible runtime.
+- **Status:** complete with full dataset run pending
+
+### Phase 8: SSD Output And Debug Previews
+- [x] Default real SAM3 objpc postprocess output to the external SSD path.
+- [x] Add repo-side symlink creation so `policy/DP3/train_objpc.sh` can still load data from `data/<task>/<config>`.
+- [x] Add debug mask overlays on original RGB frames.
+- [x] Add merged `{A}/{B}` colored `.ply` object point cloud previews.
+- [x] Verify debug output on a 1-frame SAM3 smoke.
 - **Status:** complete
 
-### Phase 5: Delivery
-- [x] Summarize findings with concrete file references
-- [x] Call out actionable fixes vs. hypotheses
+### Phase 9: Workspace-Constrained SAM Masks
+- [x] Add static RGB ROI masking for SAM masks, using workspace bbox projection by default.
+- [x] Add manual per-camera RGB ROI override through `--mask_roi_xyxy`.
+- [x] Add per-frame depth-based workspace gating so saved masks only keep pixels whose depth point lies inside the workspace bbox.
+- [x] Verify mask metadata and debug point cloud output on a 1-frame SAM3 smoke.
 - **Status:** complete
 
-### Phase 6: Hybrid NDF Implementation
-- [x] Write and review a concrete design for `ndf_pointwise_hybrid`
-- [x] Add a failing test that captures the intended hybrid observation semantics
-- [x] Implement the new preprocess/train/eval/config path without changing existing `ndf_pointwise`
-- [x] Verify the new test passes and the new shell/python entrypoints are syntactically valid
+### Phase 10: Interactive 2D Camera Workspace Masks
+- [x] Add an interactive first-frame polygon selector for each camera.
+- [x] Save per-camera 2D workspace masks and overlays.
+- [x] Restrict SAM input images to the clicked per-camera polygon masks before inference.
+- [x] Keep saved SAM masks restricted to the clicked per-camera polygon masks.
+- [x] Restrict HDF5 point-cloud reconstruction to the clicked per-camera polygon masks.
+- [x] Invalidate old non-polygon SAM mask caches when polygon mode is enabled.
+- [x] Make polygon mask mode disable depth workspace gating by default, with an opt-in `--also_depth_workspace_filter`.
 - **Status:** complete
 
-## Key Questions
-1. Is the current `objpc` vs `semantic_pointwise` vs `ndf_pointwise` comparison controlled, or are training recipes different?
-2. Is the current NDF experiment using the intended checkpoint and encoder architecture?
-3. Does the current eval setup actually test novel-object generalization, or mainly same-family / same-distribution performance?
-4. Does the current NDF pointwise feature field look stable enough for DP3 to exploit with only 50 demos?
+### Phase 11: SAM2 Streaming Tracking Migration
+- [x] Read `include/SAM2_streaming` and identify the bbox-initialized real-time tracking API.
+- [x] Locate local SAM2 checkpoint/config availability.
+- [x] Add a repo-local SAM2 tracking adapter that does not depend on SAM3/Ultralytics.
+- [x] Add an interactive per-camera/per-placeholder bbox initializer for real recordings.
+- [x] Add a SAM2-tracking real postprocess path that writes the same RoboTwin HDF5 fields.
+- [x] Add real eval integration so the first frame initializes A/B boxes on each camera and later frames call `track`.
+- [x] Move active real-data docs/scripts from SAM3 naming to SAM2 naming.
+- **Status:** complete with GPU/hardware run pending
+
+### Phase 12: Legacy SAM/SAM3 Cleanup
+- [x] Remove old SAM/SAM3 real-data segmentation scripts and postprocess entrypoints.
+- [x] Remove DP3 `objpc_sam3` preprocessing, training, eval, and config files.
+- [x] Remove SAM3 branches from DP3 deployment so only `objpc_sam2` remains for online mask tracking.
+- [x] Update tests/docs so active code no longer imports SAM3/Ultralytics or the old generic SAM path.
+- [x] Verify active source search, Python syntax, SAM2 tests, DP3 hybrid tests, shell syntax, and Hydra SAM2 config composition.
+- **Status:** complete
+
+### Phase 13: Real-ZED DP Image Baseline
+- [x] Add a single-camera DP zarr conversion path from real-ZED raw RGB plus compact SAM2 objpc HDF5 joint vectors.
+- [x] Add an independent three-camera DP zarr conversion path using `global,left,right -> head_camera,left_camera,right_camera`.
+- [x] Add a multi-camera DP dataset/config branch so `head_cam/left_cam/right_cam` all enter `MultiImageObsEncoder`.
+- [x] Keep the existing single-camera DP scripts/configs unchanged.
+- [x] Verify single-camera conversion, three-camera conversion, shell syntax, Python syntax, and unit coverage.
+- **Status:** complete
+
+### Phase 14: Real DP3 Inference Scripts
+- [x] Read xtrainer real inference/control path and DP3 deploy interfaces.
+- [x] Add a real-ZED DP3 inference driver that fuses three ZED point clouds and commands the xtrainer robot env.
+- [x] Add baseline and semantic-pointwise-hybrid shell wrappers for the user's trained checkpoints.
+- [x] Keep SAM2 object tracking only where semantic hybrid needs `{A}/{B}` object point clouds.
+- [x] Verify syntax and wrapper argument wiring without requiring hardware.
+- [ ] Run on real ZED/robot hardware.
+- **Status:** complete with hardware run pending
+
+### Phase 15: Robot-Base To Camera AprilTag Calibration
+- [x] Read xtrainer/RoboTwin teleoperation semantics and identify the usable robot Cartesian pose source.
+- [x] Design target-on-gripper AprilTag calibration for separate left/right Dobot bases.
+- [x] Add a standalone interactive ZED + robot calibration script under `script/real_zed_collection`.
+- [x] Add synthetic unit coverage for the OpenCV robot-world-hand-eye transform convention.
+- [x] Verify unit test, syntax, and CLI wiring without requiring hardware.
+- [ ] Run the calibration on real robot/ZED hardware.
+- **Status:** complete with hardware run pending
+
+### Phase 16: Real SAM2 Online Latency Reduction
+- [x] Diagnose why semantic real inference is much slower than the standalone ZED SAM2 tracker.
+- [x] Replace fused-scene back-projection with direct `mask + depth` object point-cloud lifting.
+- [x] Enforce workspace 3D filtering before points enter scene/object observations for all output frames.
+- [x] Add SAM2 input downscale control so tracking does not require 1080p frames.
+- [x] Add a standalone real-time SAM2 object point-cloud preview script for hardware-side unit testing.
+- [x] Add single-object, headless FPS, and larger Open3D preview controls.
+- [x] Add object-only preview mode that skips dense full-scene point-cloud construction by default.
+- [x] Add shared per-camera worker parallelism for preview object reconstruction, real scene construction, and online SAM2 object extraction.
+- [x] Verify with unit tests, syntax checks, and CLI visibility.
+- [ ] Run on real ZED/robot hardware and inspect `--profile_timing`.
+- **Status:** complete with hardware timing pending
+
+### Phase 17: Real Robot Execution Smoothing
+- [x] Diagnose why real inference can feel abrupt even after action delta limiting.
+- [x] Add execution-side action substeps so each policy action is sent as several smaller robot commands.
+- [x] Expose CLI controls for substep count and inter-substep sleep.
+- [x] Move the default smoothing path down to Dobot `ServoJ(t, gain)` through the xtrainer ZMQ robot server.
+- [x] Add execution-side delta-change limiting to reduce acceleration-like jumps between consecutive commands.
+- [x] Add action diagnostics for policy delta, commanded delta, commanded delta change, and observed execution delta.
+- [x] Add optional async action-buffer control thread so robot ServoJ commands continue while SAM2/DP3 inference is running.
+- [x] Verify with unit tests, syntax checks, shell checks, and CLI help visibility.
+- [ ] Tune the smoothing parameters on real hardware.
+- **Status:** complete with hardware tuning pending
+
+### Phase 18: Real-ZED Postprocess Calibration Selection
+- [x] Diagnose why offline SAM2 objpc postprocess can produce visibly misaligned fused point clouds.
+- [x] Compare the batch driver calibration defaults against per-episode raw-data manifests.
+- [x] Update the batch driver to prefer collection-time calibration snapshots by default.
+- [x] Preserve explicit calibration override behavior for intentional reprocessing.
+- [x] Verify with targeted unit tests, full real-ZED collection pipeline tests, and syntax checks.
+- **Status:** complete
+
+### Phase 19: Real-ZED DP Image Inference
+- [x] Add a real-ZED DP image-policy inference driver that avoids point-cloud/SAM work.
+- [x] Detect required RGB streams from the loaded checkpoint config instead of assuming three cameras.
+- [x] Reuse the proven real robot safety, ServoJ smoothing, and async action-buffer control pattern.
+- [x] Add shell wrapper(s) for single-camera and multi-camera DP checkpoints.
+- [x] Verify unit behavior, syntax, wrapper wiring, and CLI visibility without requiring hardware.
+- [ ] Run on real ZED/robot hardware.
+- **Status:** complete with hardware run pending
+
+### Phase 20: Optional-Camera Real-ZED Collection
+- [x] Remove the raw collection script's hard requirement that exactly three ZED cameras are active.
+- [x] Keep the default three-camera config unchanged.
+- [x] Resolve camera serials from calibration when the requested camera label subset differs from config `zed_serials`.
+- [x] Add unit coverage for one-camera, two-camera, and invalid serial-count cases.
+- [x] Verify collection pipeline tests and syntax without requiring hardware.
+- [ ] Run on real ZED/robot hardware.
+- **Status:** complete with hardware run pending
+
+### Phase 21: DP Real-ZED Mixed-Resolution Training Fix
+- [x] Diagnose DP zarr preprocessing failure on mixed old/new real-ZED episodes.
+- [x] Make DP real-ZED training wrappers pass a fixed resize target from `head_camera_type`.
+- [x] Stop training immediately if real-ZED preprocessing fails.
+- [x] Add shell coverage for single-camera and multicam wrapper preprocessing args.
+- [x] Verify shell syntax and RoboTwin-environment unit tests.
+- **Status:** complete
+
+### Phase 22: Real DP3 In-Process Episode Reset
+- [x] Add a non-blocking keyboard command path for real DP3 inference.
+- [x] Make `r` stop any async controller, return the robot to the initial photo pose, reset policy/controller state, and restart the episode budget.
+- [x] Make `q` stop inference without restarting the Python process.
+- [x] Keep SAM2 prompts/tracking by default, with an opt-in flag to clear SAM2 state on reset.
+- [x] Verify behavior with hardware-free unit tests, syntax checks, and wrapper checks.
+- **Status:** complete with hardware run pending
+
+### Phase 23: Optional-Camera Real-ZED Extrinsic Calibration
+- [x] Remove the Charuco extrinsic calibration script's hard requirement that exactly three ZED cameras are active.
+- [x] Resolve camera labels/serials from `real_zed_collection.yaml`, `--labels/--serials`, or connected serial auto-discovery for any 2+ unique cameras.
+- [x] Keep the default three-camera behavior unchanged when the config still lists `global,left,right`.
+- [x] Record `camera_count` in the saved calibration YAML.
+- [x] Add unit coverage for two-camera config acceptance and one-camera rejection.
+- **Status:** complete with hardware run pending
 
 ## Decisions Made
+
 | Decision | Rationale |
 |----------|-----------|
-| Treat this as a root-cause investigation rather than jumping to code fixes | The user asked to understand why NDF is underperforming, not just patch scripts blindly |
-| Use the saved zarr/checkpoint artifacts as primary evidence | The current raw demo folder is no longer the same complete source dataset used to build the existing 50-episode DP3 artifacts |
-| Distinguish benchmark-design explanations from implementation/usage explanations | Both are plausible, and the user explicitly asked about novel-object evaluation vs. misuse vs. weak representation |
-| Add a separate `ndf_pointwise_hybrid` path instead of redefining `ndf_pointwise` | This isolates the new experiment and keeps old checkpoints / notes interpretable |
+| Keep robot teleoperation/control logic aligned with `run_control.py` | Avoid changing safety, button, servo, and action semantics while adding perception recording |
+| Do not compute model features during collection | NDF, semantic, and Utonia variants should all reuse the same raw/canonical data |
+| Use canonical HDF5 as the compatibility boundary | Existing DP3 preprocess scripts already consume HDF5 episode files and then emit zarr |
+| Use reference-camera frame in v1 | Current policy is joint-space; robot-base hand-eye calibration is useful but not required for a fixed camera setting |
+| Add explicit workspace anchor instead of implicit last calibration pose | Keeps crop coordinates physically meaningful and repeatable across sessions |
+| Save cropped RGB/depth plus crop metadata rather than only fused point clouds | Reduces storage while preserving postprocess flexibility for masks and feature extraction |
+| Use SAM3 for the first real-data postprocess path | The local SAM3 checkpoint exists and the DP3 online eval path already uses the same SAM3 tracker; the configured SAM2 checkpoint is absent |
+| Migrate active real tracking to SAM2 streaming bbox initialization | SAM2 streaming removes the observed SAM3 text-prompt instability and matches the planned real eval workflow |
+| Remove legacy SAM/SAM3 code paths after SAM2 migration | Avoid dependency/import pollution and keep the real-data segmentation stack centered on one maintained tracker |
+| Use a separate DP multicam branch instead of modifying the old DP dataset | Keeps the single-camera baseline reproducible while allowing three RGB streams to train through the existing `MultiImageObsEncoder` |
+| Calibrate robot base to camera with a held AprilTag cube | Makes the point-cloud frame recoverable after robot-base movement and supports future robot-base-frame training/inference |
+
+## Key Questions
+
+1. What ZED SDK wrapper is available in the target robot environment?
+2. How should object masks be supplied in real data: manual annotation, live SAM/grounding, saved masks, or a first-frame interactive workflow?
+3. Which world frame should be canonical: robot base frame or a calibrated table/world frame?
 
 ## Errors Encountered
+
 | Error | Attempt | Resolution |
 |-------|---------|------------|
-| Previous `task_plan.md` still described the actor-segmentation implementation workstream | 1 | Replaced it with a task-specific investigation plan for the NDF underperformance diagnosis |
+| SAM2 postprocess failed in `scaled_dot_product_attention` with `RuntimeError: No available kernel` | User ran `postprocess_real_zed_sam2_objpc_dataset.py` on GPU; warnings showed Q/K/V were float32 and Flash/Memory Efficient attention kernels were unavailable for that dtype | Wrapped SAM2 predictor calls in CUDA autocast, defaulting to `bfloat16`, and enabled CUDA SDP kernels in the SAM2 loader |
+| Real DP3 wrapper opened `/home/zheng/script/...` from repo-root invocation | Initial wrappers used `cd ../..`, which only works when launched from `policy/DP3` | Switched both wrappers to resolve the repository root from `${BASH_SOURCE[0]}` |
 
 ## Notes
-- Re-read this file before major decisions.
-- Write concrete evidence to `findings.md`.
+
+- Re-read this file before implementation.
+- Log discoveries in `findings.md`.
 - Log commands and verification in `progress.md`.
-- Keep speculative conclusions out of this file unless they are explicitly marked as hypotheses.

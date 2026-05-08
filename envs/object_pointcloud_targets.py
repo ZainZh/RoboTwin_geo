@@ -12,6 +12,22 @@ TASK_OBJECT_POINTCLOUD_TARGETS = {
         "{A}": "hammer",
         "{B}": "block",
     },
+    "pick_diverse_bottles": {
+        "{A}": "bottle1",
+        "{B}": "bottle2",
+    },
+    "pour_kettle_mug": {
+        "{A}": "kettle",
+        "{B}": "mug",
+    },
+    "place_dual_shoes": {
+        "{A}": "left_shoe",
+        "{B}": "right_shoe",
+        "{C}": "shoe_box"
+    },
+    "open_microwave": {
+        "{A}": "microwave",
+    }
 }
 
 
