@@ -104,8 +104,8 @@ def _resolve_labels_serials(args: argparse.Namespace, base_cfg: dict) -> tuple[l
         raise ValueError("Base calibration has no cameras.")
 
     labels = [str(x) for x in args.labels] if args.labels else [str(x) for x in cameras.keys()]
-    if len(labels) != 3:
-        raise ValueError(f"Expected exactly 3 labels, got {labels}")
+    # if len(labels) != 3:
+    #     raise ValueError(f"Expected exactly 3 labels, got {labels}")
     missing = [label for label in labels if label not in cameras]
     if missing:
         raise ValueError(f"Labels missing from base calibration: {missing}")
