@@ -1,0 +1,24 @@
+{
+  "full_description": "Pick up the teapot with the correct arm and place it on the red block",
+  "schema": "{A} denotes the teapot, {B} denotes the red block, {a} denotes the arm",
+  "preference": "num of words should not exceed 15",
+  "seen": [
+    "Use {a} to place {A} on {B}.",
+    "Pick up {A} and set it on {B}.",
+    "Grab {A} with {a} and place it on {B}.",
+    "Move {A} onto {B} using {a}.",
+    "Lift {A} and put it on {B}.",
+    "Use {a} to move {A} to {B}.",
+    "Place {A} on the red block with {a}.",
+    "Pick up {A} and put it on the red block.",
+    "Use {a} to set {A} on {B}.",
+    "Move the teapot onto {B} with {a}."
+  ],
+  "unseen": [
+    "Put {A} on {B} using {a}.",
+    "Use {a} to transfer {A} onto {B}.",
+    "Lift {A} and release it on {B}.",
+    "Move {A} from the table to {B}.",
+    "Place the teapot on the red block."
+  ]
+}

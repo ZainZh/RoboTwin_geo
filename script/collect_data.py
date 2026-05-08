@@ -108,12 +108,20 @@ def run(TASK_ENV, args):
 
     print(f"Task Name: \033[34m{args['task_name']}\033[0m")
 
+    def print_task_diagnostics():
+        get_diagnostics = getattr(TASK_ENV, "get_seed_diagnostics", None)
+        if callable(get_diagnostics):
+            diagnostics = get_diagnostics()
+            if diagnostics:
+                print(diagnostics)
+
     # =========== Collect Seed ===========
     os.makedirs(args["save_path"], exist_ok=True)
 
     if not args["use_seed"]:
         print("\033[93m" + "[Start Seed and Pre Motion Data Collection]" + "\033[0m")
         args["need_plan"] = True
+        max_seed_tries = args.get("max_seed_tries")
 
         if os.path.exists(os.path.join(args["save_path"], "seed.txt")):
             with open(os.path.join(args["save_path"], "seed.txt"), "r") as file:
@@ -136,6 +144,7 @@ def run(TASK_ENV, args):
                     suc_num += 1
                 else:
                     print(f"simulate data episode {suc_num} fail! (seed = {epid})")
+                    print_task_diagnostics()
                     fail_num += 1
 
                 TASK_ENV.close_env()
@@ -146,6 +155,7 @@ def run(TASK_ENV, args):
                 print(" -------------")
                 print(f"simulate data episode {suc_num} fail! (seed = {epid})")
                 print("Error: ", e)
+                print_task_diagnostics()
                 print(" -------------")
                 fail_num += 1
                 TASK_ENV.close_env()
@@ -158,6 +168,7 @@ def run(TASK_ENV, args):
                 print(" -------------")
                 print(f"simulate data episode {suc_num} fail! (seed = {epid})")
                 print("Error: ", e)
+                print_task_diagnostics()
                 print(" -------------")
                 fail_num += 1
                 TASK_ENV.close_env()
@@ -172,12 +183,60 @@ def run(TASK_ENV, args):
                 for sed in seed_list:
                     file.write("%s " % sed)
 
+            if max_seed_tries is not None and epid >= max_seed_tries and suc_num < args["episode_num"]:
+                raise RuntimeError(
+                    f"Failed to find enough valid seeds for {args['task_name']}: "
+                    f"{suc_num}/{args['episode_num']} successes after {epid} tries. "
+                    "Check task diagnostics above or increase max_seed_tries.")
+
         print(f"\nComplete simulation, failed \033[91m{fail_num}\033[0m times / {epid} tries \n")
     else:
         print("\033[93m" + "Use Saved Seeds List".center(30, "-") + "\033[0m")
         with open(os.path.join(args["save_path"], "seed.txt"), "r") as file:
             seed_list = file.read().split()
             seed_list = [int(i) for i in seed_list]
+
+        # 检查轨迹文件是否存在，不存在则先跑一次采集
+        traj_dir = os.path.join(args["save_path"], "_traj_data")
+        need_collect = False
+        for i in range(min(args["episode_num"], len(seed_list))):
+            if not os.path.exists(os.path.join(traj_dir, f"episode{i}.pkl")):
+                need_collect = True
+                break
+
+        if need_collect:
+            print("\033[93m" + "[Collecting trajectories for predefined seeds]" + "\033[0m")
+            args["need_plan"] = True
+            os.makedirs(traj_dir, exist_ok=True)
+            MAX_RETRIES = 5
+            for ep_idx in range(min(args["episode_num"], len(seed_list))):
+                seed = seed_list[ep_idx]
+                if os.path.exists(os.path.join(traj_dir, f"episode{ep_idx}.pkl")):
+                    continue
+                # 重试同一个 seed 直到成功或达到上限
+                for attempt in range(MAX_RETRIES):
+                    try:
+                        # 每次都重新初始化环境
+                        TASK_ENV.setup_demo(now_ep_num=ep_idx, seed=seed, **args)
+                        TASK_ENV.play_once()
+                        if TASK_ENV.plan_success and TASK_ENV.check_success():
+                            TASK_ENV.save_traj_data(ep_idx)
+                            print(f"  episode {ep_idx} (seed={seed}) saved (attempt {attempt+1})")
+                            TASK_ENV.close_env(clear_cache=True)
+                            break
+                        else:
+                            print(f"  episode {ep_idx} (seed={seed}) attempt {attempt+1} failed plan/check, retry")
+                            print_task_diagnostics()
+                            TASK_ENV.close_env(clear_cache=True)
+                    except Exception as e:
+                        print(f"  episode {ep_idx} (seed={seed}) attempt {attempt+1} error: {e}")
+                        print_task_diagnostics()
+                        try:
+                            TASK_ENV.close_env()
+                        except:
+                            pass
+                else:
+                    print(f"  episode {ep_idx} (seed={seed}) GIVING UP after {MAX_RETRIES} attempts")
 
     # =========== Collect Data ===========
 

@@ -1,0 +1,49 @@
++ SSH_OPTS=(-i "${SSH_KEY}" -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=6 -p "${REMOTE_PORT}")
++ main
++ log 'Pipeline run id: debug_startup'
+++ date '+%F %T'
++ printf '[%s] %s\n' '2026-05-08 17:26:51' 'Pipeline run id: debug_startup'
+[2026-05-08 17:26:51] Pipeline run id: debug_startup
++ log 'Task: adjust_kettle; mid=demo_clean_midrange; expanded=demo_clean; episodes=50; gpu=0'
+++ date '+%F %T'
++ printf '[%s] %s\n' '2026-05-08 17:26:51' 'Task: adjust_kettle; mid=demo_clean_midrange; expanded=demo_clean; episodes=50; gpu=0'
+[2026-05-08 17:26:51] Task: adjust_kettle; mid=demo_clean_midrange; expanded=demo_clean; episodes=50; gpu=0
++ log 'Local log: logs/adjust_kettle_act_pipeline/debug_startup/pipeline.log'
+++ date '+%F %T'
++ printf '[%s] %s\n' '2026-05-08 17:26:51' 'Local log: logs/adjust_kettle_act_pipeline/debug_startup/pipeline.log'
+[2026-05-08 17:26:51] Local log: logs/adjust_kettle_act_pipeline/debug_startup/pipeline.log
++ log 'Remote root: /no/such/remote/root'
+++ date '+%F %T'
++ printf '[%s] %s\n' '2026-05-08 17:26:51' 'Remote root: /no/such/remote/root'
+[2026-05-08 17:26:51] Remote root: /no/such/remote/root
++ command -v ssh
++ command -v tar
++ test -f /tmp/robotwin_cloud_key
++ require_local_dataset demo_clean_midrange
++ local config=demo_clean_midrange
++ local path=data/adjust_kettle/demo_clean_midrange/data
++ [[ ! -d data/adjust_kettle/demo_clean_midrange/data ]]
++ local count
+++ find data/adjust_kettle/demo_clean_midrange/data -maxdepth 1 -type f -name 'episode*.hdf5'
+++ wc -l
++ count=50
++ [[ 50 -lt 50 ]]
++ log 'Local dataset demo_clean_midrange: 50 episode files'
+++ date '+%F %T'
++ printf '[%s] %s\n' '2026-05-08 17:26:51' 'Local dataset demo_clean_midrange: 50 episode files'
+[2026-05-08 17:26:51] Local dataset demo_clean_midrange: 50 episode files
++ require_local_dataset demo_clean
++ local config=demo_clean
++ local path=data/adjust_kettle/demo_clean/data
++ [[ ! -d data/adjust_kettle/demo_clean/data ]]
++ local count
+++ find data/adjust_kettle/demo_clean/data -maxdepth 1 -type f -name 'episode*.hdf5'
+++ wc -l
++ count=50
++ [[ 50 -lt 50 ]]
++ log 'Local dataset demo_clean: 50 episode files'
+++ date '+%F %T'
++ printf '[%s] %s\n' '2026-05-08 17:26:51' 'Local dataset demo_clean: 50 episode files'
+[2026-05-08 17:26:51] Local dataset demo_clean: 50 episode files
++ remote 'mkdir -p '\''/no/such/remote/root/pipeline_logs/adjust_kettle_act_pipeline/debug_startup'\'' && test -d '\''/no/such/remote/root/policy/ACT'\'' && test -d '\''/root/gpufree-data/robotwin_work/pydeps'\'''
++ ssh -i /tmp/robotwin_cloud_key -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=6 -p 30335 root@183.147.142.40 'mkdir -p '\''/no/such/remote/root/pipeline_logs/adjust_kettle_act_pipeline/debug_startup'\'' && test -d '\''/no/such/remote/root/policy/ACT'\'' && test -d '\''/root/gpufree-data/robotwin_work/pydeps'\'''

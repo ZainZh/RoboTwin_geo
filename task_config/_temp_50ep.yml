@@ -28,7 +28,6 @@ embodiment:
 episode_num: 50
 eval_video_log: true
 language_num: 100
-max_seed_tries: 500
 pcd_crop: true
 pcd_down_sample_num: 1024
 render_freq: 10
