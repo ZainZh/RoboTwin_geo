@@ -1,0 +1,9 @@
+[2026-05-08 17:27:32] Pipeline run id: 20260508_172732_act_pipeline
+[2026-05-08 17:27:32] Task: adjust_kettle; mid=demo_clean_midrange; expanded=demo_clean; episodes=50; gpu=0
+[2026-05-08 17:27:32] Local log: logs/adjust_kettle_act_pipeline/20260508_172732_act_pipeline/pipeline.log
+[2026-05-08 17:27:32] Remote root: /root/gpufree-data/robotwin_work/RoboTwin_geo
+[2026-05-08 17:27:32] Local dataset demo_clean_midrange: 50 episode files
+[2026-05-08 17:27:32] Local dataset demo_clean: 50 episode files
+remote deps ok True
+[2026-05-08 17:27:36] Cleaning remote raw dataset: /root/gpufree-data/robotwin_work/RoboTwin_geo/data/adjust_kettle/demo_clean_midrange
+[2026-05-08 17:27:37] Uploading data/adjust_kettle/demo_clean_midrange to root@183.147.142.40:/root/gpufree-data/robotwin_work/RoboTwin_geo/data/adjust_kettle/demo_clean_midrange

@@ -25,10 +25,10 @@ domain_randomization:
   random_table_height: 0
 embodiment:
 - aloha-agilex
-episode_num: 50
+episode_num: 3
 eval_video_log: true
 language_num: 100
-max_seed_tries: 500
+max_seed_tries: 80
 pcd_crop: true
 pcd_down_sample_num: 1024
 render_freq: 10

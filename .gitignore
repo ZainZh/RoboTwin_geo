@@ -28,6 +28,9 @@ envs/curobo/*
 
 .idea/inspectionProfiles/
 
+
+.idea/RoboTwin_geo.iml
+
 include/geometry_awareness_manipulation
 
 *.xml
