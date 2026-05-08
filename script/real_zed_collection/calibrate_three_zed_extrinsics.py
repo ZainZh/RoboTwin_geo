@@ -48,12 +48,12 @@ def parse_args() -> argparse.Namespace:
 
     parser = argparse.ArgumentParser(
         description=(
-            "Interactive multi-pose calibration for three ZED cameras using one shared Charuco board. "
+            "Interactive multi-pose calibration for multiple ZED cameras using one shared Charuco board. "
             "The output is a self-contained YAML with intrinsics and transforms into a reference camera frame."
         )
     )
     parser.add_argument("--serials", type=int, nargs="*", default=None, metavar="SN")
-    parser.add_argument("--labels", type=str, nargs=3, default=None, metavar=("L0", "L1", "L2"))
+    parser.add_argument("--labels", type=str, nargs="*", default=None, metavar="LABEL")
     parser.add_argument(
         "--collection_config",
         type=str,
@@ -257,6 +257,48 @@ def _log_label_serial_mapping(labels: list[str], serials: list[int], serial_sour
     print(f"[INFO] Camera label -> serial mapping ({serial_source}):")
     for label, serial in zip(labels, serials):
         print(f"  - {label}: {serial}")
+
+
+def _resolve_requested_cameras(
+    args: argparse.Namespace,
+    discovered_serials: list[int] | None = None,
+) -> tuple[list[str], list[int], str]:
+    config_labels, config_serial_by_label = load_collection_camera_mapping(args.collection_config)
+    labels = [str(x) for x in (args.labels or config_labels or ["global", "left", "right"])]
+    if len(labels) < 2 or len(set(labels)) != len(labels):
+        raise ValueError("Please provide at least 2 unique labels.")
+    if args.reference_label not in labels:
+        raise ValueError(f"reference_label must be one of {labels}")
+
+    serials_cli = [] if args.serials is None else [int(x) for x in args.serials]
+    if discovered_serials is None:
+        discovered_serials = _discover_connected_serials()
+    if serials_cli:
+        if len(serials_cli) != len(labels):
+            raise ValueError(f"When using --serials, provide exactly {len(labels)} serials.")
+        serials = serials_cli
+        serial_source = "cli"
+    elif config_serial_by_label:
+        missing_labels = [label for label in labels if label not in config_serial_by_label]
+        if missing_labels:
+            raise ValueError(
+                f"Collection config {args.collection_config} is missing serials for labels: {missing_labels}"
+            )
+        serials = [int(config_serial_by_label[label]) for label in labels]
+        serial_source = f"collection_config:{Path(args.collection_config).expanduser().resolve()}"
+    else:
+        if len(discovered_serials) < len(labels):
+            raise RuntimeError(
+                f"Auto-discovery found {len(discovered_serials)} camera(s), but {len(labels)} are required. "
+                f"Found: {discovered_serials}"
+            )
+        serials = discovered_serials[: len(labels)]
+        serial_source = "auto_discovery"
+        print(f"[WARN] Auto-discovered serials: {discovered_serials}; using {serials}")
+        print("[WARN] Auto-discovery binds sorted serials to labels by position. Prefer explicit --serials.")
+    if len(set(serials)) != len(serials):
+        raise ValueError("serials must be unique.")
+    return labels, serials, serial_source
 
 
 def _resolve_charuco_config_path(args: argparse.Namespace) -> Path | None:
@@ -786,12 +828,6 @@ def main() -> None:
     if sl is None:
         raise RuntimeError("pyzed.sl is not available. Please install ZED SDK Python API.")
 
-    config_labels, config_serial_by_label = load_collection_camera_mapping(args.collection_config)
-    labels = [str(x) for x in (args.labels or config_labels or ["global", "left", "right"])]
-    if len(labels) != 3 or len(set(labels)) != 3:
-        raise ValueError("Please provide exactly 3 unique labels.")
-    if args.reference_label not in labels:
-        raise ValueError(f"reference_label must be one of {labels}")
     if int(args.num_positions) <= 0:
         raise ValueError("num_positions must be > 0.")
     if int(args.samples_per_position) <= 0:
@@ -799,31 +835,7 @@ def main() -> None:
 
     serials_cli = [] if args.serials is None else [int(x) for x in args.serials]
     discovered_serials = _discover_connected_serials()
-    if serials_cli:
-        if len(serials_cli) != len(labels):
-            raise ValueError(f"When using --serials, provide exactly {len(labels)} serials.")
-        serials = serials_cli
-        serial_source = "cli"
-    elif config_serial_by_label:
-        missing_labels = [label for label in labels if label not in config_serial_by_label]
-        if missing_labels:
-            raise ValueError(
-                f"Collection config {args.collection_config} is missing serials for labels: {missing_labels}"
-            )
-        serials = [int(config_serial_by_label[label]) for label in labels]
-        serial_source = f"collection_config:{Path(args.collection_config).expanduser().resolve()}"
-    else:
-        if len(discovered_serials) < len(labels):
-            raise RuntimeError(
-                f"Auto-discovery found {len(discovered_serials)} camera(s), but {len(labels)} are required. "
-                f"Found: {discovered_serials}"
-            )
-        serials = discovered_serials[: len(labels)]
-        serial_source = "auto_discovery"
-        print(f"[WARN] Auto-discovered serials: {discovered_serials}; using {serials}")
-        print("[WARN] Auto-discovery binds sorted serials to labels by position. Prefer explicit --serials.")
-    if len(set(serials)) != len(serials):
-        raise ValueError("serials must be unique.")
+    labels, serials, serial_source = _resolve_requested_cameras(args, discovered_serials=discovered_serials)
     _log_label_serial_mapping(labels, serials, serial_source)
 
     board, dictionary, charuco_cfg = _charuco_board_from_config(args)
@@ -891,7 +903,10 @@ def main() -> None:
                     if not enter_pressed:
                         continue
                     if not ok_all:
-                        print("[WARN] Enter pressed but not all 3 cameras detected the board. Reposition and retry.")
+                        print(
+                            f"[WARN] Enter pressed but not all {len(labels)} cameras detected the board. "
+                            "Reposition and retry."
+                        )
                         break
                     est, aborted = _collect_samples_for_pose(
                         streams=streams,
@@ -977,6 +992,7 @@ def main() -> None:
             "serial_source": serial_source,
             "requested_serials": serials_cli,
             "discovered_serials": discovered_serials,
+            "camera_count": int(len(labels)),
             "num_positions_target": int(args.num_positions),
             "num_positions_collected": int(len(position_estimates)),
             "samples_per_position_target": int(args.samples_per_position),

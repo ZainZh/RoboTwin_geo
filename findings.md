@@ -748,6 +748,10 @@
   - The calibration script initialized `last_keys_status` as all zeros and treated Button B `dev_keys == 1` as capture without requiring a prior press edge.
   - On real hardware, the initial idle Button-B state can be read as the released value, so startup can look like a release edge and set `what_to_do[0,2] = 1` before the user acts.
   - Button B should mirror Button A edge semantics: only a release after a detected press can trigger capture, and the monitor should baseline from the current hardware key state.
+- Optional-camera Real-ZED extrinsic calibration finding:
+  - `calibrate_three_zed_extrinsics.py` already iterates over the active stream list for capture, Charuco detection, relative transform averaging, display, and YAML writing, so the fixed-three limitation was only in argument parsing/runtime validation.
+  - The script now derives the active camera set from `real_zed_collection.yaml` or explicit CLI labels/serials and requires any 2+ unique cameras. A one-camera Charuco extrinsic solve remains invalid because there is no inter-camera transform to estimate.
+  - The saved YAML keeps the existing `type: three_camera_charuco_extrinsics` compatibility string but now records `camera_count` so downstream tools can distinguish two-camera and three-camera calibration outputs.
 
 ---
 *Update this file after every 2 view/browser/search operations.*

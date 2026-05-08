@@ -6,7 +6,7 @@ Design a real-robot data collection pipeline that keeps the robot-control behavi
 
 ## Current Phase
 
-SAM2 streaming tracking migration for real objpc training/eval data
+Real-ZED extrinsic calibration now supports 2+ configured cameras
 
 ## Phases
 
@@ -190,6 +190,14 @@ SAM2 streaming tracking migration for real objpc training/eval data
 - [x] Make `q` stop inference without restarting the Python process.
 - [x] Keep SAM2 prompts/tracking by default, with an opt-in flag to clear SAM2 state on reset.
 - [x] Verify behavior with hardware-free unit tests, syntax checks, and wrapper checks.
+- **Status:** complete with hardware run pending
+
+### Phase 23: Optional-Camera Real-ZED Extrinsic Calibration
+- [x] Remove the Charuco extrinsic calibration script's hard requirement that exactly three ZED cameras are active.
+- [x] Resolve camera labels/serials from `real_zed_collection.yaml`, `--labels/--serials`, or connected serial auto-discovery for any 2+ unique cameras.
+- [x] Keep the default three-camera behavior unchanged when the config still lists `global,left,right`.
+- [x] Record `camera_count` in the saved calibration YAML.
+- [x] Add unit coverage for two-camera config acceptance and one-camera rejection.
 - **Status:** complete with hardware run pending
 
 ## Decisions Made

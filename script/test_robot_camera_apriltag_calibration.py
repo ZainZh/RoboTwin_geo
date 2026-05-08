@@ -9,6 +9,7 @@ import cv2
 import numpy as np
 
 from script.real_zed_collection.calibrate_three_zed_extrinsics import load_collection_camera_mapping
+from script.real_zed_collection.calibrate_three_zed_extrinsics import _resolve_requested_cameras
 from script.real_zed_collection.calibrate_robot_camera_apriltag import (
     LatestCameraDetection,
     _apply_button_state_transition,
@@ -62,6 +63,45 @@ class RobotCameraAprilTagCalibrationTest(unittest.TestCase):
             serial_by_label,
             {"global": 38968158, "left": 31021548, "right": 37856216},
         )
+
+    def test_three_zed_calibration_accepts_two_camera_collection_config(self):
+        with TemporaryDirectory() as tmp:
+            config = Path(tmp) / "real_zed_collection.yaml"
+            config.write_text(
+                "camera_labels: global,left\n"
+                "zed_serials: [38968158, 31021548]\n",
+                encoding="utf-8",
+            )
+            args = Namespace(
+                labels=None,
+                serials=None,
+                collection_config=str(config),
+                reference_label="global",
+            )
+
+            labels, serials, serial_source = _resolve_requested_cameras(args, discovered_serials=[])
+
+        self.assertEqual(labels, ["global", "left"])
+        self.assertEqual(serials, [38968158, 31021548])
+        self.assertTrue(serial_source.startswith("collection_config:"))
+
+    def test_three_zed_calibration_rejects_single_camera_config(self):
+        with TemporaryDirectory() as tmp:
+            config = Path(tmp) / "real_zed_collection.yaml"
+            config.write_text(
+                "camera_labels: global\n"
+                "zed_serials: [38968158]\n",
+                encoding="utf-8",
+            )
+            args = Namespace(
+                labels=None,
+                serials=None,
+                collection_config=str(config),
+                reference_label="global",
+            )
+
+            with self.assertRaisesRegex(ValueError, "at least 2"):
+                _resolve_requested_cameras(args, discovered_serials=[])
 
     def test_robot_camera_serial_prefers_collection_config_over_calibration_yaml(self):
         with TemporaryDirectory() as tmp:

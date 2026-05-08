@@ -1344,3 +1344,12 @@
   - Initialized the button monitor from the current hardware key state instead of assuming all-zero state.
   - Cleared the global command state before starting the calibration button thread.
   - Verified the targeted test, full robot-camera calibration tests, Python syntax, and whitespace checks.
+
+### Phase 55: Optional-Camera Real-ZED Extrinsic Calibration
+- **Status:** complete with hardware run pending
+- Actions taken:
+  - Added tests proving `calibrate_three_zed_extrinsics.py` accepts a two-camera `real_zed_collection.yaml` and rejects single-camera calibration configs.
+  - Replaced the runtime `exactly 3` label/serial validation with `_resolve_requested_cameras(...)`, which accepts any 2+ unique camera labels.
+  - Made `--labels` variable-length while preserving config-driven defaults from `real_zed_collection.yaml`.
+  - Updated runtime warnings and saved YAML metadata to report the actual configured camera count.
+  - Verified targeted tests, full robot-camera calibration tests, Python syntax, and whitespace checks.
