@@ -369,6 +369,13 @@ class RealZedInferencePointcloudTest(unittest.TestCase):
 
         self.assertEqual(args.parallel_camera_workers, 3)
 
+    def test_real_inference_parser_does_not_hardcode_camera_labels(self):
+        from script.real_zed_inference.real_dp3_inference import build_arg_parser
+
+        args = build_arg_parser().parse_args([])
+
+        self.assertEqual(args.camera_labels, "")
+
     def test_real_inference_parser_defaults_to_smoothed_execution(self):
         from script.real_zed_inference.real_dp3_inference import build_arg_parser
 
@@ -404,6 +411,45 @@ class RealZedInferencePointcloudTest(unittest.TestCase):
         configure_robot_servo_params(env, args)
 
         self.assertEqual(env.calls, [(0.08, 250)])
+
+    def test_semantic_checkpoint_validation_reports_missing_b_branch(self):
+        from script.real_zed_inference.real_dp3_inference import validate_semantic_checkpoint_branches
+
+        args = argparse.Namespace(
+            mode="semantic_pointwise_hybrid",
+            semantic_ckpt_A="/tmp/semantic_a.pt",
+            semantic_ckpt_B="none",
+        )
+        checkpoint_payload = {
+            "state_dicts": {
+                "model": {
+                    "obs_encoder.extractors.semantic_point_cloud_A.mlp.0.weight": object(),
+                    "obs_encoder.extractors.semantic_point_cloud_B.mlp.0.weight": object(),
+                }
+            }
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "semantic_ckpt_B"):
+            validate_semantic_checkpoint_branches(args, checkpoint_payload, "/tmp/fake.ckpt")
+
+    def test_semantic_checkpoint_validation_accepts_provided_b_branch(self):
+        from script.real_zed_inference.real_dp3_inference import validate_semantic_checkpoint_branches
+
+        args = argparse.Namespace(
+            mode="semantic_pointwise_hybrid",
+            semantic_ckpt_A="/tmp/semantic_a.pt",
+            semantic_ckpt_B="/tmp/semantic_b.pt",
+        )
+        checkpoint_payload = {
+            "state_dicts": {
+                "model": {
+                    "obs_encoder.extractors.semantic_point_cloud_A.mlp.0.weight": object(),
+                    "obs_encoder.extractors.semantic_point_cloud_B.mlp.0.weight": object(),
+                }
+            }
+        }
+
+        validate_semantic_checkpoint_branches(args, checkpoint_payload, "/tmp/fake.ckpt")
 
     def test_action_diagnostics_reports_policy_command_and_observed_deltas(self):
         from script.real_zed_inference.real_dp3_inference import build_action_diagnostic_row

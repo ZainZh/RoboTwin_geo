@@ -630,6 +630,12 @@ def _resolve_cameras(args: Args) -> tuple[list[str], list[int]]:
         if not labels:
             labels = list(calib.keys())
         if not serials or len(serials) != len(labels):
+            missing_labels = [label for label in labels if label not in calib]
+            if missing_labels:
+                raise ValueError(
+                    f"Calibration file {args.calibration_path} is missing camera label(s) {missing_labels}. "
+                    f"Requested labels={labels}, available labels={list(calib.keys())}."
+                )
             serials = [int(calib[label].serial_number) for label in labels]
     if not labels:
         raise ValueError("Provide at least one camera label.")
