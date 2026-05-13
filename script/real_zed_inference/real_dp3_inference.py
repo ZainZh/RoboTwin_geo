@@ -6,6 +6,7 @@ import argparse
 import copy
 import csv
 import os
+import re
 import select
 import sys
 import threading
@@ -713,12 +714,96 @@ def derive_dp3_settings(args: argparse.Namespace) -> tuple[str, str]:
     return config_name, ckpt_setting
 
 
+def resolve_dp3_checkpoint_path(args: argparse.Namespace, ckpt_setting: str) -> Path:
+    suffix = "_w_rgb" if bool(args.use_rgb) else ""
+    return (
+        DP3_ROOT
+        / "checkpoints"
+        / f"{args.task_name}-{ckpt_setting}-{args.expert_data_num}{suffix}_{args.seed}"
+        / f"{args.checkpoint_num}.ckpt"
+    )
+
+
+def load_checkpoint_payload_for_validation(checkpoint_path: Path) -> Any | None:
+    if not checkpoint_path.is_file():
+        return None
+    try:
+        import dill  # noqa: PLC0415
+        import torch  # noqa: PLC0415
+
+        return torch.load(checkpoint_path.open("rb"), pickle_module=dill, map_location="cpu")
+    except Exception as exc:
+        print_warning(f"Could not pre-validate DP3 checkpoint structure at {checkpoint_path}: {exc}")
+        return None
+
+
+def semantic_pointcloud_placeholders_from_checkpoint_payload(checkpoint_payload: Any) -> set[str]:
+    if not isinstance(checkpoint_payload, Mapping):
+        return set()
+    state_dicts = checkpoint_payload.get("state_dicts", {})
+    candidates: list[Mapping[str, Any]] = []
+    if isinstance(state_dicts, Mapping):
+        candidates.extend(value for value in state_dicts.values() if isinstance(value, Mapping))
+    candidates.append(checkpoint_payload)
+
+    placeholders: set[str] = set()
+    pattern = re.compile(r"(?:^|\.)semantic_point_cloud_([^.\s]+)\.")
+    for state_dict in candidates:
+        for key in state_dict.keys():
+            if not isinstance(key, str):
+                continue
+            for match in pattern.finditer(key):
+                placeholders.add("{" + match.group(1) + "}")
+    return placeholders
+
+
+def _optional_arg_is_set(value: Any) -> bool:
+    return value not in {None, "", "none"}
+
+
+def validate_semantic_checkpoint_branches(
+    args: argparse.Namespace,
+    checkpoint_payload: Any,
+    checkpoint_path: str | Path,
+) -> None:
+    if args.mode != "semantic_pointwise_hybrid":
+        return
+    required_placeholders = semantic_pointcloud_placeholders_from_checkpoint_payload(checkpoint_payload)
+    if not required_placeholders:
+        return
+
+    placeholder_arg_names = {
+        "{A}": "semantic_ckpt_A",
+        "{B}": "semantic_ckpt_B",
+    }
+    missing_args = []
+    for placeholder in sorted(required_placeholders):
+        arg_name = placeholder_arg_names.get(placeholder)
+        if arg_name is None:
+            continue
+        if not _optional_arg_is_set(getattr(args, arg_name, None)):
+            missing_args.append(arg_name)
+    if missing_args:
+        missing_flags = ", ".join(f"--{name}" for name in missing_args)
+        required_keys = ", ".join(sorted(required_placeholders))
+        raise RuntimeError(
+            "Semantic checkpoint/config mismatch: "
+            f"checkpoint '{checkpoint_path}' contains semantic point-cloud branch(es) {required_keys}, "
+            f"but inference did not provide {missing_flags}. "
+            "Pass the matching semantic checkpoint(s), or use a DP3 checkpoint trained without those branch(es)."
+        )
+
+
 def load_dp3_model(args: argparse.Namespace):
     if args.gpu_id is not None and str(args.gpu_id).strip() != "":
         os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu_id)
     from deploy_policy import encode_obs, get_model  # noqa: PLC0415
 
     config_name, ckpt_setting = derive_dp3_settings(args)
+    ckpt_file = resolve_dp3_checkpoint_path(args, ckpt_setting)
+    payload = load_checkpoint_payload_for_validation(ckpt_file)
+    if payload is not None:
+        validate_semantic_checkpoint_branches(args, payload, ckpt_file)
     usr_args: dict[str, Any] = {
         "policy_name": "DP3",
         "task_name": args.task_name,
@@ -1695,7 +1780,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output_frame", choices=["source", "workspace", "left_base", "right_base"], default="source")
     parser.add_argument("--robot_camera_calibration_path", default="")
     parser.add_argument("--serial_remap", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--camera_labels", default="global,left")
+    parser.add_argument(
+        "--camera_labels",
+        default="",
+        help="Comma-separated live ZED labels. Empty uses labels from --calibration_path.",
+    )
     parser.add_argument("--zed_serials", default="")
     parser.add_argument("--zed_resolution", default="HD720")
     parser.add_argument("--zed_fps", type=int, default=15)
