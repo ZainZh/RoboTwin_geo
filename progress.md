@@ -1353,3 +1353,25 @@
   - Made `--labels` variable-length while preserving config-driven defaults from `real_zed_collection.yaml`.
   - Updated runtime warnings and saved YAML metadata to report the actual configured camera count.
   - Verified targeted tests, full robot-camera calibration tests, Python syntax, and whitespace checks.
+
+### Phase 56: Real-ZED Exposure Lock And Quality Watchdog
+- **Status:** complete with hardware threshold tuning pending
+- Actions taken:
+  - Added fixed ZED image-control fields to `Args` and `real_zed_collection.yaml`: auto exposure disabled, exposure `22`, gain `12`, and white-balance temperature `4500` by default.
+  - Applied those image controls inside `zed_capture_loop(...)` immediately after opening each ZED.
+  - Added image-quality metrics for RGB mean/std, overexposed ratio, underexposed ratio, and valid-depth ratio.
+  - Added repeated-warning logic for bad quality streaks, covering overexposure, underexposure, low RGB variance/black-screen-like frames, and low valid-depth ratio.
+  - Saved `image_quality_values` and `image_quality_bad` into each camera `.npz`, plus JSON-friendly `camera_quality` metadata in each manifest frame.
+  - Added tests for fixed default image controls and overexposure detection.
+  - Verified targeted tests, full real-ZED collection pipeline tests, real-ZED inference action tests, Python syntax, and whitespace checks.
+
+### Phase 57: Real-ZED Initial Frame Preview
+- **Status:** complete with hardware UI check pending
+- Actions taken:
+  - Added `preview_before_collection`, `preview_before_collection_timeout_sec`, and `preview_window_name` to the collection args/config.
+  - Added initial camera-frame waiting and side-by-side preview canvas rendering for all active labels.
+  - Inserted the preview gate immediately after ZED thread initialization and before xtrainer robot initialization.
+  - Made Enter, `c`, or Space continue; `q` or Esc aborts and cleans up camera/writer threads before robot initialization.
+  - Made the preview auto-skip with a warning when no GUI display is available.
+  - Added unit coverage for preview defaults and multi-camera canvas rendering.
+  - Verified full real-ZED collection pipeline tests, real-ZED inference action tests, Python syntax, and whitespace checks.

@@ -752,6 +752,15 @@
   - `calibrate_three_zed_extrinsics.py` already iterates over the active stream list for capture, Charuco detection, relative transform averaging, display, and YAML writing, so the fixed-three limitation was only in argument parsing/runtime validation.
   - The script now derives the active camera set from `real_zed_collection.yaml` or explicit CLI labels/serials and requires any 2+ unique cameras. A one-camera Charuco extrinsic solve remains invalid because there is no inter-camera transform to estimate.
   - The saved YAML keeps the existing `type: three_camera_charuco_extrinsics` compatibility string but now records `camera_count` so downstream tools can distinguish two-camera and three-camera calibration outputs.
+- Real-ZED exposure and image-quality finding:
+  - The calibration scripts already fixed ZED exposure/gain when run with their defaults, but the raw collection path did not previously apply any image controls after `zed.open(...)`, leaving collection vulnerable to auto-exposure/auto-white-balance drift.
+  - Raw collection now disables ZED auto exposure/gain by default, sets exposure `22`, gain `12`, and fixes white balance to `4500K`. Setting `zed_whitebalance_temp: 0` intentionally re-enables auto white balance.
+  - The watchdog checks the saved/cropped RGB and depth frame, so it monitors the actual data that enters the raw dataset rather than an unused full-frame stream. It records RGB mean/std, overexposed ratio, underexposed ratio, valid-depth ratio, bad status, reasons, and bad streak.
+  - The watchdog warns only after a configurable bad-frame streak and does not abort collection automatically; this avoids stopping robot teleoperation mid-episode while still marking bad frames in `.npz` and `manifest.json` for filtering/debugging.
+- Real-ZED initial preview finding:
+  - A continuous camera preview during teleoperation would add unnecessary GUI work to an already heavy collection loop, but a first-frame preview after ZED startup is cheap and catches wrong exposure, wrong labels, or black cameras before robot initialization.
+  - The preview is intentionally placed before xtrainer robot initialization, so aborting from the preview window does not move the robot or start button/servo threads.
+  - In headless sessions, the preview automatically skips after confirming frames are available, which prevents remote collection jobs from blocking forever on `cv2.imshow`.
 
 ---
 *Update this file after every 2 view/browser/search operations.*

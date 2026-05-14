@@ -54,6 +54,53 @@ class RealZedCollectionPipelineTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "one ZED serial per camera label"):
             _resolve_cameras(Args(camera_labels="global,right", zed_serials=[111], calibration_path=""))
 
+    def test_collect_defaults_fix_zed_image_controls(self):
+        from script.real_zed_collection.collect_zed_robotwin_raw import Args
+
+        args = Args()
+
+        self.assertFalse(args.zed_auto_exposure)
+        self.assertEqual(args.zed_exposure, 22)
+        self.assertEqual(args.zed_gain, 12)
+        self.assertEqual(args.zed_whitebalance_temp, 4500)
+        self.assertTrue(args.image_quality_check_enabled)
+        self.assertTrue(args.preview_before_collection)
+
+    def test_image_quality_detects_overexposed_frames(self):
+        from script.real_zed_collection.collect_zed_robotwin_raw import (
+            compute_image_quality_metrics,
+            image_quality_bad_reasons,
+        )
+
+        rgb = np.full((20, 20, 3), 255, dtype=np.uint8)
+        depth = np.ones((20, 20), dtype=np.float32)
+
+        metrics = compute_image_quality_metrics(rgb, depth)
+        reasons = image_quality_bad_reasons(
+            metrics,
+            overexposed_ratio_max=0.02,
+            underexposed_ratio_max=0.2,
+            rgb_std_min=5.0,
+            valid_depth_ratio_min=0.5,
+        )
+
+        self.assertIn("overexposed", reasons)
+        self.assertIn("low_rgb_std", reasons)
+
+    def test_initial_camera_preview_renders_multiple_frames(self):
+        from script.real_zed_collection.collect_zed_robotwin_raw import render_initial_camera_preview_canvas
+
+        frames = {
+            "global": {"rgb": np.full((30, 40, 3), [255, 0, 0], dtype=np.uint8)},
+            "back": {"rgb": np.full((30, 40, 3), [0, 255, 0], dtype=np.uint8)},
+        }
+
+        canvas = render_initial_camera_preview_canvas(frames, ["global", "back"], panel_height=60)
+
+        self.assertEqual(canvas.shape[0], 90)
+        self.assertGreater(canvas.shape[1], 100)
+        self.assertGreater(int(canvas.sum()), 0)
+
     def test_dp_real_zed_preprocess_can_write_three_camera_zarr(self):
         module_path = Path(__file__).resolve().parents[1] / "policy" / "DP" / "process_data_real_zed.py"
         spec = importlib.util.spec_from_file_location("process_data_real_zed_for_test", module_path)

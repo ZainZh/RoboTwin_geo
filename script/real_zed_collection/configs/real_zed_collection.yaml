@@ -11,8 +11,23 @@ zed_serials: [38968158,37856216]
 zed_resolution: HD1080
 zed_fps: 15
 zed_depth_mode: NEURAL
+zed_auto_exposure: false
+zed_exposure: 22
+zed_gain: 12
+# 0 means auto white balance. Use 2800-6500 to fix ZED white balance.
+zed_whitebalance_temp: 4500
 save_rgb_width: 640
 save_rgb_height: 360
+image_quality_check_enabled: true
+image_quality_overexposed_ratio_max: 0.02
+image_quality_underexposed_ratio_max: 0.20
+image_quality_rgb_std_min: 5.0
+image_quality_valid_depth_ratio_min: 0.50
+image_quality_bad_streak_warn: 5
+image_quality_warn_every_sec: 2.0
+preview_before_collection: true
+preview_before_collection_timeout_sec: 10.0
+preview_window_name: real_zed_collection_preview
 save_frequency_hz: 5.0
 writer_queue_size: 8
 manifest_flush_interval: 10
