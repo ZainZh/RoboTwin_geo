@@ -6,7 +6,7 @@ Design a real-robot data collection pipeline that keeps the robot-control behavi
 
 ## Current Phase
 
-Real-ZED extrinsic calibration now supports 2+ configured cameras
+Real-ZED collection now previews initial camera frames before robot/data collection starts
 
 ## Phases
 
@@ -199,6 +199,24 @@ Real-ZED extrinsic calibration now supports 2+ configured cameras
 - [x] Record `camera_count` in the saved calibration YAML.
 - [x] Add unit coverage for two-camera config acceptance and one-camera rejection.
 - **Status:** complete with hardware run pending
+
+### Phase 24: Real-ZED Exposure Lock And Quality Watchdog
+- [x] Add fixed ZED exposure, gain, and white-balance controls to the raw collection config and capture loop.
+- [x] Record the requested image-control settings in each raw episode manifest.
+- [x] Compute per-camera image quality metrics for saved RGB/depth frames.
+- [x] Warn on repeated overexposure, underexposure, low RGB variance, or low valid-depth ratio.
+- [x] Save compact image-quality values in camera `.npz` files and per-frame camera-quality metadata in `manifest.json`.
+- [x] Verify the new behavior with hardware-free unit tests and syntax checks.
+- **Status:** complete with hardware threshold tuning pending
+
+### Phase 25: Real-ZED Initial Frame Preview
+- [x] Add a first-frame preview gate after ZED camera threads initialize and before robot initialization.
+- [x] Render all active camera labels side-by-side in one OpenCV window.
+- [x] Continue only after Enter, `c`, or Space; abort before robot initialization on `q` or Esc.
+- [x] Skip the GUI preview automatically when no display server is available.
+- [x] Add config flags to enable/disable preview and tune the wait timeout/window name.
+- [x] Verify preview rendering and collection pipeline tests without hardware.
+- **Status:** complete with hardware UI check pending
 
 ## Decisions Made
 

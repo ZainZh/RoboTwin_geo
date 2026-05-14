@@ -28,6 +28,7 @@ from script.real_zed_collection.real_zed_utils import (
     load_three_zed_calibration,
     write_json,
 )
+from script.real_zed_collection.calibrate_three_zed_extrinsics import _configure_zed_image_controls
 from script.real_zed_collection.workspace_crop_utils import WorkspaceBounds, apply_workspace_crop_to_camera_frame
 
 
@@ -55,8 +56,22 @@ class Args:
     zed_resolution: str = "HD1080"
     zed_fps: int = 15
     zed_depth_mode: str = "NEURAL"
+    zed_auto_exposure: bool = False
+    zed_exposure: int = 22
+    zed_gain: int = 12
+    zed_whitebalance_temp: int = 4500
     save_rgb_width: int = 640
     save_rgb_height: int = 360
+    image_quality_check_enabled: bool = True
+    image_quality_overexposed_ratio_max: float = 0.02
+    image_quality_underexposed_ratio_max: float = 0.20
+    image_quality_rgb_std_min: float = 5.0
+    image_quality_valid_depth_ratio_min: float = 0.50
+    image_quality_bad_streak_warn: int = 5
+    image_quality_warn_every_sec: float = 2.0
+    preview_before_collection: bool = True
+    preview_before_collection_timeout_sec: float = 10.0
+    preview_window_name: str = "real_zed_collection_preview"
     save_frequency_hz: float = 5.0
     writer_queue_size: int = 8
     manifest_flush_interval: int = 10
@@ -303,6 +318,171 @@ def _resize_rgb_for_storage(
     return cv2.resize(rgb, (int(target_width), int(target_height)), interpolation=cv2.INTER_AREA).astype(np.uint8)
 
 
+def _normalize_whitebalance_temp(value: int | None) -> int | None:
+    if value is None:
+        return None
+    value_int = int(value)
+    return value_int if value_int > 0 else None
+
+
+def compute_image_quality_metrics(rgb: np.ndarray, depth_m: np.ndarray | None = None) -> dict[str, float]:
+    rgb_arr = np.asarray(rgb, dtype=np.uint8)
+    if rgb_arr.ndim != 3 or rgb_arr.shape[2] < 3 or rgb_arr.size == 0:
+        return {
+            "rgb_mean": 0.0,
+            "rgb_std": 0.0,
+            "overexposed_ratio": 1.0,
+            "underexposed_ratio": 1.0,
+            "valid_depth_ratio": 0.0,
+        }
+    rgb3 = rgb_arr[:, :, :3]
+    max_channel = np.max(rgb3, axis=2)
+    metrics = {
+        "rgb_mean": float(np.mean(rgb3)),
+        "rgb_std": float(np.std(rgb3)),
+        "overexposed_ratio": float(np.mean(max_channel >= 250)),
+        "underexposed_ratio": float(np.mean(max_channel <= 5)),
+        "valid_depth_ratio": 1.0,
+    }
+    if depth_m is not None:
+        depth_arr = np.asarray(depth_m, dtype=np.float32)
+        if depth_arr.size == 0:
+            metrics["valid_depth_ratio"] = 0.0
+        else:
+            metrics["valid_depth_ratio"] = float(np.mean(np.isfinite(depth_arr) & (depth_arr > 0.0)))
+    return metrics
+
+
+def image_quality_bad_reasons(
+    metrics: dict[str, float],
+    *,
+    overexposed_ratio_max: float,
+    underexposed_ratio_max: float,
+    rgb_std_min: float,
+    valid_depth_ratio_min: float,
+) -> list[str]:
+    reasons = []
+    if float(metrics.get("overexposed_ratio", 0.0)) > float(overexposed_ratio_max):
+        reasons.append("overexposed")
+    if float(metrics.get("underexposed_ratio", 0.0)) > float(underexposed_ratio_max):
+        reasons.append("underexposed")
+    if float(metrics.get("rgb_std", 0.0)) < float(rgb_std_min):
+        reasons.append("low_rgb_std")
+    if float(metrics.get("valid_depth_ratio", 1.0)) < float(valid_depth_ratio_min):
+        reasons.append("low_valid_depth")
+    return reasons
+
+
+def image_quality_values(metrics: dict[str, float]) -> np.ndarray:
+    return np.asarray(
+        [
+            float(metrics.get("rgb_mean", 0.0)),
+            float(metrics.get("rgb_std", 0.0)),
+            float(metrics.get("overexposed_ratio", 0.0)),
+            float(metrics.get("underexposed_ratio", 0.0)),
+            float(metrics.get("valid_depth_ratio", 0.0)),
+        ],
+        dtype=np.float32,
+    )
+
+
+def gui_display_available() -> bool:
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
+def wait_for_initial_camera_frames(
+    shared_by_label: dict[str, SharedZedFrame],
+    labels: list[str],
+    timeout_sec: float,
+) -> dict[str, dict[str, Any]]:
+    deadline = time.time() + max(0.1, float(timeout_sec))
+    last_error = ""
+    while time.time() < deadline:
+        frames: dict[str, dict[str, Any]] = {}
+        ready = True
+        for label in labels:
+            try:
+                frames[label] = shared_by_label[label].snapshot()
+            except RuntimeError as exc:
+                ready = False
+                last_error = str(exc)
+                break
+        if ready:
+            return frames
+        time.sleep(0.05)
+    raise RuntimeError(f"Timed out waiting for initial ZED frames. Last error: {last_error}")
+
+
+def render_initial_camera_preview_canvas(
+    camera_frames: dict[str, dict[str, Any]],
+    labels: list[str],
+    panel_height: int = 360,
+) -> np.ndarray:
+    panels = []
+    header_h = 30
+    target_h = max(60, int(panel_height))
+    for label in labels:
+        rgb = np.asarray(camera_frames[label]["rgb"], dtype=np.uint8)
+        if rgb.ndim != 3 or rgb.shape[2] < 3:
+            raise ValueError(f"Preview frame for {label} is not an RGB image: shape={rgb.shape}")
+        bgr = cv2.cvtColor(np.ascontiguousarray(rgb[:, :, :3]), cv2.COLOR_RGB2BGR)
+        scale = target_h / float(max(1, bgr.shape[0]))
+        panel = cv2.resize(bgr, (max(1, int(round(bgr.shape[1] * scale))), target_h), interpolation=cv2.INTER_AREA)
+        header = np.zeros((header_h, panel.shape[1], 3), dtype=np.uint8)
+        cv2.putText(
+            header,
+            str(label),
+            (10, 21),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.65,
+            (0, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+        panels.append(np.vstack([header, panel]))
+    return cv2.hconcat(panels)
+
+
+def confirm_initial_camera_preview(
+    *,
+    shared_by_label: dict[str, SharedZedFrame],
+    labels: list[str],
+    timeout_sec: float,
+    window_name: str,
+) -> bool:
+    frames = wait_for_initial_camera_frames(shared_by_label, labels, timeout_sec)
+    if not gui_display_available():
+        shapes = {label: list(np.asarray(frames[label]["rgb"]).shape) for label in labels}
+        print(f"[WARN] No GUI display detected; skipping initial camera preview. frame_shapes={shapes}")
+        return True
+
+    canvas = render_initial_camera_preview_canvas(frames, labels)
+    footer = np.zeros((42, canvas.shape[1], 3), dtype=np.uint8)
+    cv2.putText(
+        footer,
+        "Press Enter / c / Space to continue. Press q / Esc to abort.",
+        (12, 28),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        (255, 255, 0),
+        2,
+        cv2.LINE_AA,
+    )
+    canvas = np.vstack([canvas, footer])
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    cv2.imshow(window_name, canvas)
+    cv2.resizeWindow(window_name, min(1600, max(640, canvas.shape[1])), min(900, max(360, canvas.shape[0])))
+    print("[PREVIEW] Check initial ZED frames. Press Enter/c/Space to continue, q/Esc to abort.")
+    while True:
+        key = cv2.waitKey(50) & 0xFF
+        if key in (10, 13, ord("c"), ord(" ")):
+            cv2.destroyWindow(window_name)
+            return True
+        if key in (27, ord("q")):
+            cv2.destroyWindow(window_name)
+            return False
+
+
 def _workspace_bounds_from_args(args: Args) -> WorkspaceBounds:
     return WorkspaceBounds(
         x_min=float(args.workspace_crop_x_min),
@@ -523,6 +703,17 @@ def zed_capture_loop(
     workspace_crop_debug_full_frame_interval: int,
     shared: SharedZedFrame,
     stop_event: threading.Event,
+    zed_auto_exposure: bool = False,
+    zed_exposure: int = 22,
+    zed_gain: int = 12,
+    zed_whitebalance_temp: int | None = 4500,
+    image_quality_check_enabled: bool = True,
+    image_quality_overexposed_ratio_max: float = 0.02,
+    image_quality_underexposed_ratio_max: float = 0.20,
+    image_quality_rgb_std_min: float = 5.0,
+    image_quality_valid_depth_ratio_min: float = 0.50,
+    image_quality_bad_streak_warn: int = 5,
+    image_quality_warn_every_sec: float = 2.0,
 ) -> None:
     try:
         import pyzed.sl as sl
@@ -542,12 +733,23 @@ def zed_capture_loop(
         shared.set_error(f"Failed to open ZED label={label}, serial={serial}: {status}")
         return
 
+    image_controls = _configure_zed_image_controls(
+        camera=zed,
+        auto_exposure=bool(zed_auto_exposure),
+        exposure=int(zed_exposure),
+        gain=int(zed_gain),
+        whitebalance_temp=_normalize_whitebalance_temp(zed_whitebalance_temp),
+    )
+    print(f"[INFO] ZED image controls label={label}: {image_controls}")
+
     camera_matrix = _camera_matrix_from_zed_info(zed.get_camera_information())
     runtime = sl.RuntimeParameters()
     image_mat = sl.Mat()
     depth_mat = sl.Mat()
     xyzrgba_mat = sl.Mat()
     frame_idx = 0
+    bad_quality_streak = 0
+    last_quality_warn_sec = 0.0
     try:
         while not stop_event.is_set():
             if zed.grab(runtime) != sl.ERROR_CODE.SUCCESS:
@@ -600,6 +802,34 @@ def zed_capture_loop(
                     target_width=int(save_rgb_width),
                     target_height=int(save_rgb_height),
                 )
+            if bool(image_quality_check_enabled):
+                metrics = compute_image_quality_metrics(rgb_save, depth_m)
+                reasons = image_quality_bad_reasons(
+                    metrics,
+                    overexposed_ratio_max=float(image_quality_overexposed_ratio_max),
+                    underexposed_ratio_max=float(image_quality_underexposed_ratio_max),
+                    rgb_std_min=float(image_quality_rgb_std_min),
+                    valid_depth_ratio_min=float(image_quality_valid_depth_ratio_min),
+                )
+                bad_quality_streak = bad_quality_streak + 1 if reasons else 0
+                now_sec = time.time()
+                if reasons and bad_quality_streak >= int(image_quality_bad_streak_warn):
+                    if now_sec - last_quality_warn_sec >= float(image_quality_warn_every_sec):
+                        print(
+                            f"[WARN] ZED image quality label={label} frame={frame_idx} "
+                            f"streak={bad_quality_streak} reasons={reasons} "
+                            f"over={metrics['overexposed_ratio']:.3f} under={metrics['underexposed_ratio']:.3f} "
+                            f"std={metrics['rgb_std']:.2f} valid_depth={metrics['valid_depth_ratio']:.3f}"
+                        )
+                        last_quality_warn_sec = now_sec
+                frame_extra["image_quality"] = {
+                    "bad": bool(reasons),
+                    "bad_reasons": reasons,
+                    "bad_streak": int(bad_quality_streak),
+                    **metrics,
+                }
+                frame_extra["image_quality_values"] = image_quality_values(metrics)
+                frame_extra["image_quality_bad"] = np.asarray([1 if reasons else 0], dtype=np.uint8)
             frame = {
                 "label": label,
                 "serial": int(serial),
@@ -608,6 +838,7 @@ def zed_capture_loop(
                 "rgb": rgb_save,
                 "depth_m": depth_m.astype(np.float32),
                 "camera_matrix": save_camera_matrix,
+                "zed_image_controls": image_controls,
             }
             frame.update(frame_extra)
             if save_xyzrgba:
@@ -671,6 +902,7 @@ def _save_raw_frame(
     )
 
     camera_rel_paths = {}
+    camera_quality = {}
     for label, frame in camera_frames.items():
         camera_path = episode_dir / f"{label}_{frame_idx:06d}.npz"
         payload = {
@@ -693,9 +925,13 @@ def _save_raw_frame(
             ("full_rgb_debug", np.uint8),
             ("full_depth_m_debug", np.float32),
             ("xyzrgba", np.float32),
+            ("image_quality_values", np.float32),
+            ("image_quality_bad", np.uint8),
         ):
             if optional_key in frame:
                 payload[optional_key] = np.asarray(frame[optional_key], dtype=dtype)
+        if "image_quality" in frame:
+            camera_quality[label] = frame["image_quality"]
         if compress_camera_frames:
             np.savez_compressed(camera_path, **payload)
         else:
@@ -707,6 +943,7 @@ def _save_raw_frame(
         "timestamp_unix_sec": time.time(),
         "robot": robot_path.name,
         "cameras": camera_rel_paths,
+        "camera_quality": camera_quality,
     }
 
 
@@ -806,6 +1043,17 @@ def main(args: Args, config_path: Path | None = None) -> None:
                 "workspace_crop_margin_px": int(args.workspace_crop_margin_px),
                 "workspace_crop_resize_rgb": bool(args.workspace_crop_resize_rgb),
                 "workspace_crop_debug_full_frame_interval": int(args.workspace_crop_debug_full_frame_interval),
+                "zed_auto_exposure": bool(args.zed_auto_exposure),
+                "zed_exposure": int(args.zed_exposure),
+                "zed_gain": int(args.zed_gain),
+                "zed_whitebalance_temp": _normalize_whitebalance_temp(args.zed_whitebalance_temp),
+                "image_quality_check_enabled": bool(args.image_quality_check_enabled),
+                "image_quality_overexposed_ratio_max": float(args.image_quality_overexposed_ratio_max),
+                "image_quality_underexposed_ratio_max": float(args.image_quality_underexposed_ratio_max),
+                "image_quality_rgb_std_min": float(args.image_quality_rgb_std_min),
+                "image_quality_valid_depth_ratio_min": float(args.image_quality_valid_depth_ratio_min),
+                "image_quality_bad_streak_warn": int(args.image_quality_bad_streak_warn),
+                "image_quality_warn_every_sec": float(args.image_quality_warn_every_sec),
                 "shared": shared_by_label[label],
                 "stop_event": stop_event,
             },
@@ -815,6 +1063,25 @@ def main(args: Args, config_path: Path | None = None) -> None:
         camera_threads.append(thread)
     time.sleep(2.0)
     print(f"ZED camera threads initialized: {dict(zip(labels, serials))}")
+    if bool(args.preview_before_collection):
+        try:
+            preview_confirmed = confirm_initial_camera_preview(
+                shared_by_label=shared_by_label,
+                labels=labels,
+                timeout_sec=float(args.preview_before_collection_timeout_sec),
+                window_name=str(args.preview_window_name),
+            )
+        except Exception:
+            stop_event.set()
+            writer_queue.put(None)
+            writer_thread.join()
+            raise
+        if not preview_confirmed:
+            print("[INFO] Initial camera preview aborted by user before robot initialization.")
+            stop_event.set()
+            writer_queue.put(None)
+            writer_thread.join()
+            return
 
     _, hands_dict = load_ini_data_hands()
     left_agent = DobotAgent(which_hand="LEFT", dobot_config=hands_dict["HAND_LEFT"])
@@ -942,6 +1209,20 @@ def main(args: Args, config_path: Path | None = None) -> None:
                                 "camera_label_to_calibration_label": workspace_label_by_raw_label,
                                 "save_rgb_width": int(args.save_rgb_width),
                                 "save_rgb_height": int(args.save_rgb_height),
+                                "zed_image_control_request": {
+                                    "auto_exposure": bool(args.zed_auto_exposure),
+                                    "exposure": int(args.zed_exposure),
+                                    "gain": int(args.zed_gain),
+                                    "whitebalance_temp": _normalize_whitebalance_temp(args.zed_whitebalance_temp),
+                                },
+                                "image_quality_check_enabled": bool(args.image_quality_check_enabled),
+                                "image_quality_thresholds": {
+                                    "overexposed_ratio_max": float(args.image_quality_overexposed_ratio_max),
+                                    "underexposed_ratio_max": float(args.image_quality_underexposed_ratio_max),
+                                    "rgb_std_min": float(args.image_quality_rgb_std_min),
+                                    "valid_depth_ratio_min": float(args.image_quality_valid_depth_ratio_min),
+                                    "bad_streak_warn": int(args.image_quality_bad_streak_warn),
+                                },
                                 "save_frequency_hz": float(args.save_frequency_hz),
                                 "compress_camera_frames": bool(args.compress_camera_frames),
                                 "dropped_frames_due_to_backpressure": 0,
