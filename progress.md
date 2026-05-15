@@ -1375,3 +1375,63 @@
   - Made the preview auto-skip with a warning when no GUI display is available.
   - Added unit coverage for preview defaults and multi-camera canvas rendering.
   - Verified full real-ZED collection pipeline tests, real-ZED inference action tests, Python syntax, and whitespace checks.
+
+### Phase 58: Real-ZED SAM2 Postprocess Debug Video And Keyframe PLY
+- **Status:** complete with visual inspection pending
+- Actions taken:
+  - Added default debug keyframe selection at `0%, 20%, 40%, 60%, 80%, 100%` of each processed episode.
+  - Added SAM2 tracking debug video generation in `postprocess_real_zed_sam2_objpc_dataset.py`, writing `debug/episode*/tracking_videos/sam2_tracking.mp4`.
+  - The MP4 overlays per-placeholder SAM2 masks on the selected camera views for every processed frame in the demo.
+  - Extended debug point-cloud export so each keyframe writes the existing merged `objects_ab.ply` plus separate per-object fused PLY files such as `frame_000000_A.ply` and `frame_000000_B.ply`.
+  - Kept stride-based debug frame selection available with `--debug_frame_mode stride`.
+  - Added unit coverage for keyframe selection, per-object PLY output, and two-view debug canvas rendering.
+  - Verified RED first with the three new targeted tests failing for missing functions/interfaces.
+  - Verified GREEN with the targeted tests passing.
+  - Verified full collection pipeline tests with `/home/zheng/miniforge3/envs/RoboTwin/bin/python -m unittest script.test_real_zed_collection_pipeline`.
+  - Verified syntax with `PYTHONDONTWRITEBYTECODE=1 python -m py_compile script/real_zed_collection/postprocess/postprocess_real_zed_sam2_objpc_dataset.py script/test_real_zed_collection_pipeline.py`.
+  - Verified whitespace with `git diff --check -- script/real_zed_collection/postprocess/postprocess_real_zed_sam2_objpc_dataset.py script/test_real_zed_collection_pipeline.py`.
+
+### Phase 59: Real-ZED Dense Per-Object Point Cloud Default
+- **Status:** complete
+- Actions taken:
+  - Added a failing regression test proving the SAM2 objpc batch postprocess default should be 5000 object points per placeholder.
+  - Updated `postprocess_real_zed_sam2_objpc_dataset.py` so `--object_point_num` defaults to `5000`.
+  - Updated `postprocess_raw_to_robotwin_hdf5.py` function and CLI defaults so direct raw-to-HDF5 conversion also saves 5000 points per object by default.
+  - Preserved explicit `--object_point_num` override for smaller debug runs.
+  - Verified the new targeted test passes.
+  - Verified full collection pipeline tests with `/home/zheng/miniforge3/envs/RoboTwin/bin/python -m unittest script.test_real_zed_collection_pipeline`.
+  - Verified syntax with `PYTHONDONTWRITEBYTECODE=1 python -m py_compile script/real_zed_collection/postprocess/postprocess_real_zed_sam2_objpc_dataset.py script/real_zed_collection/postprocess/postprocess_raw_to_robotwin_hdf5.py script/test_real_zed_collection_pipeline.py`.
+  - Verified whitespace with `git diff --check -- script/real_zed_collection/postprocess/postprocess_real_zed_sam2_objpc_dataset.py script/real_zed_collection/postprocess/postprocess_raw_to_robotwin_hdf5.py script/test_real_zed_collection_pipeline.py`.
+
+### Phase 60: Semantic Hybrid Training Resource Controls
+- **Status:** complete
+- Actions taken:
+  - Added a text regression test for `train_semantic_pointwise_hybrid.sh` resource-control overrides.
+  - Confirmed RED by running the test against the old script and observing missing `dataloader_num_workers` and related parameters.
+  - Added script parameters:
+    - `dataloader_num_workers=${17:-4}`
+    - `val_dataloader_num_workers=${18:-2}`
+    - `pin_memory=${19:-true}`
+    - `val_pin_memory=${20:-false}`
+    - `max_val_steps=${21:-2}`
+  - Forwarded those parameters to Hydra as `dataloader.num_workers`, `val_dataloader.num_workers`, `dataloader.pin_memory`, `val_dataloader.pin_memory`, and `training.max_val_steps`.
+  - Chose defaults that keep train-side throughput reasonable while reducing validation/DataLoader memory spikes at epoch boundaries.
+  - Verified the new targeted test with `python policy/DP3/scripts/test_semantic_hybrid_training_resource_overrides.py`.
+  - Verified shell syntax with `bash -n policy/DP3/train_semantic_pointwise_hybrid.sh`.
+  - Verified whitespace with `git diff --check -- policy/DP3/train_semantic_pointwise_hybrid.sh policy/DP3/scripts/test_semantic_hybrid_training_resource_overrides.py`.
+
+### Phase 61: DP3 Training Resource Controls Across Scripts
+- **Status:** complete
+- Actions taken:
+  - Expanded the resource-control regression test to cover direct DP3 train wrappers plus the base `train.sh`/`train_rgb.sh` helper path.
+  - Confirmed RED across the unmodified wrappers before implementation.
+  - Added resource parameters to `train.sh`, `train_rgb.sh`, `scripts/train_policy.sh`, and `scripts/train_policy_rgb.sh`.
+  - Added the same controls to objpc, objpc_5000, objpc_actorseg, NDF, NDF pointwise, NDF hybrid, NDF feature-count, NDF interaction, NDF actorseg hybrid, semantic pointwise, semantic hybrid feature-count, semantic actorseg hybrid, and Utonia hybrid wrappers.
+  - Extended `ndf_pointwise_arg_utils.sh` so the NDF pointwise family parses resource defaults from the common argument path.
+  - Preserved the existing semantic hybrid default `semantic_point_num=1024` and avoided changing zarr/checkpoint naming.
+  - Verified the targeted resource-interface test with `python policy/DP3/scripts/test_semantic_hybrid_training_resource_overrides.py`.
+  - Verified shell syntax with `bash -n` over all touched train wrappers and helper scripts.
+  - Verified every targeted wrapper contains `training.max_val_steps=${max_val_steps}` and `dataloader.num_workers=${dataloader_num_workers}` using `rg -L` checks.
+  - Verified whitespace with `git diff --check` over all touched train/resource test files.
+- Notes:
+  - Running `python policy/DP3/scripts/test_hybrid_feature5000_path.py` still fails in this environment for pre-existing reasons: current `train_ndf_pointwise_hybrid_feat5000.sh` defaults to `ndf_point_num=512` while the test expects 5000, and the active Python environment lacks `zarr`. This is unrelated to the resource-control change.

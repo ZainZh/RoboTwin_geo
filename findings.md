@@ -100,6 +100,20 @@
 - Old raw episodes can have camera label and serial order mismatches. The observed example mapped `raw global -> calibration right`, `raw left -> calibration global`, and `raw right -> calibration left`. Serial-based remapping is now the correct default for preview/postprocess/cropped collection.
 - With cropped collection and `workspace_crop_resize_rgb=false`, RGB is saved at the crop ROI's native camera resolution. Full-frame HD1080 RGB for all three cameras would add about 18 MB/frame uncompressed before any depth data, so full-frame RGB should be kept as debug snapshots unless compressed image storage is added.
 
+### SAM2 postprocess debug outputs (2026-05-14)
+- Offline real-ZED SAM2 objpc postprocess now has two complementary debug products:
+- A full-demo MP4 under `debug/episode*/tracking_videos/sam2_tracking.mp4`, built from raw RGB plus saved SAM2 masks, so mask drift can be checked across every frame without opening individual PNGs.
+- Keyframe fused object PLYs under `debug/episode*/pointclouds`, selected at demo start, 20%, 40%, 60%, 80%, and final frame by default.
+- The merged `frame_XXXXXX_objects_ab.ply` is still written for global inspection, and each placeholder also gets a separate `frame_XXXXXX_A.ply`, `frame_XXXXXX_B.ply`, etc. for debugging individual object reconstruction.
+- The old stride/max-frame debug sampling remains available through `--debug_frame_mode stride`; default `keyframes` better matches demonstration-level quality inspection.
+- The real-ZED SAM2 objpc postprocess default object cloud density is now 5000 points per placeholder per frame. Existing processed HDF5 files keep their old density until regenerated with overwrite or a new output directory.
+
+### Semantic hybrid training memory notes (2026-05-15)
+- `train_dp3.py` runs validation at epoch 0 because it checks `self.epoch % cfg.training.val_every == 0`; with the default `val_every=50`, `0 % 50 == 0`.
+- For semantic pointwise hybrid, a 1024-point semantic branch with 128-D features produces `[batch, horizon, 1024, 131]` tensors per placeholder. With batch 256 and A/B both enabled, DataLoader prefetch plus pinned memory can create large CPU RAM spikes even when GPU memory looks fine.
+- `train_semantic_pointwise_hybrid.sh` now exposes train/val worker counts, train/val pin-memory flags, and `training.max_val_steps` so the epoch-boundary validation path can be constrained without globally shrinking training batch size.
+- The same controls are now propagated across the main DP3 train wrappers. The practical default is to keep train-side throughput (`dataloader_num_workers=4`, `pin_memory=true`) while constraining validation-side prefetch/pinned-memory pressure (`val_dataloader_num_workers=2`, `val_pin_memory=false`, `max_val_steps=2`).
+
 ## New Task: `pour_kettle_mug` (2026-04-16)
 
 ### Requirements

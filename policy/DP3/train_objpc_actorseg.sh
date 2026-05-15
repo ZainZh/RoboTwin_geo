@@ -12,6 +12,11 @@ seed=${4}
 gpu_id=${5}
 object_placeholders=${6:-\{A\},\{B\}}
 actorseg_camera_names=${7:-head_camera,front_camera}
+dataloader_num_workers=${8:-4}
+val_dataloader_num_workers=${9:-2}
+pin_memory=${10:-true}
+val_pin_memory=${11:-false}
+max_val_steps=${12:-2}
 
 zarr_dir="./data/${task_name}-${task_config}-${expert_data_num}-objpc-actorseg.zarr"
 
@@ -59,4 +64,9 @@ python train_dp3.py --config-name=robot_dp3_objpc_actorseg.yaml \
     checkpoint.save_ckpt=${save_ckpt} \
     expert_data_num=${expert_data_num} \
     setting=${train_setting} \
+    dataloader.num_workers=${dataloader_num_workers} \
+    dataloader.pin_memory=${pin_memory} \
+    val_dataloader.num_workers=${val_dataloader_num_workers} \
+    val_dataloader.pin_memory=${val_pin_memory} \
+    training.max_val_steps=${max_val_steps} \
     task.dataset.zarr_path=${zarr_path}
