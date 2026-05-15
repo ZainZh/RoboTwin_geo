@@ -45,6 +45,14 @@ grep -F -- 'right_base' "${capture_semantic}" >/dev/null
 grep -F -- '--robot_camera_calibration_path' "${capture_semantic}" >/dev/null
 grep -F -- 'script/real_zed_collection/calibration/robot_camera_apriltag_right_global.yaml' "${capture_semantic}" >/dev/null
 
+capture_semantic_default_points="${tmp_dir}/semantic_default_points_args.txt"
+REAL_INFER_CAPTURE="${capture_semantic_default_points}" PATH="${fake_bin}:${PATH}" \
+    bash "${repo_root}/policy/DP3/real_infer_semantic_pointwise_hybrid.sh" \
+    unit_real_zed_task unit_real_zed_cfg 31 0 0 \
+    /tmp/unit_semantic_A.pt none cuda:0 "{A},{B}" 3000
+
+awk 'prev=="--semantic_point_num" && $0=="1024"{found=1} {prev=$0} END{exit !found}' "${capture_semantic_default_points}"
+
 capture_explicit="${tmp_dir}/explicit_args.txt"
 REAL_INFER_CAPTURE="${capture_explicit}" PATH="${fake_bin}:${PATH}" \
     bash "${repo_root}/policy/DP3/real_infer_baseline.sh" \

@@ -369,6 +369,34 @@ class RealZedInferencePointcloudTest(unittest.TestCase):
 
         self.assertEqual(args.parallel_camera_workers, 3)
 
+    def test_real_inference_parser_defaults_to_auto_zed_image_controls(self):
+        from script.real_zed_inference.real_dp3_inference import build_arg_parser
+
+        args = build_arg_parser().parse_args([])
+
+        self.assertTrue(args.zed_auto_exposure)
+        self.assertEqual(args.zed_whitebalance_temp, 0)
+
+    def test_real_inference_parser_allows_fixed_zed_image_controls(self):
+        from script.real_zed_inference.real_dp3_inference import build_arg_parser
+
+        args = build_arg_parser().parse_args(
+            [
+                "--no-zed_auto_exposure",
+                "--zed_exposure",
+                "22",
+                "--zed_gain",
+                "12",
+                "--zed_whitebalance_temp",
+                "4500",
+            ]
+        )
+
+        self.assertFalse(args.zed_auto_exposure)
+        self.assertEqual(args.zed_exposure, 22)
+        self.assertEqual(args.zed_gain, 12)
+        self.assertEqual(args.zed_whitebalance_temp, 4500)
+
     def test_real_inference_parser_does_not_hardcode_camera_labels(self):
         from script.real_zed_inference.real_dp3_inference import build_arg_parser
 
@@ -450,6 +478,25 @@ class RealZedInferencePointcloudTest(unittest.TestCase):
         }
 
         validate_semantic_checkpoint_branches(args, checkpoint_payload, "/tmp/fake.ckpt")
+
+    def test_semantic_checkpoint_validation_rejects_extra_inference_branch(self):
+        from script.real_zed_inference.real_dp3_inference import validate_semantic_checkpoint_branches
+
+        args = argparse.Namespace(
+            mode="semantic_pointwise_hybrid",
+            semantic_ckpt_A="/tmp/semantic_a.pt",
+            semantic_ckpt_B="none",
+        )
+        checkpoint_payload = {
+            "state_dicts": {
+                "model": {
+                    "obs_encoder.extractors.point_cloud.mlp.0.weight": object(),
+                }
+            }
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "not trained with semantic point-cloud branch"):
+            validate_semantic_checkpoint_branches(args, checkpoint_payload, "/tmp/fake.ckpt")
 
     def test_action_diagnostics_reports_policy_command_and_observed_deltas(self):
         from script.real_zed_inference.real_dp3_inference import build_action_diagnostic_row

@@ -24,18 +24,28 @@ max_val_steps=${21:-2}
 output_suffix="-objpc-semantic-pointwise-hybrid"
 zarr_dir="./data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
 meta_path="./data/${task_name}-${task_config}-${expert_data_num}${output_suffix}_meta.json"
+semantic_feature_placeholders=""
 
 if [ ! -d "${zarr_dir}" ]; then
     bash process_data_semantic_pointwise_hybrid.sh "${task_name}" "${task_config}" "${expert_data_num}" "${semantic_ckpt_A}" "${semantic_ckpt_B}" "${semantic_device}" "${object_placeholders}" "${semantic_point_num}"
 fi
 
 if [ -f "${meta_path}" ]; then
-    mapfile -t semantic_meta < <(python -c 'import json,sys; m=json.load(open(sys.argv[1], "r", encoding="utf-8")); print(int(m["semantic_num_points"])); print(int(m["semantic_feat_dim"]))' "${meta_path}")
+    mapfile -t semantic_meta < <(python -c 'import json,sys; m=json.load(open(sys.argv[1], "r", encoding="utf-8")); features=m.get("feature_placeholders"); features=features if features is not None else sorted({p for ep in m.get("episodes", []) for p in ep.get("feature_placeholders", [])}); print(int(m["semantic_num_points"])); print(int(m["semantic_feat_dim"])); print(",".join(features))' "${meta_path}")
     if [ ${#semantic_meta[@]} -ge 2 ]; then
         semantic_point_num=${semantic_meta[0]}
         semantic_feat_dim=${semantic_meta[1]}
     fi
+    if [ ${#semantic_meta[@]} -ge 3 ]; then
+        semantic_feature_placeholders="${semantic_meta[2]:-}"
+    fi
 fi
+
+has_semantic_feature_placeholder() {
+    local placeholder=$1
+    local placeholder_csv=",${semantic_feature_placeholders},"
+    [[ "${placeholder_csv}" == *",${placeholder},"* ]]
+}
 
 DEBUG=False
 save_ckpt=True
@@ -47,12 +57,12 @@ zarr_path="../../../data/${task_name}-${task_config}-${expert_data_num}${output_
 
 dataset_extra_keys=()
 shape_overrides=()
-if [ "${semantic_ckpt_A}" != "none" ] && [ -n "${semantic_ckpt_A}" ]; then
+if { [ "${semantic_ckpt_A}" != "none" ] && [ -n "${semantic_ckpt_A}" ]; } || has_semantic_feature_placeholder "{A}"; then
     dataset_extra_keys+=(semantic_point_cloud_A)
     shape_overrides+=("+task.shape_meta.obs.semantic_point_cloud_A.shape=[${semantic_point_num},$((3 + semantic_feat_dim))]")
     shape_overrides+=("+task.shape_meta.obs.semantic_point_cloud_A.type=point_cloud")
 fi
-if [ "${semantic_ckpt_B}" != "none" ] && [ -n "${semantic_ckpt_B}" ]; then
+if { [ "${semantic_ckpt_B}" != "none" ] && [ -n "${semantic_ckpt_B}" ]; } || has_semantic_feature_placeholder "{B}"; then
     dataset_extra_keys+=(semantic_point_cloud_B)
     shape_overrides+=("+task.shape_meta.obs.semantic_point_cloud_B.shape=[${semantic_point_num},$((3 + semantic_feat_dim))]")
     shape_overrides+=("+task.shape_meta.obs.semantic_point_cloud_B.type=point_cloud")

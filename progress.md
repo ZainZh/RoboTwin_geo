@@ -1435,3 +1435,28 @@
   - Verified whitespace with `git diff --check` over all touched train/resource test files.
 - Notes:
   - Running `python policy/DP3/scripts/test_hybrid_feature5000_path.py` still fails in this environment for pre-existing reasons: current `train_ndf_pointwise_hybrid_feat5000.sh` defaults to `ndf_point_num=512` while the test expects 5000, and the active Python environment lacks `zarr`. This is unrelated to the resource-control change.
+
+### Phase 62: Real Semantic Checkpoint Branch-Mismatch Diagnosis
+- **Status:** complete
+- Actions taken:
+  - Inspected the failing teapot checkpoint payload directly and confirmed it has no `semantic_point_cloud_A/B` extractor keys.
+  - Confirmed the same checkpoint's saved Hydra config only includes `point_cloud` and `agent_pos`, while the semantic zarr and meta do contain `semantic_point_cloud_A`.
+  - Identified the root cause as a training wrapper edge case: if the semantic zarr already exists but `semantic_ckpt_A/B` are not passed, the old script trains a non-semantic model under the semantic-hybrid suffix.
+  - Added regression coverage for using meta `feature_placeholders` to enable semantic branches in `train_semantic_pointwise_hybrid.sh`.
+  - Updated `train_semantic_pointwise_hybrid.sh` so existing semantic meta can enable `semantic_point_cloud_A/B` even when preprocessing is not rerun.
+  - Added real-inference validation to reject semantic checkpoint arguments when the DP3 checkpoint was not trained with matching semantic point-cloud branches.
+  - Updated `real_infer_semantic_pointwise_hybrid.sh` default semantic point count to `1024`, matching the current training default.
+  - Verified `policy/DP3/scripts/test_real_infer_script_interfaces.sh`.
+  - Verified `python policy/DP3/scripts/test_semantic_hybrid_training_resource_overrides.py`.
+  - Verified `python -m unittest script.test_real_zed_inference_actions`.
+  - Verified shell syntax and Python syntax checks for the touched files.
+
+### Phase 63: Real Inference ZED Auto Image Controls
+- **Status:** complete
+- Actions taken:
+  - Traced real inference ZED startup to `zed_capture_loop(...)` and confirmed it inherited fixed collection defaults because no image-control args were forwarded.
+  - Added real inference CLI options for `--zed_auto_exposure`, `--zed_exposure`, `--zed_gain`, and `--zed_whitebalance_temp`.
+  - Changed real inference defaults to auto exposure/gain and auto white balance by using `--zed_auto_exposure` default true and `--zed_whitebalance_temp 0`.
+  - Forwarded those options into `CollectionArgs` and each live `zed_capture_loop(...)` thread.
+  - Added parser regression tests for the new automatic defaults and fixed-control override path.
+  - Verified targeted parser tests, full real inference action tests, real inference wrapper interface tests, Python syntax, shell syntax, and whitespace checks.
