@@ -1,5 +1,5 @@
 save_data_path: /media/${USER}/Extreme SSD/geo_mani_data
-project_name: real_hanging_mug
+project_name: teapot
 
 # Produced by script/real_zed_collection/calibrate_three_zed_extrinsics.py.
 calibration_path: script/real_zed_collection/calibration/three_camera_charuco_extrinsics.yaml
@@ -11,11 +11,11 @@ zed_serials: [38968158,37856216]
 zed_resolution: HD1080
 zed_fps: 15
 zed_depth_mode: NEURAL
-zed_auto_exposure: false
+zed_auto_exposure: true
 zed_exposure: 22
 zed_gain: 12
 # 0 means auto white balance. Use 2800-6500 to fix ZED white balance.
-zed_whitebalance_temp: 4500
+zed_whitebalance_temp: 0
 save_rgb_width: 640
 save_rgb_height: 360
 image_quality_check_enabled: true
