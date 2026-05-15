@@ -837,6 +837,81 @@ class RealZedCollectionPipelineTest(unittest.TestCase):
             Path("/media/unit_user/Extreme SSD/geo_mani_data/grasp_mug/sam2_bbox_prompts"),
         )
 
+    def test_sam2_objpc_batch_default_object_point_num_is_dense(self):
+        from script.real_zed_collection.postprocess import postprocess_real_zed_sam2_objpc_dataset as batch_module
+
+        with mock.patch.object(sys, "argv", ["postprocess_real_zed_sam2_objpc_dataset.py"]):
+            args = batch_module.parse_args()
+
+        self.assertEqual(args.object_point_num, 5000)
+
+    def test_sam2_objpc_debug_keyframes_cover_episode_percentages(self):
+        from script.real_zed_collection.postprocess.postprocess_real_zed_sam2_objpc_dataset import (
+            selected_debug_keyframe_indices,
+        )
+
+        self.assertEqual(selected_debug_keyframe_indices(101), [0, 20, 40, 60, 80, 100])
+        self.assertEqual(selected_debug_keyframe_indices(5), [0, 1, 2, 3, 4])
+        self.assertEqual(selected_debug_keyframe_indices(0), [])
+
+    def test_sam2_objpc_debug_pointclouds_write_merged_and_per_object_ply(self):
+        from script.real_zed_collection.postprocess.postprocess_real_zed_sam2_objpc_dataset import (
+            save_debug_object_pointclouds,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            hdf5_path = root / "episode0.hdf5"
+            with h5py.File(hdf5_path, "w") as h5_root:
+                obj_group = h5_root.create_group("object_pointcloud")
+                cloud_a = np.ones((6, 4, 6), dtype=np.float32)
+                cloud_b = np.ones((6, 4, 6), dtype=np.float32) * 2.0
+                obj_group.create_dataset("{A}", data=cloud_a)
+                obj_group.create_dataset("{B}", data=cloud_b)
+
+            written = save_debug_object_pointclouds(
+                hdf5_path=hdf5_path,
+                debug_root=root / "debug",
+                episode_index=0,
+                placeholders=["{A}", "{B}"],
+                frame_indices=[0, 5],
+            )
+
+            written_names = {Path(path).name for path in written}
+            self.assertIn("frame_000000_objects_ab.ply", written_names)
+            self.assertIn("frame_000000_A.ply", written_names)
+            self.assertIn("frame_000000_B.ply", written_names)
+            self.assertIn("frame_000005_objects_ab.ply", written_names)
+            self.assertIn("frame_000005_A.ply", written_names)
+            self.assertIn("frame_000005_B.ply", written_names)
+            self.assertTrue((root / "debug" / "episode0" / "pointclouds" / "frame_000000_A.ply").exists())
+
+    def test_sam2_objpc_debug_tracking_canvas_overlays_two_views(self):
+        from script.real_zed_collection.postprocess.postprocess_real_zed_sam2_objpc_dataset import (
+            render_tracking_debug_canvas,
+        )
+
+        images_by_camera = {
+            "global": np.full((20, 30, 3), [40, 20, 10], dtype=np.uint8),
+            "back": np.full((20, 30, 3), [10, 20, 40], dtype=np.uint8),
+        }
+        masks_by_camera = {
+            "global": {"{A}": np.pad(np.ones((4, 5), dtype=bool), ((2, 14), (3, 22)))},
+            "back": {"{B}": np.pad(np.ones((3, 6), dtype=bool), ((5, 12), (7, 17)))},
+        }
+
+        canvas = render_tracking_debug_canvas(
+            images_by_camera=images_by_camera,
+            masks_by_camera=masks_by_camera,
+            camera_labels=["global", "back"],
+            frame_index=12,
+            panel_height=40,
+        )
+
+        self.assertEqual(canvas.shape[0], 58)
+        self.assertGreater(canvas.shape[1], 100)
+        self.assertGreater(int(canvas.sum()), 0)
+
     def test_sam2_objpc_batch_prefers_per_episode_bbox_prompts(self):
         from script.real_zed_collection.postprocess.postprocess_real_zed_sam2_objpc_dataset import (
             resolve_episode_bbox_prompts,

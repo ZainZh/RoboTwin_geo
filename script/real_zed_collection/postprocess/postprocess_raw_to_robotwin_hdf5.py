@@ -323,7 +323,7 @@ def postprocess_episode(
     object_prompts: Mapping[str, str],
     mask_root: str | Path | None,
     scene_point_num: int = 1024,
-    object_point_num: int = 1024,
+    object_point_num: int = 5000,
     min_depth_m: float = 0.05,
     max_depth_m: float = 3.0,
     frame_mode: str = "reference_camera",
@@ -574,7 +574,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--object_prompts", type=str, default="")
     parser.add_argument("--mask_root", type=str, default="")
     parser.add_argument("--scene_point_num", type=int, default=1024)
-    parser.add_argument("--object_point_num", type=int, default=1024)
+    parser.add_argument("--object_point_num", type=int, default=5000)
     parser.add_argument("--min_depth_m", type=float, default=0.05)
     parser.add_argument("--max_depth_m", type=float, default=3.0)
     parser.add_argument("--frame_mode", type=str, default="reference_camera")

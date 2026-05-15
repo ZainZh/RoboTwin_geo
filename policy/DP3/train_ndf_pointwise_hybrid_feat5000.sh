@@ -16,6 +16,11 @@ ndf_point_num=${11:-512}
 batch_size=${12:-256}
 val_batch_size=${13:-${batch_size}}
 gradient_accumulate_every=${14:-1}
+dataloader_num_workers=${15:-4}
+val_dataloader_num_workers=${16:-2}
+pin_memory=${17:-true}
+val_pin_memory=${18:-false}
+max_val_steps=${19:-2}
 output_suffix="-objpc-ndf-pointwise-hybrid-feat${ndf_point_num}"
 zarr_dir="./data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
 
@@ -76,7 +81,12 @@ python train_dp3.py --config-name=robot_dp3_ndf_pointwise_hybrid_feat5000.yaml \
     expert_data_num=${expert_data_num} \
     setting=${train_setting} \
     dataloader.batch_size=${batch_size} \
+    dataloader.num_workers=${dataloader_num_workers} \
+    dataloader.pin_memory=${pin_memory} \
     val_dataloader.batch_size=${val_batch_size} \
+    val_dataloader.num_workers=${val_dataloader_num_workers} \
+    val_dataloader.pin_memory=${val_pin_memory} \
+    training.max_val_steps=${max_val_steps} \
     task.dataset.zarr_path=${zarr_path} \
     "${dataset_override[@]}" \
     "${shape_overrides[@]}"

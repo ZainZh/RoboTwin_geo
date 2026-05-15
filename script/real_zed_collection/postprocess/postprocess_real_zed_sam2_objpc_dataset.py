@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import cv2
 import h5py
 import numpy as np
 import yaml
@@ -37,10 +38,17 @@ from script.real_zed_collection.workspace_crop_utils import WorkspaceBounds
 
 DEFAULT_TASK_NAME = "stirring_mug"
 DEFAULT_TASK_CONFIG = "demo_real_zed_sam2_objpc"
-DEFAULT_OBJECT_PROMPTS = "{A}:mug,{B}:spoon"
+DEFAULT_OBJECT_PROMPTS = "{A}:mug,{B}:fork"
 DEFAULT_CAMERA_LABELS = "global,back"
 REPO_ROOT = Path(__file__).resolve().parents[3]
 AUTO_VALUE_STRINGS = {"", "auto", "manifest"}
+DEBUG_KEYFRAME_FRACTIONS = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
+DEBUG_MASK_COLORS_RGB = {
+    "{A}": np.asarray([255, 48, 48], dtype=np.float32),
+    "A": np.asarray([255, 48, 48], dtype=np.float32),
+    "{B}": np.asarray([48, 96, 255], dtype=np.float32),
+    "B": np.asarray([48, 96, 255], dtype=np.float32),
+}
 
 
 def default_raw_root(task_name: str = DEFAULT_TASK_NAME, *, user: str | None = None) -> Path:
@@ -309,6 +317,27 @@ def selected_debug_frame_indices(num_frames: int, *, stride: int, max_frames: in
     return selected[: int(max_frames)] if int(max_frames) > 0 else selected
 
 
+def selected_debug_keyframe_indices(num_frames: int) -> list[int]:
+    if int(num_frames) <= 0:
+        return []
+    if int(num_frames) == 1:
+        return [0]
+    last_idx = int(num_frames) - 1
+    return sorted({int(round(float(fraction) * last_idx)) for fraction in DEBUG_KEYFRAME_FRACTIONS})
+
+
+def select_debug_frame_indices(
+    num_frames: int,
+    *,
+    mode: str,
+    stride: int,
+    max_frames: int,
+) -> list[int]:
+    if str(mode) == "keyframes":
+        return selected_debug_keyframe_indices(num_frames)
+    return selected_debug_frame_indices(num_frames, stride=int(stride), max_frames=int(max_frames))
+
+
 def _clean_debug_cloud(point_cloud: np.ndarray) -> np.ndarray:
     pc = np.asarray(point_cloud, dtype=np.float32)
     if pc.ndim != 2 or pc.shape[1] < 3:
@@ -341,14 +370,21 @@ def write_colored_point_cloud_ply(
     return path
 
 
+def _placeholder_filename_token(placeholder: str) -> str:
+    token = str(placeholder).strip().strip("{}").strip()
+    token = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in token)
+    return token or "object"
+
+
 def save_debug_object_pointclouds(
     *,
     hdf5_path: str | Path,
     debug_root: str | Path,
     episode_index: int,
     placeholders: list[str],
-    stride: int,
-    max_frames: int,
+    stride: int = 10,
+    max_frames: int = 5,
+    frame_indices: list[int] | None = None,
 ) -> list[str]:
     debug_dir = Path(debug_root).expanduser().resolve() / f"episode{int(episode_index)}" / "pointclouds"
     color_by_placeholder = {
@@ -366,18 +402,191 @@ def save_debug_object_pointclouds(
         if first_key is None:
             return written
         frame_count = int(obj_group[first_key].shape[0])
-        for frame_idx in selected_debug_frame_indices(frame_count, stride=int(stride), max_frames=int(max_frames)):
+        if frame_indices is None:
+            selected = selected_debug_frame_indices(frame_count, stride=int(stride), max_frames=int(max_frames))
+        else:
+            selected = sorted({int(idx) for idx in frame_indices if 0 <= int(idx) < frame_count})
+        for frame_idx in selected:
             colored_clouds = []
             for placeholder in placeholders:
                 if placeholder not in obj_group:
                     continue
                 color = color_by_placeholder.get(placeholder, (220, 220, 220))
                 colored_clouds.append((obj_group[placeholder][frame_idx], color))
+                object_path = write_colored_point_cloud_ply(
+                    debug_dir / f"frame_{frame_idx:06d}_{_placeholder_filename_token(placeholder)}.ply",
+                    [(obj_group[placeholder][frame_idx], color)],
+                )
+                written.append(str(object_path))
             if not colored_clouds:
                 continue
             path = write_colored_point_cloud_ply(debug_dir / f"frame_{frame_idx:06d}_objects_ab.ply", colored_clouds)
             written.append(str(path))
     return written
+
+
+def _load_debug_rgb_npz(raw_episode_dir: str | Path, rel_path: str) -> np.ndarray:
+    path = Path(raw_episode_dir).expanduser().resolve() / str(rel_path)
+    with np.load(path, allow_pickle=False) as data:
+        if "rgb" not in data.files:
+            raise KeyError(f"Raw camera frame does not contain 'rgb': {path}")
+        return np.asarray(data["rgb"], dtype=np.uint8)
+
+
+def _load_debug_mask(
+    *,
+    mask_root: str | Path,
+    placeholder: str,
+    camera_label: str,
+    frame_index: int,
+    image_shape_hw: tuple[int, int],
+) -> np.ndarray:
+    path = (
+        Path(mask_root).expanduser().resolve()
+        / str(placeholder)
+        / str(camera_label)
+        / f"mask_{int(frame_index):06d}.png"
+    )
+    if not path.exists():
+        return np.zeros((int(image_shape_hw[0]), int(image_shape_hw[1])), dtype=bool)
+    mask = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+    if mask is None:
+        return np.zeros((int(image_shape_hw[0]), int(image_shape_hw[1])), dtype=bool)
+    if mask.shape[:2] != tuple(image_shape_hw):
+        mask = cv2.resize(mask, (int(image_shape_hw[1]), int(image_shape_hw[0])), interpolation=cv2.INTER_NEAREST)
+    return mask > 0
+
+
+def _overlay_debug_masks_rgb(
+    image: np.ndarray,
+    masks_by_placeholder: dict[str, np.ndarray],
+) -> np.ndarray:
+    overlay = np.asarray(image, dtype=np.uint8).copy()
+    for placeholder, mask in masks_by_placeholder.items():
+        mask_arr = np.asarray(mask).astype(bool)
+        if mask_arr.shape != overlay.shape[:2]:
+            mask_arr = cv2.resize(
+                mask_arr.astype(np.uint8),
+                (overlay.shape[1], overlay.shape[0]),
+                interpolation=cv2.INTER_NEAREST,
+            ) > 0
+        if not bool(mask_arr.any()):
+            continue
+        color = DEBUG_MASK_COLORS_RGB.get(str(placeholder), np.asarray([255, 255, 0], dtype=np.float32))
+        overlay[mask_arr] = (0.55 * overlay[mask_arr].astype(np.float32) + 0.45 * color).clip(0, 255).astype(np.uint8)
+    return overlay
+
+
+def render_tracking_debug_canvas(
+    *,
+    images_by_camera: dict[str, np.ndarray],
+    masks_by_camera: dict[str, dict[str, np.ndarray]],
+    camera_labels: list[str],
+    frame_index: int,
+    panel_height: int = 360,
+) -> np.ndarray:
+    labels = [str(label) for label in camera_labels if str(label) in images_by_camera]
+    if not labels:
+        raise ValueError("No camera images available for tracking debug canvas.")
+    header_height = 18
+    panels: list[np.ndarray] = []
+    for label in labels:
+        image = np.asarray(images_by_camera[label], dtype=np.uint8)
+        overlay = _overlay_debug_masks_rgb(image, masks_by_camera.get(label, {}))
+        scale = float(panel_height) / max(1, overlay.shape[0])
+        panel_width = max(1, int(round(overlay.shape[1] * scale)))
+        resized = cv2.resize(overlay, (panel_width, int(panel_height)), interpolation=cv2.INTER_AREA)
+        panel = np.zeros((int(panel_height) + header_height, panel_width, 3), dtype=np.uint8)
+        panel[header_height:, :, :] = resized
+        cv2.putText(
+            panel,
+            f"{label} frame={int(frame_index)}",
+            (6, 13),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.38,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
+        panels.append(panel)
+    canvas_rgb = cv2.hconcat(panels) if len(panels) > 1 else panels[0]
+    return cv2.cvtColor(canvas_rgb, cv2.COLOR_RGB2BGR)
+
+
+def save_tracking_debug_video(
+    *,
+    raw_episode_dir: str | Path,
+    mask_root: str | Path,
+    debug_root: str | Path,
+    episode_index: int,
+    camera_labels: list[str],
+    placeholders: list[str],
+    start_frame: int,
+    max_frames: int,
+    fps: float,
+    panel_height: int,
+) -> str:
+    raw_episode_dir = Path(raw_episode_dir).expanduser().resolve()
+    manifest = read_json(raw_episode_dir / "manifest.json")
+    frames = manifest.get("frames", []) if isinstance(manifest, dict) else []
+    if not isinstance(frames, list) or not frames:
+        return ""
+    frame_start = max(0, int(start_frame))
+    frame_end = len(frames) if int(max_frames) <= 0 else min(len(frames), frame_start + int(max_frames))
+    selected_frames = frames[frame_start:frame_end]
+    if not selected_frames:
+        return ""
+
+    video_dir = ensure_dir(Path(debug_root).expanduser().resolve() / f"episode{int(episode_index)}" / "tracking_videos")
+    video_path = video_dir / "sam2_tracking.mp4"
+    writer: cv2.VideoWriter | None = None
+    writer_size: tuple[int, int] | None = None
+    frame_count = 0
+    try:
+        for frame in selected_frames:
+            frame_idx = int(frame["frame_index"])
+            cameras = frame.get("cameras", {})
+            images_by_camera: dict[str, np.ndarray] = {}
+            masks_by_camera: dict[str, dict[str, np.ndarray]] = {}
+            for label in camera_labels:
+                if label not in cameras:
+                    continue
+                image = _load_debug_rgb_npz(raw_episode_dir, str(cameras[label]))
+                images_by_camera[label] = image
+                masks_by_camera[label] = {
+                    placeholder: _load_debug_mask(
+                        mask_root=mask_root,
+                        placeholder=placeholder,
+                        camera_label=label,
+                        frame_index=frame_idx,
+                        image_shape_hw=image.shape[:2],
+                    )
+                    for placeholder in placeholders
+                }
+            if not images_by_camera:
+                continue
+            canvas = render_tracking_debug_canvas(
+                images_by_camera=images_by_camera,
+                masks_by_camera=masks_by_camera,
+                camera_labels=camera_labels,
+                frame_index=frame_idx,
+                panel_height=int(panel_height),
+            )
+            if writer is None:
+                writer_size = (int(canvas.shape[1]), int(canvas.shape[0]))
+                fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                writer = cv2.VideoWriter(str(video_path), fourcc, max(1.0, float(fps)), writer_size)
+                if not writer.isOpened():
+                    print(f"[WARN] Failed to open debug tracking video writer: {video_path}")
+                    return ""
+            elif writer_size is not None and (canvas.shape[1], canvas.shape[0]) != writer_size:
+                canvas = cv2.resize(canvas, writer_size, interpolation=cv2.INTER_AREA)
+            writer.write(canvas)
+            frame_count += 1
+    finally:
+        if writer is not None:
+            writer.release()
+    return str(video_path) if frame_count > 0 else ""
 
 
 def _parse_csv(text: str) -> list[str]:
@@ -484,8 +693,9 @@ def process_dataset(args: argparse.Namespace) -> dict[str, Any]:
                     len(frames),
                     frame_start + int(args.max_frames_per_episode),
                 )
-                selected_local = selected_debug_frame_indices(
+                selected_local = select_debug_frame_indices(
                     max(0, frame_end - frame_start),
+                    mode=args.debug_frame_mode,
                     stride=int(args.debug_stride),
                     max_frames=int(args.debug_max_frames),
                 )
@@ -511,6 +721,21 @@ def process_dataset(args: argparse.Namespace) -> dict[str, Any]:
             )
         else:
             bbox_prompt_path = ""
+
+        debug_tracking_video = ""
+        if debug_root is not None and bool(args.debug_video):
+            debug_tracking_video = save_tracking_debug_video(
+                raw_episode_dir=raw_episode_dir,
+                mask_root=mask_root,
+                debug_root=debug_root,
+                episode_index=episode_index,
+                camera_labels=camera_labels,
+                placeholders=placeholders,
+                start_frame=int(args.start_frame),
+                max_frames=int(args.max_frames_per_episode),
+                fps=float(args.debug_video_fps),
+                panel_height=int(args.debug_video_panel_height),
+            )
 
         skipped_existing_hdf5 = bool(hdf5_path.exists() and not bool(args.overwrite_hdf5))
         if skipped_existing_hdf5:
@@ -544,13 +769,22 @@ def process_dataset(args: argparse.Namespace) -> dict[str, Any]:
 
         debug_pointclouds: list[str] = []
         if debug_root is not None:
+            with h5py.File(hdf5_path, "r") as h5_root:
+                obj_group = h5_root.get("object_pointcloud")
+                first_key = None if obj_group is None else next(iter(obj_group.keys()), None)
+                debug_frame_count = 0 if first_key is None else int(obj_group[first_key].shape[0])
+            debug_pc_frame_indices = select_debug_frame_indices(
+                debug_frame_count,
+                mode=args.debug_frame_mode,
+                stride=int(args.debug_stride),
+                max_frames=int(args.debug_max_frames),
+            )
             debug_pointclouds = save_debug_object_pointclouds(
                 hdf5_path=hdf5_path,
                 debug_root=debug_root,
                 episode_index=episode_index,
                 placeholders=placeholders,
-                stride=int(args.debug_stride),
-                max_frames=int(args.debug_max_frames),
+                frame_indices=debug_pc_frame_indices,
             )
 
         processed.append(
@@ -561,6 +795,7 @@ def process_dataset(args: argparse.Namespace) -> dict[str, Any]:
                 "mask_root": str(mask_root),
                 "bbox_prompt_path": str(bbox_prompt_path),
                 "debug_pointclouds": debug_pointclouds,
+                "debug_tracking_video": debug_tracking_video,
                 "calibration_path": postprocess_settings["calibration_path"],
                 "frame_mode": postprocess_settings["frame_mode"],
                 "workspace_crop_bounds_m": None if workspace_bounds is None else workspace_bounds.as_dict(),
@@ -592,6 +827,8 @@ def process_dataset(args: argparse.Namespace) -> dict[str, Any]:
         "camera_workspace_mask_labels": sorted(camera_workspace_masks.keys()),
         "processed": processed,
         "debug": bool(args.debug),
+        "debug_frame_mode": str(args.debug_frame_mode),
+        "debug_video": bool(args.debug_video),
     }
     write_json(output_dir / "real_zed_sam2_objpc_meta.json", meta)
     return meta
@@ -629,12 +866,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no_link_repo_data", action="store_true", default=False)
     parser.add_argument("--overwrite_repo_link", action="store_true", default=False)
     parser.add_argument("--debug", action="store_true", default=True)
+    parser.add_argument("--debug_frame_mode", default="keyframes", choices=["keyframes", "stride"])
     parser.add_argument("--debug_stride", type=int, default=10)
     parser.add_argument("--debug_max_frames", type=int, default=5)
+    parser.add_argument("--debug_video", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--debug_video_fps", type=float, default=10.0)
+    parser.add_argument("--debug_video_panel_height", type=int, default=360)
     parser.add_argument("--camera_workspace_mask_root", default="")
     parser.add_argument("--disable_mask_input_domain", action="store_true", default=False)
     parser.add_argument("--scene_point_num", type=int, default=1024)
-    parser.add_argument("--object_point_num", type=int, default=1024)
+    parser.add_argument("--object_point_num", type=int, default=5000)
     parser.add_argument("--min_depth_m", type=float, default=0.05)
     parser.add_argument("--max_depth_m", type=float, default=3.0)
     parser.add_argument("--intrinsics_source", default="calibration", choices=["calibration", "frame"])

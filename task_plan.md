@@ -218,6 +218,38 @@ Real-ZED collection now previews initial camera frames before robot/data collect
 - [x] Verify preview rendering and collection pipeline tests without hardware.
 - **Status:** complete with hardware UI check pending
 
+### Phase 26: Real-ZED SAM2 Postprocess Debug Video And Keyframes
+- [x] Generate a per-demo MP4 that overlays SAM2 tracked masks on the active camera views for every processed frame.
+- [x] Switch default debug point-cloud frame selection to demo start, 20%, 40%, 60%, 80%, and final frame.
+- [x] Keep the existing merged `{A}/{B}` debug PLY and add per-object fused PLY files for each keyframe.
+- [x] Preserve the old stride/max debug-frame mode behind an explicit `--debug_frame_mode stride`.
+- [x] Verify with targeted RED/GREEN tests, full collection pipeline tests, syntax checks, and whitespace checks.
+- **Status:** complete with hardware/postprocess visual inspection pending
+
+### Phase 27: Real-ZED Dense Per-Object Point Clouds
+- [x] Change real-ZED SAM2 objpc batch postprocess default `object_point_num` from 1024 to 5000.
+- [x] Change the lower-level raw-to-RoboTwin-HDF5 postprocess default to the same 5000 points per object.
+- [x] Keep explicit `--object_point_num` override available for smaller/faster debug runs.
+- [x] Add regression coverage for the new dense default.
+- [x] Verify collection pipeline tests, syntax checks, and whitespace checks.
+- **Status:** complete
+
+### Phase 28: Semantic Hybrid Training Resource Controls
+- [x] Add explicit DataLoader worker and pin-memory parameters to `train_semantic_pointwise_hybrid.sh`.
+- [x] Add a `training.max_val_steps` script parameter to cap epoch-boundary validation memory/time.
+- [x] Keep training throughput-oriented defaults while making validation more memory-safe.
+- [x] Add regression coverage for the new script interface.
+- [x] Verify script syntax and whitespace.
+- **Status:** complete
+
+### Phase 29: DP3 Training Resource Controls Across Scripts
+- [x] Propagate DataLoader worker, pin-memory, and validation-step controls to baseline, RGB, objpc, NDF, semantic, Utonia, actorseg, feat, and interaction train wrappers.
+- [x] Extend the shared NDF pointwise argument parser so NDF pointwise variants inherit the same resource defaults.
+- [x] Keep defaults consistent across scripts: train workers 4, val workers 2, train pin-memory true, val pin-memory false, max val steps 2.
+- [x] Add regression coverage that all target train wrappers forward the resource overrides.
+- [x] Verify shell syntax, targeted tests, missing-override grep checks, and whitespace.
+- **Status:** complete
+
 ## Decisions Made
 
 | Decision | Rationale |

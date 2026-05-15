@@ -56,7 +56,12 @@ python train_dp3.py --config-name=robot_dp3_ndf_pointwise_hybrid.yaml \
     expert_data_num=${expert_data_num} \
     setting=${train_setting} \
     dataloader.batch_size=${batch_size} \
+    dataloader.num_workers=${dataloader_num_workers} \
+    dataloader.pin_memory=${pin_memory} \
     val_dataloader.batch_size=${val_batch_size} \
+    val_dataloader.num_workers=${val_dataloader_num_workers} \
+    val_dataloader.pin_memory=${val_pin_memory} \
+    training.max_val_steps=${max_val_steps} \
     task.dataset.zarr_path=${zarr_path} \
     "${dataset_override[@]}" \
     "${shape_overrides[@]}"

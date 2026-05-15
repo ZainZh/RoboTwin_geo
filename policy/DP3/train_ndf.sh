@@ -10,6 +10,11 @@ ndf_ckpt_B=${7:-none}
 ndf_device=${8:-cuda:0}
 ndf_dgcnn_placeholders=${9:-}
 object_placeholders=${10:-\{A\},\{B\}}
+dataloader_num_workers=${11:-4}
+val_dataloader_num_workers=${12:-2}
+pin_memory=${13:-true}
+val_pin_memory=${14:-false}
+max_val_steps=${15:-2}
 
 if [ ! -d "./data/${task_name}-${task_config}-${expert_data_num}-objpc-ndf.zarr" ]; then
     bash process_data_ndf.sh "${task_name}" "${task_config}" "${expert_data_num}" "${ndf_ckpt_A}" "${ndf_ckpt_B}" "${ndf_device}" "${ndf_dgcnn_placeholders}" "${object_placeholders}"
@@ -57,6 +62,11 @@ python train_dp3.py --config-name=robot_dp3_ndf.yaml \
     checkpoint.save_ckpt=${save_ckpt} \
     expert_data_num=${expert_data_num} \
     setting=${train_setting} \
+    dataloader.num_workers=${dataloader_num_workers} \
+    dataloader.pin_memory=${pin_memory} \
+    val_dataloader.num_workers=${val_dataloader_num_workers} \
+    val_dataloader.pin_memory=${val_pin_memory} \
+    training.max_val_steps=${max_val_steps} \
     task.dataset.zarr_path=${zarr_path} \
     "${dataset_override[@]}" \
     "${shape_overrides[@]}"

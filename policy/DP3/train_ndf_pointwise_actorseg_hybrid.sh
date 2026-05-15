@@ -4,11 +4,27 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/ndf_pointwise_arg_utils.sh"
+raw_args=("$@")
 normalize_ndf_train_args "$@"
-actorseg_camera_names=${12:-head_camera,front_camera}
+actorseg_camera_names="${raw_args[19]:-head_camera,front_camera}"
+
+if [ -n "${raw_args[11]:-}" ] && ! looks_like_integer_arg "${raw_args[11]}" ]; then
+    actorseg_camera_names="${raw_args[11]}"
+    batch_size=256
+    val_batch_size=${batch_size}
+    gradient_accumulate_every=1
+    dataloader_num_workers=4
+    val_dataloader_num_workers=2
+    pin_memory=true
+    val_pin_memory=false
+    max_val_steps=2
+fi
 
 if [ "${ndf_legacy_shifted}" = true ]; then
-    actorseg_camera_names=${11:-head_camera,front_camera}
+    actorseg_camera_names="${raw_args[17]:-head_camera,front_camera}"
+    if [ -n "${raw_args[10]:-}" ] && ! looks_like_integer_arg "${raw_args[10]}" ]; then
+        actorseg_camera_names="${raw_args[10]}"
+    fi
     echo "[train_ndf_pointwise_actorseg_hybrid.sh] detected legacy invocation without explicit ndf_dgcnn_placeholders; treating '${object_placeholders}' as object_placeholders." >&2
 fi
 
@@ -84,6 +100,14 @@ python train_dp3.py --config-name=robot_dp3_objpc_actorseg_ndf_pointwise_hybrid.
     checkpoint.save_ckpt=${save_ckpt} \
     expert_data_num=${expert_data_num} \
     setting=${train_setting} \
+    dataloader.batch_size=${batch_size} \
+    dataloader.num_workers=${dataloader_num_workers} \
+    dataloader.pin_memory=${pin_memory} \
+    val_dataloader.batch_size=${val_batch_size} \
+    val_dataloader.num_workers=${val_dataloader_num_workers} \
+    val_dataloader.pin_memory=${val_pin_memory} \
+    training.gradient_accumulate_every=${gradient_accumulate_every} \
+    training.max_val_steps=${max_val_steps} \
     task.dataset.zarr_path=${zarr_path} \
     "${dataset_override[@]}" \
     "${shape_overrides[@]}"

@@ -28,6 +28,11 @@ normalize_ndf_train_args() {
     batch_size="${args[11]:-256}"
     val_batch_size="${args[12]:-${batch_size}}"
     gradient_accumulate_every="${args[13]:-1}"
+    dataloader_num_workers="${args[14]:-4}"
+    val_dataloader_num_workers="${args[15]:-2}"
+    pin_memory="${args[16]:-true}"
+    val_pin_memory="${args[17]:-false}"
+    max_val_steps="${args[18]:-2}"
     ndf_legacy_shifted=false
 
     if looks_like_placeholder_arg "${args[8]:-}" && looks_like_integer_arg "${args[9]:-}"; then
@@ -37,6 +42,11 @@ normalize_ndf_train_args() {
         batch_size="${args[10]:-256}"
         val_batch_size="${args[11]:-${batch_size}}"
         gradient_accumulate_every="${args[12]:-1}"
+        dataloader_num_workers="${args[13]:-4}"
+        val_dataloader_num_workers="${args[14]:-2}"
+        pin_memory="${args[15]:-true}"
+        val_pin_memory="${args[16]:-false}"
+        max_val_steps="${args[17]:-2}"
         ndf_legacy_shifted=true
     fi
 }

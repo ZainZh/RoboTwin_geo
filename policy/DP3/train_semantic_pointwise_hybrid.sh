@@ -1,21 +1,26 @@
 #!/bin/bash
 
 task_name=${1}
-task_config=${2}
-expert_data_num=${3}
-seed=${4}
-gpu_id=${5}
+task_config=${2:-"demo_real_zed_sam2_objpc"}
+expert_data_num=${3:-50}
+seed=${4:-0}
+gpu_id=${5:-0}
 semantic_ckpt_A=${6:-none}
 semantic_ckpt_B=${7:-none}
 semantic_device=${8:-cuda:0}
 object_placeholders=${9:-\{A\},\{B\}}
-semantic_point_num=${10:-128}
+semantic_point_num=${10:-1024}
 semantic_feat_dim=${11:-128}
 batch_size=${12:-256}
 val_batch_size=${13:-${batch_size}}
 use_ema=${14:-true}
 gradient_accumulate_every=${15:-1}
 encoder_output_dim=${16:-128}
+dataloader_num_workers=${17:-4}
+val_dataloader_num_workers=${18:-2}
+pin_memory=${19:-true}
+val_pin_memory=${20:-false}
+max_val_steps=${21:-2}
 output_suffix="-objpc-semantic-pointwise-hybrid"
 zarr_dir="./data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
 meta_path="./data/${task_name}-${task_config}-${expert_data_num}${output_suffix}_meta.json"
@@ -77,7 +82,12 @@ python train_dp3.py --config-name=robot_dp3_semantic_pointwise_hybrid.yaml \
     expert_data_num=${expert_data_num} \
     setting=${train_setting} \
     dataloader.batch_size=${batch_size} \
+    dataloader.num_workers=${dataloader_num_workers} \
+    dataloader.pin_memory=${pin_memory} \
     val_dataloader.batch_size=${val_batch_size} \
+    val_dataloader.num_workers=${val_dataloader_num_workers} \
+    val_dataloader.pin_memory=${val_pin_memory} \
+    training.max_val_steps=${max_val_steps} \
     policy.encoder_output_dim=${encoder_output_dim} \
     task.dataset.zarr_path=${zarr_path} \
     "${dataset_override[@]}" \
