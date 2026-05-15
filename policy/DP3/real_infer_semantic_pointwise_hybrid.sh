@@ -11,7 +11,7 @@ semantic_ckpt_B=${7:-${SEMANTIC_CKPT_B:-none}}
 semantic_device=${8:-cuda:0}
 object_placeholders=${9:-\{A\},\{B\}}
 checkpoint_num=${10:-3000}
-semantic_point_num=${11:-128}
+semantic_point_num=${11:-1024}
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(cd "${script_dir}/../.." && pwd)

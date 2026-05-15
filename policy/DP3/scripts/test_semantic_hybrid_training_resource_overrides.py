@@ -24,6 +24,15 @@ class TestSemanticHybridTrainingResourceOverrides(unittest.TestCase):
         self.assertIn("max_val_steps=${21:-2}", train_script)
         self.assert_resource_overrides(train_script)
 
+    def test_semantic_hybrid_train_script_uses_meta_feature_placeholders(self):
+        train_script = (REPO_ROOT / "policy" / "DP3" / "train_semantic_pointwise_hybrid.sh").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('semantic_feature_placeholders="${semantic_meta[2]:-}"', train_script)
+        self.assertIn('has_semantic_feature_placeholder "{A}"', train_script)
+        self.assertIn('has_semantic_feature_placeholder "{B}"', train_script)
+
     def test_direct_dp3_train_scripts_forward_resource_overrides(self):
         script_names = [
             "train_objpc.sh",

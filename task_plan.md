@@ -6,7 +6,7 @@ Design a real-robot data collection pipeline that keeps the robot-control behavi
 
 ## Current Phase
 
-Real-ZED collection now previews initial camera frames before robot/data collection starts
+Real DP3 inference now defaults to automatic ZED exposure and white balance
 
 ## Phases
 
@@ -248,6 +248,23 @@ Real-ZED collection now previews initial camera frames before robot/data collect
 - [x] Keep defaults consistent across scripts: train workers 4, val workers 2, train pin-memory true, val pin-memory false, max val steps 2.
 - [x] Add regression coverage that all target train wrappers forward the resource overrides.
 - [x] Verify shell syntax, targeted tests, missing-override grep checks, and whitespace.
+- **Status:** complete
+
+### Phase 30: Semantic Checkpoint Branch-Mismatch Guardrails
+- [x] Diagnose why a semantic-named teapot checkpoint failed against a semantic-hybrid inference graph.
+- [x] Confirm the checkpoint was trained without `semantic_point_cloud_A` even though the zarr/meta contains that key.
+- [x] Update the semantic hybrid train wrapper to use meta `feature_placeholders` when reusing an existing semantic zarr.
+- [x] Add real-inference validation for extra semantic ckpts not present in the checkpoint state_dict.
+- [x] Align the real semantic wrapper default point count with the current 1024-point training default.
+- [x] Verify targeted tests, real inference action tests, shell syntax, Python syntax, and whitespace.
+- **Status:** complete
+
+### Phase 31: Real Inference ZED Image Controls
+- [x] Locate where real DP3 inference configures ZED exposure and white balance.
+- [x] Add real inference CLI controls for auto/fixed exposure and white balance.
+- [x] Default real inference to automatic exposure/gain and automatic white balance.
+- [x] Keep fixed exposure/gain/white-balance override flags available.
+- [x] Verify parser tests, real inference tests, wrapper interface tests, syntax, and whitespace.
 - **Status:** complete
 
 ## Decisions Made

@@ -775,6 +775,17 @@
   - A continuous camera preview during teleoperation would add unnecessary GUI work to an already heavy collection loop, but a first-frame preview after ZED startup is cheap and catches wrong exposure, wrong labels, or black cameras before robot initialization.
   - The preview is intentionally placed before xtrainer robot initialization, so aborting from the preview window does not move the robot or start button/servo threads.
   - In headless sessions, the preview automatically skips after confirming frames are available, which prevents remote collection jobs from blocking forever on `cv2.imshow`.
+- Real semantic checkpoint mismatch finding:
+  - The failing teapot real inference log built a semantic-hybrid model with `semantic_point_cloud_A` shape `[1024, 131]`, but the inspected checkpoint `policy/DP3/checkpoints/teapot-demo_real_zed_sam2_objpc-objpc-semantic-pointwise-hybrid-50_0/3000.ckpt` contains zero `semantic_point_cloud_*` state_dict keys.
+  - The checkpoint payload `cfg.task.shape_meta.obs` only records `point_cloud` and `agent_pos`, and its diffusion condition weights have input width `640`, matching a non-semantic/baseline DP3 structure.
+  - The corresponding zarr and meta are semantic: `data/teapot-demo_real_zed_sam2_objpc-50-objpc-semantic-pointwise-hybrid.zarr/data` contains `semantic_point_cloud_A`, and the meta records `feature_placeholders=['{A}']`, `semantic_num_points=1024`, and `semantic_feat_dim=128`.
+  - The root cause is training wrapper behavior: when the semantic zarr already existed but `semantic_ckpt_A` was omitted or `none`, the wrapper did not add `+task.dataset.extra_obs_keys=[semantic_point_cloud_A]` or the semantic shape override, so it trained a non-semantic model into a semantic-named checkpoint directory.
+  - The fix is to have `train_semantic_pointwise_hybrid.sh` use existing meta `feature_placeholders` to include semantic branches even when preprocessing is not rerun, and to have real inference reject extra semantic ckpts when the checkpoint was not trained with those semantic branches.
+- Real inference ZED image-control finding:
+  - `real_dp3_inference.py` starts live ZED streams through `collect_zed_robotwin_raw.zed_capture_loop(...)`.
+  - Before the fix, real inference did not expose or forward `zed_auto_exposure`, `zed_exposure`, `zed_gain`, or `zed_whitebalance_temp`, so the capture loop used its collection defaults: fixed exposure/gain and fixed `4500K` white balance.
+  - Real inference now exposes those parameters and defaults to automatic exposure/gain plus automatic white balance (`--zed_auto_exposure`, `--zed_whitebalance_temp 0`).
+  - Fixed controls remain available with `--no-zed_auto_exposure --zed_exposure <0-100> --zed_gain <0-100> --zed_whitebalance_temp <kelvin>`.
 
 ---
 *Update this file after every 2 view/browser/search operations.*

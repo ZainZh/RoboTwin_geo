@@ -358,6 +358,10 @@ def start_zed_cameras(args: argparse.Namespace) -> LiveZedCameras:
         zed_resolution=args.zed_resolution,
         zed_fps=int(args.zed_fps),
         zed_depth_mode=args.zed_depth_mode,
+        zed_auto_exposure=bool(args.zed_auto_exposure),
+        zed_exposure=int(args.zed_exposure),
+        zed_gain=int(args.zed_gain),
+        zed_whitebalance_temp=int(args.zed_whitebalance_temp),
         save_rgb_width=int(args.save_rgb_width),
         save_rgb_height=int(args.save_rgb_height),
         workspace_crop_enabled=bool(args.workspace_crop_enabled),
@@ -409,6 +413,10 @@ def start_zed_cameras(args: argparse.Namespace) -> LiveZedCameras:
                 "resolution": args.zed_resolution,
                 "fps": int(args.zed_fps),
                 "depth_mode": args.zed_depth_mode,
+                "zed_auto_exposure": bool(args.zed_auto_exposure),
+                "zed_exposure": int(args.zed_exposure),
+                "zed_gain": int(args.zed_gain),
+                "zed_whitebalance_temp": int(args.zed_whitebalance_temp),
                 "save_rgb_width": int(args.save_rgb_width),
                 "save_rgb_height": int(args.save_rgb_height),
                 "save_xyzrgba": False,
@@ -761,6 +769,15 @@ def _optional_arg_is_set(value: Any) -> bool:
     return value not in {None, "", "none"}
 
 
+def semantic_pointcloud_placeholders_from_args(args: argparse.Namespace) -> set[str]:
+    placeholders: set[str] = set()
+    if _optional_arg_is_set(getattr(args, "semantic_ckpt_A", None)):
+        placeholders.add("{A}")
+    if _optional_arg_is_set(getattr(args, "semantic_ckpt_B", None)):
+        placeholders.add("{B}")
+    return placeholders
+
+
 def validate_semantic_checkpoint_branches(
     args: argparse.Namespace,
     checkpoint_payload: Any,
@@ -769,6 +786,17 @@ def validate_semantic_checkpoint_branches(
     if args.mode != "semantic_pointwise_hybrid":
         return
     required_placeholders = semantic_pointcloud_placeholders_from_checkpoint_payload(checkpoint_payload)
+    provided_placeholders = semantic_pointcloud_placeholders_from_args(args)
+    extra_placeholders = provided_placeholders - required_placeholders
+    if extra_placeholders:
+        extra_keys = ", ".join(sorted(extra_placeholders))
+        required_keys = ", ".join(sorted(required_placeholders)) if required_placeholders else "none"
+        raise RuntimeError(
+            "Semantic checkpoint/config mismatch: "
+            f"checkpoint '{checkpoint_path}' was not trained with semantic point-cloud branch(es) {extra_keys}; "
+            f"checkpoint semantic branch(es): {required_keys}. "
+            "Use the checkpoint trained with matching semantic branches, or do not pass those semantic checkpoints."
+        )
     if not required_placeholders:
         return
 
@@ -1789,6 +1817,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--zed_resolution", default="HD720")
     parser.add_argument("--zed_fps", type=int, default=15)
     parser.add_argument("--zed_depth_mode", default="NEURAL")
+    parser.add_argument(
+        "--zed_auto_exposure",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable ZED auto exposure/gain during real inference. Use --no-zed_auto_exposure for fixed exposure/gain.",
+    )
+    parser.add_argument("--zed_exposure", type=int, default=22)
+    parser.add_argument("--zed_gain", type=int, default=12)
+    parser.add_argument(
+        "--zed_whitebalance_temp",
+        type=int,
+        default=0,
+        help="ZED white-balance temperature in Kelvin. Use 0 for automatic white balance.",
+    )
     parser.add_argument("--save_rgb_width", type=int, default=0)
     parser.add_argument("--save_rgb_height", type=int, default=0)
     parser.add_argument("--camera_warmup_timeout_sec", type=float, default=30.0)
