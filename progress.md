@@ -20,6 +20,20 @@
 - Replaced `script/real_zed_collection/calibrate_three_zed_extrinsics.py` wrapper with an inline implementation of three-ZED Charuco calibration.
 - Verified `python -m py_compile script/real_zed_collection/calibrate_three_zed_extrinsics.py` and re-ran `python -m unittest script/test_real_zed_collection_pipeline.py`.
 
+## 2026-05-16: Real DP3 EEF Absolute-6D Branch
+- Added EEF pose/action utility coverage in `script/test_eef_action_utils.py`.
+- Added `policy/DP3/scripts/eef_action_utils.py` for local Dobot FK, pose transforms, rot6d encoding/decoding, EEF14/action20 conversion, and calibration-based world/base transform loading.
+- Extended `process_data.py`, `process_data_objpc.py`, and `process_data_semantic_pointwise.py` with default-off `--action_mode=eef_absolute6d` support.
+- Added EEF-specific preprocess wrappers, train wrappers, and Hydra task/model configs for scene baseline, objpc baseline, and semantic-pointwise hybrid.
+- Updated real-ZED HDF5 postprocessing to preserve `/joint_action/control` for future target-action conversion while retaining fallback support for older HDF5 files.
+- Updated real DP3 inference with `--action_mode eef_absolute6d`, action20 decoding through Dobot IK, and EEF agent-pos updates during observation reuse.
+- Updated `/home/zheng/github/xtrainer_clover` via the `include/xtrainer_clover` symlink with Dobot `get_eef_pose`, `get_fk`, `get_ik`, ZMQ forwarding, and RobotEnv wrappers.
+- Verified:
+  - `python -m unittest script.test_eef_action_utils script.test_real_zed_inference_actions`
+  - `python policy/DP3/scripts/test_eef_pointwise_wrappers.py`
+  - `bash -n` on the new EEF shell wrappers
+  - `python -m py_compile` on the new EEF utilities, wrappers, real inference, and xtrainer_clover interface files
+
 ## Session: 2026-04-16 (`pour_kettle_mug`)
 
 ### Phase 1: Planning & Test Scope
@@ -1478,3 +1492,23 @@
   - The tool defaults to the xtrainer controller TCP assumption `SetTool(1, 0, 0, 197, 0, 0, 0)` through `--tool_z_m 0.197 --tool 1`.
   - It supports left/right/both arms, repeated samples, JSON output, and configurable pass/fail thresholds.
   - Verified unit tests, Python syntax, CLI help, and whitespace checks.
+
+### Phase 66: Right-Base EEF Reference Frame
+- **Status:** complete
+- Actions taken:
+  - Added RED coverage for `right_base` EEF transform composition, real inference parser support, and wrapper defaults.
+  - Implemented `left_base/right_base` support in `load_world_from_base_transforms`.
+  - Changed EEF preprocessing and real inference defaults from `workspace` to `right_base`.
+  - Renamed EEF zarr/checkpoint suffixes to include `rightbase`, preventing accidental reuse of old workspace-frame EEF artifacts.
+  - Added EEF dataset-frame validation against `real_zed_sam2_objpc_meta.json`.
+  - Verified targeted unit tests, wrapper tests, shell syntax, Python syntax, and whitespace checks.
+
+### Phase 67: Global-Camera EEF Wrapper Set
+- **Status:** complete
+- Actions taken:
+  - Added RED coverage requiring `global` EEF wrappers to use `source/reference_camera` and `*-global` suffixes.
+  - Added Python preprocess wrappers for scene, objpc, semantic pointwise, and semantic hybrid global EEF zarr generation.
+  - Added shell preprocess wrappers with default `eef_frame_mode=reference_camera`.
+  - Added train wrappers for scene, objpc, and semantic hybrid global EEF checkpoints.
+  - Added real inference wrappers for baseline and semantic hybrid global EEF checkpoints.
+  - Verified wrapper tests, shell syntax, Python syntax, and whitespace checks.

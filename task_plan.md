@@ -218,6 +218,32 @@ Real DP3 inference now defaults to automatic ZED exposure and white balance
 - [x] Verify preview rendering and collection pipeline tests without hardware.
 - **Status:** complete with hardware UI check pending
 
+### Phase 26: Right-Base EEF Reference Frame
+- [x] Extend EEF frame handling from `workspace/reference_camera` to `left_base/right_base`.
+- [x] Make EEF preprocessing and real inference default to `right_base`.
+- [x] Add `rightbase` to EEF zarr/checkpoint suffixes to avoid mixing workspace-frame artifacts.
+- [x] Validate real-ZED dataset `output_frame` against `--eef_frame_mode` during EEF preprocessing.
+- [x] Verify EEF transform tests, real inference parser/action tests, wrapper tests, shell syntax, Python syntax, and whitespace checks.
+- **Status:** complete
+
+### Phase 27: Global-Camera EEF Wrapper Set
+- [x] Add independent global/reference-camera EEF preprocess wrappers.
+- [x] Add independent global/reference-camera EEF train wrappers for scene, objpc, and semantic hybrid.
+- [x] Add independent global/reference-camera real inference wrappers for baseline and semantic hybrid.
+- [x] Use `*-eef-absolute6d-global` suffixes to avoid mixing global and right-base EEF artifacts.
+- [x] Verify wrapper tests, shell syntax, Python syntax, and whitespace checks.
+- **Status:** complete
+
+### Phase 26: Real DP3 EEF Absolute-6D Training And Inference
+- [x] Validate local Dobot FK against controller `PositiveSolution`/`GetPose` on hardware.
+- [x] Add shared EEF pose/action utilities for joint14 -> EEF14 and EEF14 -> action20.
+- [x] Add optional EEF absolute-6D action conversion to scene, objpc, and semantic-pointwise DP3 preprocessing.
+- [x] Add independent EEF zarr suffixes, task configs, train scripts, and real inference wrappers.
+- [x] Add xtrainer_clover FK/IK/ZMQ/RobotEnv interfaces so real inference can decode EEF actions through Dobot IK and still execute with ServoJ smoothing.
+- [x] Verify EEF utility tests, real inference action tests, shell syntax, and Python syntax checks without hardware.
+- [ ] Run EEF inference on real robot hardware.
+- **Status:** complete with hardware run pending
+
 ### Phase 26: Real-ZED SAM2 Postprocess Debug Video And Keyframes
 - [x] Generate a per-demo MP4 that overlays SAM2 tracked masks on the active camera views for every processed frame.
 - [x] Switch default debug point-cloud frame selection to demo start, 20%, 40%, 60%, 80%, and final frame.

@@ -422,6 +422,64 @@ class RealZedInferencePointcloudTest(unittest.TestCase):
         self.assertEqual(args.keyboard_quit_key, "q")
         self.assertFalse(args.reset_sam2_on_keyboard_reset)
 
+    def test_real_inference_parser_supports_eef_absolute6d_action_mode(self):
+        from script.real_zed_inference.real_dp3_inference import build_arg_parser
+
+        args = build_arg_parser().parse_args(["--action_mode", "eef_absolute6d", "--eef_frame_mode", "right_base"])
+
+        self.assertEqual(args.action_mode, "eef_absolute6d")
+        self.assertEqual(args.eef_frame_mode, "right_base")
+        self.assertTrue(args.eef_calibration_path.endswith("three_camera_workspace_extrinsics.yaml"))
+        self.assertTrue(args.left_robot_camera_calibration_path.endswith("robot_camera_apriltag_left_global.yaml"))
+        self.assertTrue(args.right_robot_camera_calibration_path.endswith("robot_camera_apriltag_right_global.yaml"))
+
+    def test_eef_policy_actions_are_converted_to_joint_actions_through_ik(self):
+        from script.real_zed_inference.real_dp3_inference import policy_actions_to_joint_actions
+        from eef_action_utils import eef14_to_action20
+
+        class FakeEnv:
+            def __init__(self):
+                self.ik_inputs = []
+
+            def get_ik(self, eef_state):
+                self.ik_inputs.append(np.asarray(eef_state, dtype=np.float32).copy())
+                return np.arange(12, dtype=np.float32) * 0.01
+
+        eef14 = np.asarray(
+            [
+                0.1,
+                -0.2,
+                0.3,
+                0.0,
+                0.1,
+                0.0,
+                0.7,
+                -0.1,
+                -0.25,
+                0.35,
+                0.0,
+                -0.1,
+                0.0,
+                0.3,
+            ],
+            dtype=np.float32,
+        )
+        args = argparse.Namespace(action_mode="eef_absolute6d")
+
+        joint_actions = policy_actions_to_joint_actions(
+            eef14_to_action20(eef14)[None, :],
+            env=FakeEnv(),
+            args=args,
+            t_world_from_left_base=np.eye(4),
+            t_world_from_right_base=np.eye(4),
+        )
+
+        self.assertEqual(joint_actions.shape, (1, 14))
+        np.testing.assert_allclose(joint_actions[0, :6], np.arange(6, dtype=np.float32) * 0.01)
+        self.assertAlmostEqual(float(joint_actions[0, 6]), 0.7, places=6)
+        np.testing.assert_allclose(joint_actions[0, 7:13], np.arange(6, 12, dtype=np.float32) * 0.01)
+        self.assertAlmostEqual(float(joint_actions[0, 13]), 0.3, places=6)
+
     def test_configure_robot_servo_params_calls_robot_env(self):
         from script.real_zed_inference.real_dp3_inference import configure_robot_servo_params
 

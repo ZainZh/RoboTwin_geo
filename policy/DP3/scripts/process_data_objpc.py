@@ -18,10 +18,11 @@ from object_pointcloud_utils import (
     parse_target_extents,
     valid_xyz_centroid,
 )
+from eef_action_utils import add_eef_preprocess_args, eef_arrays_for_episode, validate_eef_dataset_frame
 from ndf_feature_utils import summarize_modes
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description="Process RoboTwin episodes into DP3 zarr using only object point clouds.")
     parser.add_argument("task_name", type=str)
     parser.add_argument("task_config", type=str)
@@ -34,12 +35,18 @@ def main():
     parser.add_argument("--table_quantile", type=float, default=0.08)
     parser.add_argument("--table_margin", type=float, default=0.01)
     parser.add_argument("--save_placeholder_point_clouds", action="store_true")
-    args = parser.parse_args()
+    add_eef_preprocess_args(parser)
+    args = parser.parse_args(argv)
 
     task_name = args.task_name
     task_config = args.task_config
     num = int(args.expert_data_num)
     load_dir = os.path.join("../../data", str(task_name), str(task_config))
+    validate_eef_dataset_frame(
+        action_mode=args.action_mode,
+        eef_frame_mode=args.eef_frame_mode,
+        load_dir=load_dir,
+    )
     save_dir = f"./data/{task_name}-{task_config}-{num}{args.output_suffix}.zarr"
     meta_path = f"./data/{task_name}-{task_config}-{num}{args.output_suffix}_meta.json"
 
@@ -71,6 +78,7 @@ def main():
         load_path = os.path.join(load_dir, f"data/episode{current_ep}.hdf5")
         episode = load_hdf5(load_path)
         vector_all = episode["vector"]
+        eef_arrays = eef_arrays_for_episode(args, episode)
         local_modes = {placeholder: Counter() for placeholder in placeholders}
         prev_centroids = {placeholder: None for placeholder in placeholders}
         asset_specs = {}
@@ -111,9 +119,9 @@ def main():
 
             if frame_idx != vector_all.shape[0] - 1:
                 point_cloud_arrays.append(merged_object_pc.astype(np.float32))
-                state_arrays.append(vector_all[frame_idx])
+                state_arrays.append(eef_arrays[0][frame_idx] if eef_arrays is not None else vector_all[frame_idx])
             if frame_idx != 0:
-                joint_action_arrays.append(vector_all[frame_idx])
+                joint_action_arrays.append(eef_arrays[1][frame_idx - 1] if eef_arrays is not None else vector_all[frame_idx])
 
         total_count += vector_all.shape[0] - 1
         episode_ends_arrays.append(total_count)
