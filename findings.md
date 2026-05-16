@@ -786,6 +786,15 @@
   - Before the fix, real inference did not expose or forward `zed_auto_exposure`, `zed_exposure`, `zed_gain`, or `zed_whitebalance_temp`, so the capture loop used its collection defaults: fixed exposure/gain and fixed `4500K` white balance.
   - Real inference now exposes those parameters and defaults to automatic exposure/gain plus automatic white balance (`--zed_auto_exposure`, `--zed_whitebalance_temp 0`).
   - Fixed controls remain available with `--no-zed_auto_exposure --zed_exposure <0-100> --zed_gain <0-100> --zed_whitebalance_temp <kelvin>`.
+- LZ xtrainer EEF-control finding:
+  - `include/lz_xtrainer/experiments/run_control.py` defaults `act_eef=True`. During data collection it still servo-follows leader joint commands, but it records the action as an EEF target by calling `agent.act_eef({})`.
+  - `DobotAgent.act_eef(...)` converts leader joints to an EEF pose with `dobot_robot.get_fk(joint_actions[:6])`, then appends the leader gripper value. The recorded `control` is therefore `[x,y,z,rx,ry,rz,gripper]` per arm, not a 7D joint action.
+  - LZ DP training defaults `predict_eef_6d=True` and `predict_eef_6d_delta=False`, so training uses absolute EEF actions. It converts each arm's rotation vector to a 6D rotation representation, producing a 20D bimanual action: left `3+6+1`, right `3+6+1`.
+  - LZ real inference decodes the 20D absolute EEF action back to rotvec, runs Dobot IK, then sends the resulting joint command through `env.step(...)`/`ServoJ`. The `step_eef`/`ServoP` path exists but is commented out in the inference path.
+  - `include/lz_xtrainer/dobot_control/robots/dobot.py` exposes real EEF pose via `GetPose()`, FK via `PositiveSolution`, and IK via `InverseSolution`; `get_observations()` stores this pose under `ee_pos_quat`, although it is actually `[x,y,z,rx,ry,rz]`.
+  - Current `include/xtrainer_clover` is not equivalent: `DobotAgent` only exposes joint `act(...)`, and `DobotRobot.get_observations()` stores zero `ee_pos_quat`. Current real-ZED raw frames save only joint positions/velocities and joint `control`, so reliable EEF training needs a collection/postprocess update or an approximate FK backfill.
+  - Offline FK and online Dobot FK should agree only if DH parameters, joint sign/zero convention, user frame, tool frame/TCP, and Euler convention match. The most likely real mismatch is TCP/tool: controller code sets `Tool(1)` with `SetTool(1, 0, 0, 197, 0, 0, 0)`, while older local helper FK used an approximate 0.2m tool offset and optional gripper-width lateral offset.
+  - `script/real_zed_collection/check_dobot_fk_consistency.py` now provides a real-hardware read-only check that compares local DH FK, controller `PositiveSolution`, and controller `GetPose` for the current joints.
 
 ---
 *Update this file after every 2 view/browser/search operations.*
