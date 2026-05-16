@@ -1460,3 +1460,21 @@
   - Forwarded those options into `CollectionArgs` and each live `zed_capture_loop(...)` thread.
   - Added parser regression tests for the new automatic defaults and fixed-control override path.
   - Verified targeted parser tests, full real inference action tests, real inference wrapper interface tests, Python syntax, shell syntax, and whitespace checks.
+
+### Phase 64: LZ xtrainer EEF Route Read
+- **Status:** read-only analysis complete
+- Actions taken:
+  - Read `include/lz_xtrainer/experiments/run_control.py`, `run_inference.py`, `dobot_control/agents/dobot_agent.py`, `dobot_control/robots/dobot.py`, `dobot_control/env.py`, `ModelTrain/dp/train_dp.py`, and related dataset utilities.
+  - Confirmed LZ collects EEF actions by converting leader joints to Dobot FK and writing absolute EEF pose into `control`, while still executing teleoperation through joint ServoJ.
+  - Confirmed LZ trains default absolute EEF 6D actions (`predict_eef_6d=True`, `predict_eef_6d_delta=False`), yielding 20D bimanual action vectors.
+  - Confirmed LZ real inference converts predicted absolute EEF 6D actions back to rotvec, solves IK, and sends joint commands through ServoJ rather than directly using ServoP.
+  - Compared with current `include/xtrainer_clover` and real-ZED collection: current code records joint actions only and has zero `ee_pos_quat`, so EEF training needs explicit collection/postprocess work.
+
+### Phase 65: Dobot Offline FK Consistency Check Tool
+- **Status:** complete
+- Actions taken:
+  - Added a RED unit test for FK helper behavior before implementing the diagnostic tool.
+  - Added `script/real_zed_collection/check_dobot_fk_consistency.py`, a read-only real-hardware tool that compares local DH FK, Dobot `PositiveSolution`, and Dobot `GetPose` for current robot joints.
+  - The tool defaults to the xtrainer controller TCP assumption `SetTool(1, 0, 0, 197, 0, 0, 0)` through `--tool_z_m 0.197 --tool 1`.
+  - It supports left/right/both arms, repeated samples, JSON output, and configurable pass/fail thresholds.
+  - Verified unit tests, Python syntax, CLI help, and whitespace checks.
