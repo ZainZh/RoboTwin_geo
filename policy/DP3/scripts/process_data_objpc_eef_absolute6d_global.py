@@ -1,11 +1,16 @@
 import sys
 
 
+def has_output_suffix(argv):
+    return any(arg == "--output_suffix" or arg.startswith("--output_suffix=") for arg in argv)
+
+
 def build_eef_argv(argv):
-    return list(argv) + [
-        "--output_suffix=-objpc-eef-absolute6d-global",
-        "--action_mode=eef_absolute6d",
-    ]
+    forwarded = list(argv)
+    if not has_output_suffix(forwarded):
+        forwarded.append("--output_suffix=-objpc-eef-absolute6d-global")
+    forwarded.append("--action_mode=eef_absolute6d")
+    return forwarded
 
 
 if __name__ == "__main__":

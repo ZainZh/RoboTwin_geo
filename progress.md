@@ -34,6 +34,19 @@
   - `bash -n` on the new EEF shell wrappers
   - `python -m py_compile` on the new EEF utilities, wrappers, real inference, and xtrainer_clover interface files
 
+## 2026-05-17: DP3 Main Point-Cloud Count Training Interface
+- Started a new training-wrapper task to expose `point_cloud_num` across DP3 train scripts.
+- Decided that default 1024 behavior should keep old artifact names, while non-default counts append `-pcN` to zarr/checkpoint settings.
+- Decided that main context point count must remain separate from semantic/NDF/Utonia auxiliary feature point counts.
+- Added `point_cloud_num` forwarding across DP3 train/process wrappers, including baseline, objpc, actorseg, NDF, semantic, Utonia, and EEF variants.
+- Verified with `test_semantic_hybrid_training_resource_overrides.py`, `test_eef_pointwise_wrappers.py`, targeted `py_compile`, `bash -n` over DP3 shell wrappers, and `git diff --check`.
+- Extended the same main point-cloud count interface to all DP3 eval wrappers.
+- Added `deploy_policy.py` support for `usr_args["point_cloud_num"]`, overriding `cfg.task.shape_meta.obs.point_cloud.shape` before checkpoint loading and using the same value for online object-cloud resampling.
+- Verified eval coverage with `test_eval_pointwise_script_interfaces.sh`, `test_eval_utonia_pointwise_hybrid_interface.sh`, `test_semantic_hybrid_training_resource_overrides.py`, `python -m py_compile policy/DP3/deploy_policy.py`, `bash -n policy/DP3/eval*.sh`, and `git diff --check`.
+- Fixed the `--output_suffix` argparse failure for suffixes starting with `-` by switching all DP3 preprocess shell wrappers to `--output_suffix="${output_suffix}"`.
+- Added fail-fast behavior to `train_objpc.sh` so a failed preprocessing step does not continue into Hydra training.
+- Verified the fix with the resource override unit test, shell syntax checks, a mocked `process_data_objpc.sh` argument capture showing `--output_suffix=-objpc-pc2048`, EEF wrapper tests, eval pointwise interface tests, and `git diff --check`.
+
 ## Session: 2026-04-16 (`pour_kettle_mug`)
 
 ### Phase 1: Planning & Test Scope
@@ -1512,3 +1525,17 @@
   - Added train wrappers for scene, objpc, and semantic hybrid global EEF checkpoints.
   - Added real inference wrappers for baseline and semantic hybrid global EEF checkpoints.
   - Verified wrapper tests, shell syntax, Python syntax, and whitespace checks.
+
+### Phase 68: EEF Training Empty Zarr Path Fix
+- **Status:** complete
+- Actions taken:
+  - Read the failing `train_objpc_eef_absolute6d_global.sh` path and confirmed the logged Hydra overrides lacked `task.dataset.zarr_path`.
+  - Added RED regression tests requiring shared train helpers to accept an explicit zarr path and objpc EEF wrappers to pass it.
+  - Updated `scripts/train_policy.sh` and `scripts/train_policy_rgb.sh` to accept optional argument 14 and forward `task.dataset.zarr_path`.
+  - Updated EEF baseline/objpc rightbase/global train wrappers to compute and pass their generated zarr path explicitly.
+  - Added `set -euo pipefail` to those EEF wrappers so preprocessing failures do not fall through into training.
+  - Verified `python policy/DP3/scripts/test_eef_pointwise_wrappers.py`.
+  - Verified `python policy/DP3/scripts/test_semantic_hybrid_training_resource_overrides.py`.
+  - Verified shell syntax for the touched train helper and EEF wrapper scripts.
+  - Verified with a fake `python` capture that `train_policy.sh` now forwards `task.dataset.zarr_path=../../../data/grasp_mug-demo_real_zed_sam2_objpc_global-50-objpc-eef-absolute6d-global.zarr`.
+  - Verified `git diff --check`.

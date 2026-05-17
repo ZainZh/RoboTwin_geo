@@ -21,12 +21,17 @@ val_dataloader_num_workers=${18:-2}
 pin_memory=${19:-true}
 val_pin_memory=${20:-false}
 max_val_steps=${21:-2}
-output_suffix="-objpc-semantic-pointwise"
+point_cloud_num=${22:-1024}
+point_cloud_suffix=""
+if [ "${point_cloud_num}" != "1024" ]; then
+    point_cloud_suffix="-pc${point_cloud_num}"
+fi
+output_suffix="-objpc-semantic-pointwise${point_cloud_suffix}"
 zarr_dir="./data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
 meta_path="./data/${task_name}-${task_config}-${expert_data_num}${output_suffix}_meta.json"
 
 if [ ! -d "${zarr_dir}" ]; then
-    bash process_data_semantic_pointwise.sh "${task_name}" "${task_config}" "${expert_data_num}" "${semantic_ckpt_A}" "${semantic_ckpt_B}" "${semantic_device}" "${object_placeholders}" "${semantic_point_num}"
+    bash process_data_semantic_pointwise.sh "${task_name}" "${task_config}" "${expert_data_num}" "${semantic_ckpt_A}" "${semantic_ckpt_B}" "${semantic_device}" "${object_placeholders}" "${semantic_point_num}" "${point_cloud_num}" "${output_suffix}"
 fi
 
 if [ -f "${meta_path}" ]; then
@@ -40,13 +45,14 @@ fi
 DEBUG=False
 save_ckpt=True
 wandb_mode=online
-train_setting="${task_config}-objpc-semantic-pointwise"
+train_setting="${task_config}${output_suffix}"
 exp_name="${task_name}-robot_dp3_semantic_pointwise-train"
 run_dir="data/outputs/${exp_name}_seed${seed}"
 zarr_path="../../../data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
 
 dataset_extra_keys=()
 shape_overrides=()
+shape_overrides+=("task.shape_meta.obs.point_cloud.shape=[${point_cloud_num},6]")
 if [ "${semantic_ckpt_A}" != "none" ] && [ -n "${semantic_ckpt_A}" ]; then
     dataset_extra_keys+=(semantic_point_cloud_A)
     shape_overrides+=("+task.shape_meta.obs.semantic_point_cloud_A.shape=[${semantic_point_num},$((3 + semantic_feat_dim))]")

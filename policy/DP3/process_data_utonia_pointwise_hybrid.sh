@@ -7,6 +7,8 @@ utonia_device=${4:-cuda:0}
 object_placeholders=${5:-\{A\},\{B\}}
 utonia_feature_placeholders=${6:-\{A\},\{B\}}
 utonia_point_num=${7:-128}
+target_num_points=${8:-1024}
+output_suffix=${9:--objpc-utonia-pointwise-hybrid}
 
 python scripts/process_data_utonia_pointwise_hybrid.py \
     "${task_name}" \
@@ -15,4 +17,6 @@ python scripts/process_data_utonia_pointwise_hybrid.py \
     --object_placeholders "${object_placeholders}" \
     --utonia_feature_placeholders "${utonia_feature_placeholders}" \
     --utonia_device "${utonia_device}" \
-    --utonia_num_points "${utonia_point_num}"
+    --utonia_num_points "${utonia_point_num}" \
+    --target_num_points "${target_num_points}" \
+    --output_suffix="${output_suffix}"

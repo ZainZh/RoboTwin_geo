@@ -8,20 +8,27 @@ if [ "${ndf_legacy_shifted}" = true ]; then
     echo "[train_ndf_pointwise_hybrid.sh] detected legacy invocation without explicit ndf_dgcnn_placeholders; treating '${object_placeholders}' as object_placeholders." >&2
 fi
 
-if [ ! -d "./data/${task_name}-${task_config}-${expert_data_num}-objpc-ndf-pointwise-hybrid.zarr" ]; then
-    bash process_data_ndf_pointwise_hybrid.sh "${task_name}" "${task_config}" "${expert_data_num}" "${ndf_ckpt_A}" "${ndf_ckpt_B}" "${ndf_device}" "${ndf_dgcnn_placeholders}" "${object_placeholders}" "${ndf_point_num}"
+point_cloud_suffix=""
+if [ "${point_cloud_num}" != "1024" ]; then
+    point_cloud_suffix="-pc${point_cloud_num}"
+fi
+output_suffix="-objpc-ndf-pointwise-hybrid${point_cloud_suffix}"
+
+if [ ! -d "./data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr" ]; then
+    bash process_data_ndf_pointwise_hybrid.sh "${task_name}" "${task_config}" "${expert_data_num}" "${ndf_ckpt_A}" "${ndf_ckpt_B}" "${ndf_device}" "${ndf_dgcnn_placeholders}" "${object_placeholders}" "${ndf_point_num}" "${point_cloud_num}" "${output_suffix}"
 fi
 
 DEBUG=False
 save_ckpt=True
 wandb_mode=online
-train_setting="${task_config}-objpc-ndf-pointwise-hybrid"
+train_setting="${task_config}${output_suffix}"
 exp_name="${task_name}-robot_dp3_ndf_pointwise_hybrid-train_ndf"
 run_dir="data/outputs/${exp_name}_seed${seed}"
-zarr_path="../../../data/${task_name}-${task_config}-${expert_data_num}-objpc-ndf-pointwise-hybrid.zarr"
+zarr_path="../../../data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
 
 dataset_extra_keys=()
 shape_overrides=()
+shape_overrides+=("task.shape_meta.obs.point_cloud.shape=[${point_cloud_num},6]")
 if [ "${ndf_ckpt_A}" != "none" ] && [ -n "${ndf_ckpt_A}" ]; then
     dataset_extra_keys+=(ndf_point_cloud_A)
     shape_overrides+=("+task.shape_meta.obs.ndf_point_cloud_A.shape=[${ndf_point_num},259]")

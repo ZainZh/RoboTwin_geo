@@ -13,6 +13,11 @@ class TestSemanticHybridTrainingResourceOverrides(unittest.TestCase):
         self.assertIn("val_dataloader.pin_memory=${val_pin_memory}", train_script)
         self.assertIn("training.max_val_steps=${max_val_steps}", train_script)
 
+    def assert_point_cloud_train_overrides(self, train_script: str):
+        self.assertTrue("point_cloud_num=" in train_script or "${point_cloud_num}" in train_script)
+        self.assertIn("point_cloud_suffix", train_script)
+        self.assertIn("task.shape_meta.obs.point_cloud.shape=[${point_cloud_num},6]", train_script)
+
     def test_semantic_hybrid_train_script_exposes_dataloader_resource_overrides(self):
         train_script = (REPO_ROOT / "policy" / "DP3" / "train_semantic_pointwise_hybrid.sh").read_text(
             encoding="utf-8"
@@ -23,6 +28,7 @@ class TestSemanticHybridTrainingResourceOverrides(unittest.TestCase):
         self.assertIn("val_pin_memory=${20:-false}", train_script)
         self.assertIn("max_val_steps=${21:-2}", train_script)
         self.assert_resource_overrides(train_script)
+        self.assert_point_cloud_train_overrides(train_script)
 
     def test_semantic_hybrid_train_script_uses_meta_feature_placeholders(self):
         train_script = (REPO_ROOT / "policy" / "DP3" / "train_semantic_pointwise_hybrid.sh").read_text(
@@ -54,6 +60,7 @@ class TestSemanticHybridTrainingResourceOverrides(unittest.TestCase):
             with self.subTest(script=name):
                 train_script = (REPO_ROOT / "policy" / "DP3" / name).read_text(encoding="utf-8")
                 self.assert_resource_overrides(train_script)
+                self.assert_point_cloud_train_overrides(train_script)
 
     def test_base_dp3_train_wrappers_pass_resource_args_to_policy_helpers(self):
         train_script = (REPO_ROOT / "policy" / "DP3" / "train.sh").read_text(encoding="utf-8")
@@ -69,6 +76,8 @@ class TestSemanticHybridTrainingResourceOverrides(unittest.TestCase):
             self.assertIn("pin_memory=${8:-true}", script)
             self.assertIn("val_pin_memory=${9:-false}", script)
             self.assertIn("max_val_steps=${10:-2}", script)
+            self.assertIn("point_cloud_num=${11:-1024}", script)
+            self.assertIn("point_cloud_suffix", script)
 
         for script in (helper_script, helper_rgb_script):
             self.assertIn("dataloader_num_workers=${8:-4}", script)
@@ -77,6 +86,8 @@ class TestSemanticHybridTrainingResourceOverrides(unittest.TestCase):
             self.assertIn("val_pin_memory=${11:-false}", script)
             self.assertIn("max_val_steps=${12:-2}", script)
             self.assert_resource_overrides(script)
+            self.assertIn("point_cloud_num=${13:-1024}", script)
+            self.assertIn("task.shape_meta.obs.point_cloud.shape=[${point_cloud_num},6]", script)
 
     def test_ndf_arg_utils_parses_resource_defaults(self):
         helper = (REPO_ROOT / "policy" / "DP3" / "ndf_pointwise_arg_utils.sh").read_text(encoding="utf-8")
@@ -86,6 +97,46 @@ class TestSemanticHybridTrainingResourceOverrides(unittest.TestCase):
         self.assertIn('pin_memory="${args[16]:-true}"', helper)
         self.assertIn('val_pin_memory="${args[17]:-false}"', helper)
         self.assertIn('max_val_steps="${args[18]:-2}"', helper)
+        self.assertIn('point_cloud_num="${args[19]:-1024}"', helper)
+
+    def test_preprocess_wrappers_forward_main_point_cloud_count_and_suffix(self):
+        script_names = [
+            "process_data.sh",
+            "process_data_objpc.sh",
+            "process_data_objpc_actorseg.sh",
+            "process_data_ndf.sh",
+            "process_data_ndf_pointwise.sh",
+            "process_data_ndf_pointwise_hybrid.sh",
+            "process_data_ndf_pointwise_hybrid_feat5000.sh",
+            "process_data_ndf_pointwise_hybrid_interact.sh",
+            "process_data_ndf_pointwise_actorseg_hybrid.sh",
+            "process_data_semantic_pointwise.sh",
+            "process_data_semantic_pointwise_hybrid.sh",
+            "process_data_semantic_pointwise_hybrid_feat5000.sh",
+            "process_data_semantic_pointwise_actorseg_hybrid.sh",
+            "process_data_utonia_pointwise_hybrid.sh",
+        ]
+        for name in script_names:
+            with self.subTest(script=name):
+                process_script = (REPO_ROOT / "policy" / "DP3" / name).read_text(encoding="utf-8")
+                self.assertIn("target_num_points", process_script)
+                self.assertIn("output_suffix", process_script)
+                self.assertIn("--target_num_points", process_script)
+                self.assertIn("--output_suffix", process_script)
+                self.assertIn('--output_suffix="${output_suffix}"', process_script)
+                self.assertNotIn('--output_suffix "${output_suffix}"', process_script)
+
+    def test_deploy_policy_applies_eval_point_cloud_num_override(self):
+        deploy_policy = (REPO_ROOT / "policy" / "DP3" / "deploy_policy.py").read_text(encoding="utf-8")
+
+        self.assertIn('usr_args.get("point_cloud_num"', deploy_policy)
+        self.assertIn("cfg.task.shape_meta.obs.point_cloud.shape = [point_cloud_num, point_cloud_dim]", deploy_policy)
+        self.assertIn("target_num_points = point_cloud_num", deploy_policy)
+
+    def test_objpc_train_fails_fast_when_preprocess_fails(self):
+        train_script = (REPO_ROOT / "policy" / "DP3" / "train_objpc.sh").read_text(encoding="utf-8")
+
+        self.assertIn("set -euo pipefail", train_script)
 
 
 if __name__ == "__main__":

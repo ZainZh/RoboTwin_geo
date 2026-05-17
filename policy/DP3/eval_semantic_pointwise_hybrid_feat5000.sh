@@ -13,7 +13,12 @@ semantic_device=${9:-cuda:0}
 object_placeholders=${10:-\{A\},\{B\}}
 checkpoint_num=${11:-3000}
 semantic_point_num=${12:-5000}
-output_suffix="-objpc-semantic-pointwise-hybrid-feat${semantic_point_num}"
+point_cloud_num=${13:-1024}
+point_cloud_suffix=""
+if [ "${point_cloud_num}" != "1024" ]; then
+    point_cloud_suffix="-pc${point_cloud_num}"
+fi
+output_suffix="-objpc-semantic-pointwise-hybrid-feat${semantic_point_num}${point_cloud_suffix}"
 ckpt_setting="${ckpt_setting_base}${output_suffix}"
 
 meta_path="./data/${task_name}-${task_config}-${expert_data_num}${output_suffix}_meta.json"
@@ -55,4 +60,5 @@ python script/eval_policy.py --config policy/${policy_name}/deploy_policy.yml \
     --object_placeholders "${object_placeholders}" \
     --checkpoint_num ${checkpoint_num} \
     --semantic_point_num ${semantic_point_num} \
+    --point_cloud_num ${point_cloud_num} \
     "${extra_overrides[@]}"

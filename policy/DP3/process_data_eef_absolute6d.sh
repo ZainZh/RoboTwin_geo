@@ -9,11 +9,15 @@ eef_calibration_path=${4:-${repo_root}/script/real_zed_collection/calibration/th
 left_robot_camera_calibration_path=${5:-${repo_root}/script/real_zed_collection/calibration/robot_camera_apriltag_left_global.yaml}
 right_robot_camera_calibration_path=${6:-${repo_root}/script/real_zed_collection/calibration/robot_camera_apriltag_right_global.yaml}
 eef_frame_mode=${7:-right_base}
+target_num_points=${8:-1024}
+output_suffix=${9:--eef-absolute6d-rightbase}
 
 python scripts/process_data_eef_absolute6d.py \
     "${task_name}" \
     "${task_config}" \
     "${expert_data_num}" \
+    --target_num_points "${target_num_points}" \
+    --output_suffix="${output_suffix}" \
     --eef_calibration_path "${eef_calibration_path}" \
     --eef_frame_mode "${eef_frame_mode}" \
     --left_robot_camera_calibration_path "${left_robot_camera_calibration_path}" \

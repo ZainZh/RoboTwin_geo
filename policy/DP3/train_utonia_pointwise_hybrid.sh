@@ -19,7 +19,12 @@ val_dataloader_num_workers=${16:-2}
 pin_memory=${17:-true}
 val_pin_memory=${18:-false}
 max_val_steps=${19:-2}
-output_suffix="-objpc-utonia-pointwise-hybrid"
+point_cloud_num=${20:-1024}
+point_cloud_suffix=""
+if [ "${point_cloud_num}" != "1024" ]; then
+    point_cloud_suffix="-pc${point_cloud_num}"
+fi
+output_suffix="-objpc-utonia-pointwise-hybrid${point_cloud_suffix}"
 zarr_dir="./data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
 meta_path="./data/${task_name}-${task_config}-${expert_data_num}${output_suffix}_meta.json"
 
@@ -31,7 +36,9 @@ if [ ! -d "${zarr_dir}" ]; then
         "${utonia_device}" \
         "${object_placeholders}" \
         "${utonia_feature_placeholders}" \
-        "${utonia_point_num}"
+        "${utonia_point_num}" \
+        "${point_cloud_num}" \
+        "${output_suffix}"
 fi
 
 if [ -f "${meta_path}" ]; then
@@ -58,6 +65,7 @@ mapfile -t selected_utonia_placeholders < <(python -c 'import sys; print("\n".jo
 
 dataset_extra_keys=()
 shape_overrides=()
+shape_overrides+=("task.shape_meta.obs.point_cloud.shape=[${point_cloud_num},6]")
 for placeholder in "${selected_utonia_placeholders[@]}"; do
     key="utonia_point_cloud_$(echo "${placeholder}" | tr -d '{}')"
     dataset_extra_keys+=("${key}")

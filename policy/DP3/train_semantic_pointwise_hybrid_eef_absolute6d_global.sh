@@ -9,7 +9,7 @@ semantic_ckpt_A=${6:-none}
 semantic_ckpt_B=${7:-none}
 semantic_device=${8:-cuda:0}
 object_placeholders=${9:-\{A\},\{B\}}
-semantic_point_num=${10:-1024}
+semantic_point_num=${10:-256}
 semantic_feat_dim=${11:-128}
 batch_size=${12:-256}
 val_batch_size=${13:-${batch_size}}
@@ -21,13 +21,18 @@ val_dataloader_num_workers=${18:-2}
 pin_memory=${19:-true}
 val_pin_memory=${20:-false}
 max_val_steps=${21:-2}
-output_suffix="-objpc-semantic-pointwise-hybrid-eef-absolute6d-global"
+point_cloud_num=${22:-1024}
+point_cloud_suffix=""
+if [ "${point_cloud_num}" != "1024" ]; then
+    point_cloud_suffix="-pc${point_cloud_num}"
+fi
+output_suffix="-objpc-semantic-pointwise-hybrid-eef-absolute6d-global${point_cloud_suffix}"
 zarr_dir="./data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
 meta_path="./data/${task_name}-${task_config}-${expert_data_num}${output_suffix}_meta.json"
 semantic_feature_placeholders=""
 
 if [ ! -d "${zarr_dir}" ]; then
-    bash process_data_semantic_pointwise_hybrid_eef_absolute6d_global.sh "${task_name}" "${task_config}" "${expert_data_num}" "${semantic_ckpt_A}" "${semantic_ckpt_B}" "${semantic_device}" "${object_placeholders}" "${semantic_point_num}"
+    bash process_data_semantic_pointwise_hybrid_eef_absolute6d_global.sh "${task_name}" "${task_config}" "${expert_data_num}" "${semantic_ckpt_A}" "${semantic_ckpt_B}" "${semantic_device}" "${object_placeholders}" "${semantic_point_num}" "" "" "" reference_camera "${point_cloud_num}" "${output_suffix}"
 fi
 
 if [ -f "${meta_path}" ]; then
@@ -50,13 +55,14 @@ has_semantic_feature_placeholder() {
 DEBUG=False
 save_ckpt=True
 wandb_mode=online
-train_setting="${task_config}-objpc-semantic-pointwise-hybrid-eef-absolute6d-global"
+train_setting="${task_config}${output_suffix}"
 exp_name="${task_name}-robot_dp3_semantic_pointwise_hybrid_eef_absolute6d_global-train"
 run_dir="data/outputs/${exp_name}_seed${seed}"
 zarr_path="../../../data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
 
 dataset_extra_keys=()
 shape_overrides=()
+shape_overrides+=("task.shape_meta.obs.point_cloud.shape=[${point_cloud_num},6]")
 if { [ "${semantic_ckpt_A}" != "none" ] && [ -n "${semantic_ckpt_A}" ]; } || has_semantic_feature_placeholder "{A}"; then
     dataset_extra_keys+=(semantic_point_cloud_A)
     shape_overrides+=("+task.shape_meta.obs.semantic_point_cloud_A.shape=[${semantic_point_num},$((3 + semantic_feat_dim))]")

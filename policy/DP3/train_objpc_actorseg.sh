@@ -17,8 +17,14 @@ val_dataloader_num_workers=${9:-2}
 pin_memory=${10:-true}
 val_pin_memory=${11:-false}
 max_val_steps=${12:-2}
+point_cloud_num=${13:-1024}
+point_cloud_suffix=""
+if [ "${point_cloud_num}" != "1024" ]; then
+    point_cloud_suffix="-pc${point_cloud_num}"
+fi
 
-zarr_dir="./data/${task_name}-${task_config}-${expert_data_num}-objpc-actorseg.zarr"
+output_suffix="-objpc-actorseg${point_cloud_suffix}"
+zarr_dir="./data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
 
 zarr_complete() {
     local root="$1"
@@ -38,16 +44,18 @@ else
         "${task_config}" \
         "${expert_data_num}" \
         "${object_placeholders}" \
-        "${actorseg_camera_names}"
+        "${actorseg_camera_names}" \
+        "${point_cloud_num}" \
+        "${output_suffix}"
 fi
 
 DEBUG=False
 save_ckpt=True
 wandb_mode=online
-train_setting="${task_config}-objpc-actorseg"
+train_setting="${task_config}${output_suffix}"
 exp_name="${task_name}-robot_dp3_objpc-train_objpc_actorseg"
 run_dir="data/outputs/${exp_name}_seed${seed}"
-zarr_path="../../../data/${task_name}-${task_config}-${expert_data_num}-objpc-actorseg.zarr"
+zarr_path="../../../data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
 
 cd 3D-Diffusion-Policy
 
@@ -69,4 +77,5 @@ python train_dp3.py --config-name=robot_dp3_objpc_actorseg.yaml \
     val_dataloader.num_workers=${val_dataloader_num_workers} \
     val_dataloader.pin_memory=${val_pin_memory} \
     training.max_val_steps=${max_val_steps} \
+    task.shape_meta.obs.point_cloud.shape=[${point_cloud_num},6] \
     task.dataset.zarr_path=${zarr_path}

@@ -3,7 +3,7 @@
 policy_name=DP3
 task_name=${1}
 task_config=${2}
-ckpt_setting=${3}
+ckpt_setting_base=${3}
 expert_data_num=${4}
 seed=${5}
 gpu_id=${6}
@@ -14,8 +14,14 @@ object_placeholders=${10:-\{A\},\{B\}}
 checkpoint_num=${11:-3000}
 semantic_point_num=${12:-128}
 actorseg_camera_names=${13:-head_camera,front_camera}
+point_cloud_num=${14:-1024}
+point_cloud_suffix=""
+if [ "${point_cloud_num}" != "1024" ]; then
+    point_cloud_suffix="-pc${point_cloud_num}"
+fi
+ckpt_setting="${ckpt_setting_base}${point_cloud_suffix}"
 
-meta_path="./data/${task_name}-${task_config}-${expert_data_num}-objpc-actorseg-semantic-pointwise-hybrid_meta.json"
+meta_path="./data/${task_name}-${task_config}-${expert_data_num}-objpc-actorseg-semantic-pointwise-hybrid${point_cloud_suffix}_meta.json"
 
 if [ -f "${meta_path}" ]; then
     mapfile -t semantic_meta < <(python -c 'import json,sys; m=json.load(open(sys.argv[1], "r", encoding="utf-8")); print(int(m["semantic_num_points"]))' "${meta_path}")
@@ -55,4 +61,5 @@ python script/eval_policy.py --config policy/${policy_name}/deploy_policy.yml \
     --checkpoint_num ${checkpoint_num} \
     --semantic_point_num ${semantic_point_num} \
     --actorseg_camera_names "${actorseg_camera_names}" \
+    --point_cloud_num ${point_cloud_num} \
     "${extra_overrides[@]}"

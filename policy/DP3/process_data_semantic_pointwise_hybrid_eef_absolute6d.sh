@@ -14,6 +14,8 @@ eef_calibration_path=${9:-${repo_root}/script/real_zed_collection/calibration/th
 left_robot_camera_calibration_path=${10:-${repo_root}/script/real_zed_collection/calibration/robot_camera_apriltag_left_global.yaml}
 right_robot_camera_calibration_path=${11:-${repo_root}/script/real_zed_collection/calibration/robot_camera_apriltag_right_global.yaml}
 eef_frame_mode=${12:-right_base}
+target_num_points=${13:-1024}
+output_suffix=${14:--objpc-semantic-pointwise-hybrid-eef-absolute6d-rightbase}
 
 extra_args=()
 if [ "${semantic_ckpt_A}" != "none" ] && [ -n "${semantic_ckpt_A}" ]; then
@@ -30,6 +32,8 @@ python scripts/process_data_semantic_pointwise_hybrid_eef_absolute6d.py \
     --object_placeholders "${object_placeholders}" \
     --semantic_device "${semantic_device}" \
     --semantic_num_points "${semantic_point_num}" \
+    --target_num_points "${target_num_points}" \
+    --output_suffix="${output_suffix}" \
     --eef_calibration_path "${eef_calibration_path}" \
     --eef_frame_mode "${eef_frame_mode}" \
     --left_robot_camera_calibration_path "${left_robot_camera_calibration_path}" \

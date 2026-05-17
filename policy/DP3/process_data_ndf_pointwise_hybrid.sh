@@ -9,6 +9,8 @@ ndf_device=${6:-cuda:0}
 ndf_dgcnn_placeholders=${7:-}
 object_placeholders=${8:-\{A\},\{B\}}
 ndf_point_num=${9:-128}
+target_num_points=${10:-1024}
+output_suffix=${11:--objpc-ndf-pointwise-hybrid}
 
 extra_args=()
 if [ "${ndf_ckpt_A}" != "none" ] && [ -n "${ndf_ckpt_A}" ]; then
@@ -28,4 +30,6 @@ python scripts/process_data_ndf_pointwise_hybrid.py \
     --object_placeholders "${object_placeholders}" \
     --ndf_device "${ndf_device}" \
     --ndf_num_points "${ndf_point_num}" \
+    --target_num_points "${target_num_points}" \
+    --output_suffix="${output_suffix}" \
     "${extra_args[@]}"

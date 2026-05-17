@@ -3,7 +3,7 @@
 policy_name=DP3
 task_name=${1}
 task_config=${2}
-ckpt_setting=${3}
+ckpt_setting_base=${3}
 expert_data_num=${4}
 seed=${5}
 gpu_id=${6}
@@ -15,6 +15,12 @@ object_placeholders=${11:-\{A\},\{B\}}
 checkpoint_num=${12:-3000}
 ndf_point_num=${13:-128}
 actorseg_camera_names=${14:-head_camera,front_camera}
+point_cloud_num=${15:-1024}
+point_cloud_suffix=""
+if [ "${point_cloud_num}" != "1024" ]; then
+    point_cloud_suffix="-pc${point_cloud_num}"
+fi
+ckpt_setting="${ckpt_setting_base}${point_cloud_suffix}"
 
 extra_overrides=()
 if [ "${ndf_ckpt_A}" != "none" ] && [ -n "${ndf_ckpt_A}" ]; then
@@ -50,4 +56,5 @@ python script/eval_policy.py --config policy/${policy_name}/deploy_policy.yml \
     --checkpoint_num ${checkpoint_num} \
     --ndf_point_num ${ndf_point_num} \
     --actorseg_camera_names "${actorseg_camera_names}" \
+    --point_cloud_num ${point_cloud_num} \
     "${extra_overrides[@]}"

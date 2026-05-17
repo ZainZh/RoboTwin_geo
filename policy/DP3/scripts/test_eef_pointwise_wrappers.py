@@ -76,10 +76,37 @@ class TestEefPointwiseWrappers(unittest.TestCase):
 
         self.assertIn("eef_frame_mode=${12:-reference_camera}", semantic_process)
         self.assertIn('process_data_semantic_pointwise_hybrid_eef_absolute6d_global.py', semantic_process)
-        self.assertIn('output_suffix="-objpc-semantic-pointwise-hybrid-eef-absolute6d-global"', semantic_train)
+        self.assertIn('output_suffix="-objpc-semantic-pointwise-hybrid-eef-absolute6d-global${point_cloud_suffix}"', semantic_train)
+        self.assertIn("task.shape_meta.obs.point_cloud.shape=[${point_cloud_num},6]", semantic_train)
         self.assertIn("ckpt_setting=\"${task_config}-objpc-semantic-pointwise-hybrid-eef-absolute6d-global\"", semantic_infer)
         self.assertIn("output_frame=${12:-source}", semantic_infer)
         self.assertIn("eef_frame_mode=${13:-reference_camera}", semantic_infer)
+
+    def test_train_policy_accepts_explicit_zarr_path_override(self):
+        train_policy = (SCRIPT_ROOT.parent / "scripts" / "train_policy.sh").read_text(encoding="utf-8")
+
+        self.assertIn("zarr_path=${14:-}", train_policy)
+        self.assertIn('dataset_overrides=()', train_policy)
+        self.assertIn('task.dataset.zarr_path="${zarr_path}"', train_policy)
+        self.assertIn('"${dataset_overrides[@]}"', train_policy)
+
+    def test_objpc_eef_train_wrappers_pass_explicit_zarr_path(self):
+        for script_name, suffix in [
+            ("train_objpc_eef_absolute6d.sh", "-objpc-eef-absolute6d-rightbase"),
+            ("train_objpc_eef_absolute6d_global.sh", "-objpc-eef-absolute6d-global"),
+        ]:
+            with self.subTest(script_name=script_name):
+                wrapper = (SCRIPT_ROOT.parent / script_name).read_text(encoding="utf-8")
+
+                self.assertIn(
+                    f'output_suffix="{suffix}${{point_cloud_suffix}}"',
+                    wrapper,
+                )
+                self.assertIn(
+                    'zarr_path="../../../data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"',
+                    wrapper,
+                )
+                self.assertIn('"${zarr_path}"', wrapper)
 
 
 if __name__ == "__main__":

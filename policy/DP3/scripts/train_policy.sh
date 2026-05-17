@@ -20,6 +20,12 @@ val_dataloader_num_workers=${9:-2}
 pin_memory=${10:-true}
 val_pin_memory=${11:-false}
 max_val_steps=${12:-2}
+point_cloud_num=${13:-1024}
+zarr_path=${14:-}
+dataset_overrides=()
+if [ -n "${zarr_path}" ]; then
+    dataset_overrides+=(task.dataset.zarr_path="${zarr_path}")
+fi
 echo -e "\033[33mgpu id (to use): ${gpu_id}\033[0m"
 
 
@@ -54,4 +60,6 @@ python train_dp3.py --config-name=${config_name}.yaml \
                             dataloader.pin_memory=${pin_memory} \
                             val_dataloader.num_workers=${val_dataloader_num_workers} \
                             val_dataloader.pin_memory=${val_pin_memory} \
-                            training.max_val_steps=${max_val_steps}
+                            training.max_val_steps=${max_val_steps} \
+                            task.shape_meta.obs.point_cloud.shape=[${point_cloud_num},6] \
+                            "${dataset_overrides[@]}"

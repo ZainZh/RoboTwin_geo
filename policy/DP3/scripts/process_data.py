@@ -10,6 +10,7 @@ import cv2
 import h5py
 
 from eef_action_utils import add_eef_preprocess_args, eef_arrays_for_episode, validate_eef_dataset_frame
+from object_pointcloud_utils import resample_point_cloud
 
 
 def load_hdf5(dataset_path):
@@ -47,6 +48,7 @@ def main(argv=None):
         help="Number of episodes to process (e.g., 50)",
     )
     parser.add_argument("--output_suffix", default="")
+    parser.add_argument("--target_num_points", type=int, default=1024)
     add_eef_preprocess_args(parser)
     args = parser.parse_args(argv)
 
@@ -102,7 +104,7 @@ def main(argv=None):
 
         for j in range(0, left_gripper_all.shape[0]):
 
-            pointcloud = pointcloud_all[j]
+            pointcloud = resample_point_cloud(pointcloud_all[j], args.target_num_points)
             joint_state = vector_all[j]
 
             if j != left_gripper_all.shape[0] - 1:

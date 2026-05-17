@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/ndf_pointwise_arg_utils.sh"
 raw_args=("$@")
 normalize_ndf_train_args "$@"
-actorseg_camera_names="${raw_args[19]:-head_camera,front_camera}"
+actorseg_camera_names="${raw_args[20]:-head_camera,front_camera}"
 
 if [ -n "${raw_args[11]:-}" ] && ! looks_like_integer_arg "${raw_args[11]}" ]; then
     actorseg_camera_names="${raw_args[11]}"
@@ -21,7 +21,7 @@ if [ -n "${raw_args[11]:-}" ] && ! looks_like_integer_arg "${raw_args[11]}" ]; t
 fi
 
 if [ "${ndf_legacy_shifted}" = true ]; then
-    actorseg_camera_names="${raw_args[17]:-head_camera,front_camera}"
+    actorseg_camera_names="${raw_args[19]:-head_camera,front_camera}"
     if [ -n "${raw_args[10]:-}" ] && ! looks_like_integer_arg "${raw_args[10]}" ]; then
         actorseg_camera_names="${raw_args[10]}"
     fi
@@ -30,7 +30,12 @@ fi
 
 cd "${SCRIPT_DIR}"
 
-zarr_dir="./data/${task_name}-${task_config}-${expert_data_num}-objpc-actorseg-ndf-pointwise-hybrid.zarr"
+point_cloud_suffix=""
+if [ "${point_cloud_num}" != "1024" ]; then
+    point_cloud_suffix="-pc${point_cloud_num}"
+fi
+output_suffix="-objpc-actorseg-ndf-pointwise-hybrid${point_cloud_suffix}"
+zarr_dir="./data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
 
 zarr_complete() {
     local root="$1"
@@ -55,19 +60,22 @@ else
         "${ndf_dgcnn_placeholders}" \
         "${object_placeholders}" \
         "${ndf_point_num}" \
+        "${point_cloud_num}" \
+        "${output_suffix}" \
         "${actorseg_camera_names}"
 fi
 
 DEBUG=False
 save_ckpt=True
 wandb_mode=online
-train_setting="${task_config}-objpc-actorseg-ndf-pointwise-hybrid"
+train_setting="${task_config}${output_suffix}"
 exp_name="${task_name}-robot_dp3_objpc_actorseg_ndf_pointwise_hybrid-train_ndf"
 run_dir="data/outputs/${exp_name}_seed${seed}"
-zarr_path="../../../data/${task_name}-${task_config}-${expert_data_num}-objpc-actorseg-ndf-pointwise-hybrid.zarr"
+zarr_path="../../../data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
 
 dataset_extra_keys=()
 shape_overrides=()
+shape_overrides+=("task.shape_meta.obs.point_cloud.shape=[${point_cloud_num},6]")
 if [ "${ndf_ckpt_A}" != "none" ] && [ -n "${ndf_ckpt_A}" ]; then
     dataset_extra_keys+=(ndf_point_cloud_A)
     shape_overrides+=("+task.shape_meta.obs.ndf_point_cloud_A.shape=[${ndf_point_num},259]")

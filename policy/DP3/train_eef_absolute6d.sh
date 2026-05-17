@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 
 task_name=${1}
 task_config=${2}
@@ -10,9 +11,16 @@ val_dataloader_num_workers=${7:-2}
 pin_memory=${8:-true}
 val_pin_memory=${9:-false}
 max_val_steps=${10:-2}
+point_cloud_num=${11:-1024}
+point_cloud_suffix=""
+if [ "${point_cloud_num}" != "1024" ]; then
+    point_cloud_suffix="-pc${point_cloud_num}"
+fi
+output_suffix="-eef-absolute6d-rightbase${point_cloud_suffix}"
+zarr_path="../../../data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
 
-if [ ! -d "./data/${task_name}-${task_config}-${expert_data_num}-eef-absolute6d-rightbase.zarr" ]; then
-    bash process_data_eef_absolute6d.sh "${task_name}" "${task_config}" "${expert_data_num}"
+if [ ! -d "./data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr" ]; then
+    bash process_data_eef_absolute6d.sh "${task_name}" "${task_config}" "${expert_data_num}" "" "" "" right_base "${point_cloud_num}" "${output_suffix}"
 fi
 
-bash scripts/train_policy.sh robot_dp3_eef_absolute6d "${task_name}" "${task_config}-eef-absolute6d-rightbase" "${expert_data_num}" train "${seed}" "${gpu_id}" "${dataloader_num_workers}" "${val_dataloader_num_workers}" "${pin_memory}" "${val_pin_memory}" "${max_val_steps}"
+bash scripts/train_policy.sh robot_dp3_eef_absolute6d "${task_name}" "${task_config}${output_suffix}" "${expert_data_num}" train "${seed}" "${gpu_id}" "${dataloader_num_workers}" "${val_dataloader_num_workers}" "${pin_memory}" "${val_pin_memory}" "${max_val_steps}" "${point_cloud_num}" "${zarr_path}"
