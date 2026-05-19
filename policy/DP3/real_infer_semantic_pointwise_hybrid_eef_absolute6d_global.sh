@@ -3,15 +3,16 @@
 task_name=${1:-grasp_mug}
 task_config=${2:-demo_real_zed_sam2_objpc_global}
 ckpt_setting="${task_config}-objpc-semantic-pointwise-hybrid-eef-absolute6d-global"
-expert_data_num=${3:-32}
+expert_data_num=${3:-50}
 seed=${4:-0}
 gpu_id=${5:-0}
 semantic_ckpt_A=${6:-${SEMANTIC_CKPT_A:-${HOME}/DataModel/semantic/mug.pt}}
-semantic_ckpt_B=${7:-${SEMANTIC_CKPT_B:-none}}
+#semantic_ckpt_B=${7:-${SEMANTIC_CKPT_B:-${HOME}/DataModel/semantic/Teapot_old.pt}}
+semantic_ckpt_B=${7:-${SEMANTIC_CKPT_B::-none}}
 semantic_device=${8:-cuda:0}
 object_placeholders=${9:-\{A\},\{B\}}
 checkpoint_num=${10:-3000}
-semantic_point_num=${11:-1024}
+semantic_point_num=${11:-256}
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(cd "${script_dir}/../.." && pwd)

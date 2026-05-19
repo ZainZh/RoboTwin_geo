@@ -2,27 +2,36 @@
 
 task_name=${1:-grasp_mug}
 task_config=${2:-demo_real_zed_sam2_objpc}
-expert_data_num=${3:-49}
+#ckpt_setting="${task_config}_global-objpc-semantic-pointwise-hybrid"
+ckpt_setting="${task_config}_global-objpc"
+expert_data_num=${3:-50}
 seed=${4:-0}
 gpu_id=${5:-0}
-checkpoint_num=${6:-3000}
+#semantic_ckpt_A=${6:-${SEMANTIC_CKPT_A:-${HOME}/DataModel/semantic/mug.pt}}
+semantic_ckpt_A=${6:-${SEMANTIC_CKPT_A:-none}}
+#semantic_ckpt_B=${7:-${SEMANTIC_CKPT_B::-${HOME}/DataModel/semantic/Teapot_old.pt}}
+semantic_ckpt_B=${7:-${SEMANTIC_CKPT_B::-none}}
+semantic_device=${8:-cuda:0}
+object_placeholders=${9:-\{A\},\{B\}}
+checkpoint_num=${10:-3000}
+semantic_point_num=${11:-256}
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(cd "${script_dir}/../.." && pwd)
 source "${script_dir}/real_infer_arg_utils.sh"
 
-if is_real_zed_output_frame_shorthand "${7:-}"; then
-    output_frame_arg=$(normalize_real_zed_output_frame_token "${7:-auto}")
-    robot_camera_calibration_path_arg=$(normalize_real_zed_calibration_token "${8:-auto}")
-    extra_flags=("${@:9}")
-elif [[ "${7:-}" == --* ]]; then
+if is_real_zed_output_frame_shorthand "${12:-}"; then
+    output_frame_arg=$(normalize_real_zed_output_frame_token "${12:-auto}")
+    robot_camera_calibration_path_arg=$(normalize_real_zed_calibration_token "${13:-auto}")
+    extra_flags=("${@:14}")
+elif [[ "${12:-}" == --* ]]; then
     output_frame_arg=auto
     robot_camera_calibration_path_arg=auto
-    extra_flags=("${@:7}")
+    extra_flags=("${@:12}")
 else
-    output_frame_arg=${7:-auto}
-    robot_camera_calibration_path_arg=${8:-auto}
-    extra_flags=("${@:9}")
+    output_frame_arg=${12:-auto}
+    robot_camera_calibration_path_arg=${13:-auto}
+    extra_flags=("${@:14}")
 fi
 
 output_frame=$(resolve_real_zed_output_frame "${repo_root}" "${task_name}" "${task_config}" "${output_frame_arg}")
@@ -50,14 +59,20 @@ cd "${repo_root}"
 
 PYTHONWARNINGS=ignore::UserWarning \
 python script/real_zed_inference/real_dp3_inference.py \
-    --mode baseline \
+    --mode semantic_pointwise_hybrid \
     --task_name "${task_name}" \
     --task_config "${task_config}" \
-    --ckpt_setting "${task_config}" \
+    --ckpt_setting "${ckpt_setting}" \
     --expert_data_num "${expert_data_num}" \
     --seed "${seed}" \
     --gpu_id "${gpu_id}" \
     --checkpoint_num "${checkpoint_num}" \
+    --semantic_ckpt_A "${semantic_ckpt_A}" \
+    --semantic_ckpt_B "${semantic_ckpt_B}" \
+    --semantic_device "${semantic_device}" \
+    --semantic_point_num "${semantic_point_num}" \
+    --object_placeholders "${object_placeholders}" \
+    --enable_sam2_objpc \
     --profile_timing \
     --execute \
     --async_control \
@@ -65,8 +80,8 @@ python script/real_zed_inference/real_dp3_inference.py \
     --control_hz 5 \
     --servo_j_t 0.10 \
     --servo_j_gain 200 \
-    --max_executed_joint_delta 0.012 \
-    --max_executed_joint_delta_change 0.003 \
+    --max_executed_joint_delta 0.015 \
+    --max_executed_joint_delta_change 0.004 \
     --max_executed_gripper_delta 0.02 \
     --max_executed_gripper_delta_change 0.06 \
     --action_diagnostics_csv outputs/real_zed_inference/action_diag_async.csv\

@@ -47,3 +47,5 @@ policy/DP3/checkpoints
 outputs/real_zed_collection/robot_camera_calibration/20260430_181928_right_global/
 
 outputs/real_zed_collection/robot_camera_calibration/20260430_182143_right_global/
+
+*.csv
