@@ -6,7 +6,7 @@ Design a real-robot data collection pipeline that keeps the robot-control behavi
 
 ## Current Phase
 
-DP3 EEF training wrappers need explicit dataset zarr-path forwarding
+Real DP3 EEF IK failure diagnostics
 
 ## Phases
 
@@ -317,6 +317,33 @@ DP3 EEF training wrappers need explicit dataset zarr-path forwarding
 - [x] Update EEF baseline/objpc train wrappers to pass their generated zarr path explicitly.
 - [x] Add regression coverage for the path forwarding contract.
 - [x] Verify targeted tests, shell syntax, mock Hydra arguments, and whitespace.
+- **Status:** complete
+
+### Phase 33: Raw RGB Episode Export Utility
+- [x] Add a standalone script to export saved raw real-ZED RGB images for one task/episode.
+- [x] Support episode index, timestamp/name, or full episode directory path.
+- [x] Support camera filtering, frame stride, max frame limit, and `rgb`/`full_rgb_debug` key selection.
+- [x] Save per-camera PNG files plus an export summary JSON.
+- [x] Add regression coverage using a synthetic raw episode.
+- [x] Verify targeted test, Python compilation, absolute-path help invocation, and whitespace.
+- **Status:** complete
+
+### Phase 34: Raw Colored Point Cloud Episode Export Utility
+- [x] Add a standalone script matching the raw RGB export task/episode interface.
+- [x] Convert raw `rgb + depth_m + camera_matrix` into colored point clouds.
+- [x] Use per-episode calibration snapshots for fused reference/workspace-frame output.
+- [x] Support fused, per-camera, or both export modes.
+- [x] Support camera filtering, frame stride, max frame limit, depth/RGB key selection, point cap, and xyz crop bounds.
+- [x] Add regression coverage using a synthetic raw episode and calibration snapshot.
+- [x] Verify targeted tests, Python compilation, absolute-path help invocation, and whitespace.
+- **Status:** complete
+
+### Phase 35: Real DP3 EEF IK Failure Diagnostics
+- [x] Trace the EEF inference failure to `policy_actions_to_joint_actions -> env.get_ik`.
+- [x] Confirm xtrainer ZMQ server previously did not return exceptions to the client.
+- [x] Add client-side surfacing for remote robot errors from `get_ik`.
+- [x] Add DP3-side EEF IK failure context including `eef_world` and `eef_base`.
+- [x] Verify xtrainer robot-node tests, real inference action tests, syntax checks, and whitespace.
 - **Status:** complete
 
 ## Decisions Made

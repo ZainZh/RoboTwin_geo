@@ -480,6 +480,44 @@ class RealZedInferencePointcloudTest(unittest.TestCase):
         np.testing.assert_allclose(joint_actions[0, 7:13], np.arange(6, 12, dtype=np.float32) * 0.01)
         self.assertAlmostEqual(float(joint_actions[0, 13]), 0.3, places=6)
 
+    def test_eef_policy_action_reports_target_when_ik_fails(self):
+        from script.real_zed_inference.real_dp3_inference import policy_actions_to_joint_actions
+        from eef_action_utils import eef14_to_action20
+
+        class FakeEnv:
+            def get_ik(self, eef_state):
+                raise ValueError("InverseSolution failed")
+
+        eef14 = np.asarray(
+            [
+                0.1,
+                -0.2,
+                0.3,
+                0.0,
+                0.1,
+                0.0,
+                0.7,
+                -0.1,
+                -0.25,
+                0.35,
+                0.0,
+                -0.1,
+                0.0,
+                0.3,
+            ],
+            dtype=np.float32,
+        )
+        args = argparse.Namespace(action_mode="eef_absolute6d")
+
+        with self.assertRaisesRegex(RuntimeError, "Dobot IK failed.*eef_base.*InverseSolution failed"):
+            policy_actions_to_joint_actions(
+                eef14_to_action20(eef14)[None, :],
+                env=FakeEnv(),
+                args=args,
+                t_world_from_left_base=np.eye(4),
+                t_world_from_right_base=np.eye(4),
+            )
+
     def test_configure_robot_servo_params_calls_robot_env(self):
         from script.real_zed_inference.real_dp3_inference import configure_robot_servo_params
 

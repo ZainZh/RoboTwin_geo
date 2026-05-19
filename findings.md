@@ -814,6 +814,19 @@
   - This is not a missing normal data directory path; it is an empty-path propagation bug in the shared `scripts/train_policy.sh` interface.
   - EEF train wrappers now compute `../../../data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr` and pass it as the shared helper's 14th argument.
   - `scripts/train_policy.sh` and `scripts/train_policy_rgb.sh` now forward that optional path as `task.dataset.zarr_path=...`, so Hydra no longer depends on nested interpolation to find the generated zarr.
+- Real-ZED raw RGB export finding:
+  - Raw collection stores one `.npz` per camera per frame, with `manifest.json` mapping `frames[].cameras[label]` to the relative file names.
+  - The canonical saved image key is `rgb`; when workspace-crop debug full-frame saving was enabled, the optional `full_rgb_debug` key can be exported instead.
+  - Episode selection is safest through manifest-bearing directories under `/media/$USER/Extreme SSD/geo_mani_data/<task>/real_zed_raw`, with numeric episode input treated as a sorted zero-based episode index.
+- Real-ZED raw colored point cloud export finding:
+  - The colored point-cloud exporter uses the same task/episode resolution as the RGB exporter, then reads each frame's raw camera `.npz` files through the manifest.
+  - Fused point clouds require the raw episode's `calibration_snapshot_path`, `workspace_calibration_snapshot_path`, or an explicit `--calibration_path`; per-camera labels are serial-remapped through the manifest by default.
+  - The default output is fused PLY in the calibration reference-camera frame; `--frame_mode workspace` switches to the saved workspace frame when the calibration YAML contains one.
+- Real DP3 EEF IK failure finding:
+  - The failing EEF inference trace occurs after policy inference, during conversion from 20D absolute EEF action to 14D joint action.
+  - `eef_policy_action_to_joint_action(...)` decodes action20 to world-frame EEF pose, transforms it to left/right robot-base poses, then calls `env.get_ik(eef_base)`.
+  - xtrainer's ZMQ robot server previously allowed method exceptions to terminate the request without replying, so a failed Dobot `InverseSolution` could leave the inference client blocked at `env.get_ik`.
+  - The likely underlying causes for the original run are an unreachable predicted EEF target, stale/wrong robot-camera calibration for `reference_camera`, or a mismatch between the EEF training frame and inference frame. The next run will now report the actual `eef_world/eef_base` target and remote IK error.
 - LZ xtrainer EEF-control finding:
   - `include/lz_xtrainer/experiments/run_control.py` defaults `act_eef=True`. During data collection it still servo-follows leader joint commands, but it records the action as an EEF target by calling `agent.act_eef({})`.
   - `DobotAgent.act_eef(...)` converts leader joints to an EEF pose with `dobot_robot.get_fk(joint_actions[:6])`, then appends the leader gripper value. The recorded `control` is therefore `[x,y,z,rx,ry,rz,gripper]` per arm, not a 7D joint action.

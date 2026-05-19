@@ -83,6 +83,14 @@ class XtrainerServoParamsTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             robot.set_servo_params(servo_j_t=0.07, servo_j_gain=1200)
 
+    def test_zmq_robot_error_payload_raises_on_client_side(self):
+        from dobot_control.robots.robot_node import _make_error_payload, _raise_if_remote_error
+
+        payload = _make_error_payload("get_ik", ValueError("InverseSolution failed"))
+
+        with self.assertRaisesRegex(RuntimeError, "Remote robot method get_ik failed.*InverseSolution failed"):
+            _raise_if_remote_error(payload, "get_ik")
+
 
 if __name__ == "__main__":
     unittest.main()

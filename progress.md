@@ -1539,3 +1539,45 @@
   - Verified shell syntax for the touched train helper and EEF wrapper scripts.
   - Verified with a fake `python` capture that `train_policy.sh` now forwards `task.dataset.zarr_path=../../../data/grasp_mug-demo_real_zed_sam2_objpc_global-50-objpc-eef-absolute6d-global.zarr`.
   - Verified `git diff --check`.
+
+### Phase 69: Raw RGB Episode Export Utility
+- **Status:** complete
+- Actions taken:
+  - Added RED coverage for exporting selected-camera raw RGB images from a synthetic real-ZED raw episode.
+  - Added `script/real_zed_collection/export_raw_rgb_images.py`.
+  - The script resolves `task_name + episode` to a raw episode directory, where `episode` can be a zero-based sorted index, an `episode_*` directory name, a bare timestamp, or a full path.
+  - It exports PNG files under per-camera subdirectories and writes `export_summary.json`.
+  - It supports `--camera_labels`, `--frame_stride`, `--max_frames`, and `--rgb_key rgb|full_rgb_debug`.
+  - Verified the targeted export test.
+  - Verified `python -m py_compile script/real_zed_collection/export_raw_rgb_images.py`.
+  - Verified absolute-path `--help` from `/tmp`.
+  - Full `script.test_real_zed_collection_pipeline` currently fails two unrelated DP zarr tests because this environment lacks the `zarr` package.
+  - Verified `git diff --check`.
+
+### Phase 70: Raw Colored Point Cloud Episode Export Utility
+- **Status:** complete
+- Actions taken:
+  - Added RED coverage for exporting a fused colored PLY from a synthetic real-ZED raw episode and calibration snapshot.
+  - Added `script/real_zed_collection/export_raw_colored_pointclouds.py`.
+  - The script shares the RGB exporter's task/episode resolution behavior and supports sorted episode index, episode name/timestamp, or full path.
+  - It converts raw `rgb + depth_m + camera_matrix` to colored point clouds, transforms each camera into the calibration frame, and exports fused/per-camera/both PLY outputs.
+  - It supports `--camera_labels`, `--frame_stride`, `--max_frames`, `--rgb_key`, `--depth_key`, `--point_num`, and xyz crop bounds.
+  - Verified the new colored pointcloud export test.
+  - Verified both RGB and colored pointcloud export tests together.
+  - Verified `python -m py_compile script/real_zed_collection/export_raw_colored_pointclouds.py`.
+  - Verified absolute-path `--help` from `/tmp`.
+  - Verified `git diff --check`.
+
+### Phase 71: Real DP3 EEF IK Failure Diagnostics
+- **Status:** complete
+- Actions taken:
+  - Traced the user's EEF inference stack to `eef_policy_action_to_joint_action(...)` and `env.get_ik(eef_base)`.
+  - Confirmed xtrainer's ZMQ robot server did not return exceptions for failed robot methods, which can make the client appear stuck at `env.get_ik`.
+  - Added RED tests for remote robot error payload handling and for DP3 EEF IK failures reporting the target pose.
+  - Updated `include/xtrainer_clover/dobot_control/robots/robot_node.py` so server-side robot method exceptions are returned as structured errors, and `get_ik` raises them client-side with a 5s receive timeout.
+  - Updated `script/real_zed_inference/real_dp3_inference.py` so EEF IK failures include rounded `eef_world`, `eef_base`, and the underlying exception.
+  - Verified targeted xtrainer and real-inference tests.
+  - Verified full `script.test_xtrainer_servo_params`.
+  - Verified full `script.test_real_zed_inference_actions`.
+  - Verified Python syntax checks for touched files.
+  - Verified `git diff --check`.
