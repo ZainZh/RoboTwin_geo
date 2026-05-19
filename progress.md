@@ -58,6 +58,20 @@
   - `python -m py_compile script/real_zed_inference/real_dp3_inference.py script/test_real_zed_inference_actions.py`
   - `git diff --check`
 
+## 2026-05-19: Real EEF Pose Saving For Training
+- Added tests showing raw collection should preserve measured EEF pose, postprocess should write `/eef_action/base_pose6`, and DP3 EEF training arrays should prefer measured pose over offline FK.
+- Updated `collect_zed_robotwin_raw.py` so `_build_robot_snapshot(...)` captures 12D measured EEF pose from `eef_pose_base` or xtrainer `ee_pos_quat`, and `_save_raw_frame(...)` writes it into `robot_*.npz`.
+- Updated `postprocess_raw_to_robotwin_hdf5.py` to propagate raw `eef_pose_base` into `/eef_action/base_pose6` and mark `eef_pose_source` in scene info.
+- Updated `eef_action_utils.py` so `episode_eef_state_action_arrays(...)` accepts measured base-frame EEF poses, transforms them into the configured training frame, and keeps old offline-FK behavior when measured EEF pose is absent.
+- Updated DP3 loaders (`object_pointcloud_utils.py`, `process_data.py`) so scene, objpc, semantic, and other object-pointcloud based EEF preprocessors can receive `eef_pose_base`.
+- Verified:
+  - `python -m unittest script.test_eef_action_utils`
+  - `python -m unittest script.test_real_zed_collection_pipeline.RealZedCollectionPipelineTest.test_collect_robot_snapshot_preserves_true_eef_pose script.test_real_zed_collection_pipeline.RealZedCollectionPipelineTest.test_postprocess_writes_robotwin_hdf5_from_raw_episode_and_masks script.test_real_zed_collection_pipeline.RealZedCollectionPipelineTest.test_postprocess_can_write_pointclouds_in_left_base_frame`
+  - `python policy/DP3/scripts/test_eef_pointwise_wrappers.py`
+  - `python -m py_compile script/real_zed_collection/collect_zed_robotwin_raw.py script/real_zed_collection/postprocess/postprocess_raw_to_robotwin_hdf5.py policy/DP3/scripts/eef_action_utils.py policy/DP3/scripts/object_pointcloud_utils.py policy/DP3/scripts/process_data.py policy/DP3/scripts/process_data_objpc.py policy/DP3/scripts/process_data_semantic_pointwise.py script/test_real_zed_collection_pipeline.py script/test_eef_action_utils.py`
+  - `git diff --check`
+- Full `python -m unittest script.test_real_zed_collection_pipeline` still fails in this shell because `zarr` is not installed; the failing tests are unrelated DP image preprocess imports.
+
 ## Session: 2026-04-16 (`pour_kettle_mug`)
 
 ### Phase 1: Planning & Test Scope

@@ -66,6 +66,23 @@ class RealZedCollectionPipelineTest(unittest.TestCase):
         self.assertTrue(args.image_quality_check_enabled)
         self.assertTrue(args.preview_before_collection)
 
+    def test_collect_robot_snapshot_preserves_true_eef_pose(self):
+        from script.real_zed_collection.collect_zed_robotwin_raw import _build_robot_snapshot
+
+        joints = np.arange(14, dtype=np.float32)
+        eef_pose = np.arange(12, dtype=np.float32) * 0.01
+
+        snapshot = _build_robot_snapshot(
+            {
+                "joint_positions": joints,
+                "joint_velocities": np.ones((14,), dtype=np.float32),
+                "ee_pos_quat": eef_pose,
+            },
+            action=np.zeros((14,), dtype=np.float32),
+        )
+
+        np.testing.assert_allclose(snapshot["eef_pose_base"], eef_pose)
+
     def test_image_quality_detects_overexposed_frames(self):
         from script.real_zed_collection.collect_zed_robotwin_raw import (
             compute_image_quality_metrics,
@@ -371,7 +388,11 @@ class RealZedCollectionPipelineTest(unittest.TestCase):
             frames = []
             for frame_idx in range(3):
                 robot_path = raw_episode / f"robot_{frame_idx:06d}.npz"
-                np.savez(robot_path, joint_vector=np.full((14,), frame_idx, dtype=np.float32))
+                np.savez(
+                    robot_path,
+                    joint_vector=np.full((14,), frame_idx, dtype=np.float32),
+                    eef_pose_base=np.full((12,), frame_idx + 0.5, dtype=np.float32),
+                )
                 camera_frames = {}
                 for cam_label in ("cam0", "cam1"):
                     rgb = np.zeros((2, 2, 3), dtype=np.uint8)
@@ -428,6 +449,8 @@ class RealZedCollectionPipelineTest(unittest.TestCase):
                 self.assertEqual(root_h5["/observation/cam0/intrinsic_cv"].shape, (3, 3))
                 self.assertEqual(root_h5["/observation/cam1/cam2world_gl"].shape, (4, 4))
                 np.testing.assert_allclose(root_h5["/joint_action/vector"][2], np.full((14,), 2))
+                self.assertEqual(root_h5["/eef_action/base_pose6"].shape, (3, 12))
+                np.testing.assert_allclose(root_h5["/eef_action/base_pose6"][2], np.full((12,), 2.5))
 
             compact_hdf5_path = postprocess_episode(
                 raw_episode_dir=raw_episode,

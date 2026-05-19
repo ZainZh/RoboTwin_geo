@@ -29,9 +29,10 @@ def load_hdf5(dataset_path):
         )
         vector = root["/joint_action/vector"][()]
         control = root["/joint_action/control"][()] if "/joint_action/control" in root else None
+        eef_pose_base = root["/eef_action/base_pose6"][()] if "/eef_action/base_pose6" in root else None
         pointcloud = root["/pointcloud"][()]
 
-    return left_gripper, left_arm, right_gripper, right_arm, vector, control, pointcloud
+    return left_gripper, left_arm, right_gripper, right_arm, vector, control, eef_pose_base, pointcloud
 
 
 def main(argv=None):
@@ -95,11 +96,14 @@ def main(argv=None):
             right_arm_all,
             vector_all,
             control_all,
+            eef_pose_base_all,
             pointcloud_all,
         ) = load_hdf5(load_path)
         episode = {"vector": vector_all}
         if control_all is not None:
             episode["control"] = control_all
+        if eef_pose_base_all is not None:
+            episode["eef_pose_base"] = eef_pose_base_all
         eef_arrays = eef_arrays_for_episode(args, episode)
 
         for j in range(0, left_gripper_all.shape[0]):

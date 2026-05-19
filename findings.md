@@ -131,6 +131,9 @@
 - Real inference decodes policy action20 -> EEF14 world -> EEF14 base -> Dobot IK -> joint14, then reuses the existing ServoJ smoothing and async control loop. ServoP is intentionally not used.
 - In async EEF inference, the policy thread and control thread must not call xtrainer `RobotEnv` methods concurrently through the same `ZMQClientRobot`. The underlying socket is a ZeroMQ REQ socket, so a second `send` before the previous request has completed causes `ZMQError: Operation cannot be accomplished in current state`.
 - `real_dp3_inference.py` now installs a per-run `threading.RLock` and uses it for EEF IK conversion and `env.step` execution. This serializes robot I/O while preserving the async perception/policy/control structure.
+- Real-ZED collection now treats xtrainer's `ee_pos_quat` field as the measured Dobot TCP pose, despite the misleading name. In the current Dobot driver it is produced by `GetPose()` and is `[x,y,z,rx,ry,rz]` in meters/radians for each arm, concatenated to 12D.
+- Raw robot frame NPZs can contain `eef_pose_base`, and postprocessed HDF5 stores it as `/eef_action/base_pose6`.
+- DP3 EEF preprocessing prefers `/eef_action/base_pose6` when present. It transforms the measured left/right base-frame poses into the requested EEF frame and appends grippers from the joint/control vectors; old HDF5 files without this dataset still use offline FK.
 - `include/xtrainer_clover` is a symlink to `/home/zheng/github/xtrainer_clover`; the new Dobot FK/IK/ZMQ methods are therefore edits in that sibling repository, not normal RoboTwin_geo tracked files.
 - The EEF reference frame is now expected to be `right_base` by default. Point clouds, EEF `agent_pos`, and EEF actions must all use the same frame.
 - `load_world_from_base_transforms(..., frame_mode="right_base")` computes `T_right_base_from_left_base` and identity for the right arm by composing the workspace camera calibration with left/right robot-camera calibration files.

@@ -354,6 +354,15 @@ Real DP3 EEF IK failure diagnostics
 - [x] Verify the real inference action tests, Python compilation, and whitespace check.
 - **Status:** complete
 
+### Phase 37: Real EEF Pose Collection For EEF Training
+- [x] Trace the current collection/postprocess/EEF preprocessing path for robot pose data.
+- [x] Add raw collection support for saving measured Dobot TCP pose from `env.get_obs()["ee_pos_quat"]` as `eef_pose_base`.
+- [x] Persist measured EEF poses into processed HDF5 under `/eef_action/base_pose6`.
+- [x] Make DP3 EEF preprocessing prefer `/eef_action/base_pose6` over offline FK when present, while preserving FK fallback for old data.
+- [x] Add regression tests for raw snapshot saving, HDF5 persistence, and real-pose EEF state/action conversion.
+- [x] Verify targeted tests, EEF wrapper tests, Python compilation, and whitespace.
+- **Status:** complete
+
 ## Decisions Made
 
 | Decision | Rationale |
@@ -384,6 +393,7 @@ Real DP3 EEF IK failure diagnostics
 | Real DP3 wrapper opened `/home/zheng/script/...` from repo-root invocation | Initial wrappers used `cd ../..`, which only works when launched from `policy/DP3` | Switched both wrappers to resolve the repository root from `${BASH_SOURCE[0]}` |
 | EEF objpc training failed with `PathNotFoundError("nothing found at path ''")` | `train_objpc_eef_absolute6d_global.sh` used the shared train helper without an explicit `task.dataset.zarr_path`, and Hydra resolved the dataset path to an empty string | Added optional zarr-path forwarding in shared train helpers and passed `../../../data/<task>-<config>-<num><suffix>.zarr` from EEF train wrappers |
 | EEF async inference failed with `ZMQError: Operation cannot be accomplished in current state` | Main thread called Dobot IK while the async control thread was sending `step/get_obs` through the same xtrainer ZMQ REQ socket | Added a shared robot I/O lock around EEF IK and robot command execution |
+| Full `script.test_real_zed_collection_pipeline` still fails in the current local env | Two DP image preprocess tests import `zarr`, which is not installed in this shell environment | Ran the targeted real-EFF collection/postprocess tests plus EEF utility/wrapper tests instead |
 
 ## Notes
 

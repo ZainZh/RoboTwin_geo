@@ -387,6 +387,8 @@ def postprocess_episode(
 
     joint_vectors = []
     control_vectors = []
+    eef_pose_base_vectors = []
+    missing_eef_pose_base = False
     scene_point_clouds = []
     object_point_clouds = {placeholder: [] for placeholder in placeholders}
     intrinsic_by_camera: dict[str, np.ndarray] = {}
@@ -406,6 +408,13 @@ def postprocess_episode(
             raise ValueError(f"Expected robot control vector shape (14,), got {control_vector.shape}")
         joint_vectors.append(joint_vector)
         control_vectors.append(control_vector)
+        if "eef_pose_base" in robot:
+            eef_pose_base = np.asarray(robot["eef_pose_base"], dtype=np.float32).reshape(-1)
+            if eef_pose_base.shape != (12,):
+                raise ValueError(f"Expected robot eef_pose_base shape (12,), got {eef_pose_base.shape}")
+            eef_pose_base_vectors.append(eef_pose_base)
+        else:
+            missing_eef_pose_base = True
 
         scene_chunks = []
         object_chunks_by_placeholder = {placeholder: [] for placeholder in placeholders}
@@ -513,6 +522,15 @@ def postprocess_episode(
         joint_group.create_dataset("left_gripper", data=vector[:, 6])
         joint_group.create_dataset("right_arm", data=vector[:, 7:13])
         joint_group.create_dataset("right_gripper", data=vector[:, 13])
+        if eef_pose_base_vectors:
+            if missing_eef_pose_base or len(eef_pose_base_vectors) != len(joint_vectors):
+                raise ValueError("Only some raw robot frames contain eef_pose_base; regenerate or repair the raw episode.")
+            eef_group = root.create_group("eef_action")
+            eef_group.create_dataset("base_pose6", data=np.asarray(eef_pose_base_vectors, dtype=np.float32))
+            eef_group.attrs["description"] = (
+                "Measured Dobot TCP poses from GetPose in each robot base frame: "
+                "left [x,y,z,rx,ry,rz], right [x,y,z,rx,ry,rz], meters/radians."
+            )
         root.create_dataset("pointcloud", data=np.asarray(scene_point_clouds, dtype=np.float32))
 
         if bool(store_observations):
@@ -561,6 +579,7 @@ def postprocess_episode(
             "intrinsics_source": str(intrinsics_source),
             "store_observations": bool(store_observations),
             "camera_workspace_mask_root": "" if camera_workspace_mask_root_path is None else str(camera_workspace_mask_root_path),
+            "eef_pose_source": "robot_get_pose_base" if eef_pose_base_vectors else "",
         }
     }
     if scene_info_path.exists():

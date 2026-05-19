@@ -103,6 +103,42 @@ class TestEefActionUtils(unittest.TestCase):
         )
         self.assertAlmostEqual(float(recovered_first_action_eef[13]), float(expected_first_action_eef[13]), places=7)
 
+    def test_episode_state_action_prefers_real_eef_pose_base_when_available(self):
+        joint_vectors = np.zeros((3, 14), dtype=np.float64)
+        control_vectors = np.zeros((3, 14), dtype=np.float64)
+        eef_pose_base = np.zeros((3, 12), dtype=np.float64)
+        for idx in range(3):
+            joint_vectors[idx, 6] = 0.1 * idx
+            joint_vectors[idx, 13] = 0.9 - 0.1 * idx
+            control_vectors[idx, 6] = 0.4 + 0.1 * idx
+            control_vectors[idx, 13] = 0.2 + 0.1 * idx
+            eef_pose_base[idx, :6] = np.asarray([idx, 0.1, 0.2, 0.0, 0.0, 0.0], dtype=np.float64)
+            eef_pose_base[idx, 6:12] = np.asarray([-idx, -0.1, 0.3, 0.0, 0.0, 0.0], dtype=np.float64)
+
+        t_world_from_left = np.eye(4, dtype=np.float64)
+        t_world_from_left[0, 3] = 10.0
+        t_world_from_right = np.eye(4, dtype=np.float64)
+        t_world_from_right[1, 3] = 20.0
+
+        states, actions = episode_eef_state_action_arrays(
+            joint_vectors,
+            control_vectors=control_vectors,
+            eef_pose_base=eef_pose_base,
+            t_world_from_left_base=t_world_from_left,
+            t_world_from_right_base=t_world_from_right,
+        )
+
+        recovered_action0 = action20_to_eef14(actions[0])
+        self.assertEqual(states.shape, (2, 14))
+        np.testing.assert_allclose(states[0, :3], np.asarray([10.0, 0.1, 0.2], dtype=np.float32))
+        np.testing.assert_allclose(states[0, 7:10], np.asarray([0.0, 19.9, 0.3], dtype=np.float32))
+        self.assertAlmostEqual(float(states[0, 6]), 0.0, places=6)
+        self.assertAlmostEqual(float(states[0, 13]), 0.9, places=6)
+        np.testing.assert_allclose(recovered_action0[:3], np.asarray([11.0, 0.1, 0.2], dtype=np.float32), atol=1e-6)
+        np.testing.assert_allclose(recovered_action0[7:10], np.asarray([-1.0, 19.9, 0.3], dtype=np.float32), atol=1e-6)
+        self.assertAlmostEqual(float(recovered_action0[6]), 0.5, places=6)
+        self.assertAlmostEqual(float(recovered_action0[13]), 0.3, places=6)
+
     def test_load_world_from_base_transforms_can_use_right_base_as_world(self):
         def translate_x(x):
             transform = np.eye(4, dtype=np.float64)
