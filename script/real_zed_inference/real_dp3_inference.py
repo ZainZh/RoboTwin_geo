@@ -715,6 +715,31 @@ def action_dim_for_mode(args: argparse.Namespace) -> int:
     return 20 if str(getattr(args, "action_mode", "joint")) == "eef_absolute6d" else 14
 
 
+@contextmanager
+def robot_io_guard(args: argparse.Namespace | None):
+    lock = getattr(args, "robot_io_lock", None) if args is not None else None
+    if lock is None:
+        yield
+        return
+    with lock:
+        yield
+
+
+def robot_env_get_ik(env, eef_base: np.ndarray, args: argparse.Namespace | None = None) -> np.ndarray:
+    with robot_io_guard(args):
+        if hasattr(env, "get_ik"):
+            return env.get_ik(eef_base)
+        robot_getter = getattr(env, "robot", None)
+        if callable(robot_getter):
+            robot = robot_getter()
+            if hasattr(robot, "get_ik"):
+                return robot.get_ik(eef_base)
+    raise AttributeError(
+        "RobotEnv does not expose get_ik, and env.robot() does not expose get_ik. "
+        "Update include/xtrainer_clover/dobot_control/env.py or robot_node.py on the control machine."
+    )
+
+
 def load_eef_world_from_base_transforms(args: argparse.Namespace) -> tuple[np.ndarray, np.ndarray]:
     if str(getattr(args, "action_mode", "joint")) != "eef_absolute6d":
         return np.eye(4, dtype=np.float64), np.eye(4, dtype=np.float64)
@@ -748,6 +773,7 @@ def eef_policy_action_to_joint_action(
     action20: np.ndarray,
     *,
     env,
+    args: argparse.Namespace | None = None,
     t_world_from_left_base: np.ndarray,
     t_world_from_right_base: np.ndarray,
 ) -> np.ndarray:
@@ -760,7 +786,7 @@ def eef_policy_action_to_joint_action(
         t_world_from_right_base=t_world_from_right_base,
     )
     try:
-        ik_joints = np.asarray(env.get_ik(eef_base), dtype=np.float32).reshape(-1)
+        ik_joints = np.asarray(robot_env_get_ik(env, eef_base, args), dtype=np.float32).reshape(-1)
     except Exception as exc:
         raise RuntimeError(
             "Dobot IK failed while converting EEF policy action. "
@@ -799,6 +825,7 @@ def policy_actions_to_joint_actions(
             eef_policy_action_to_joint_action(
                 action,
                 env=env,
+                args=args,
                 t_world_from_left_base=t_world_from_left_base,
                 t_world_from_right_base=t_world_from_right_base,
             )
@@ -1346,26 +1373,28 @@ def execute_action(
         previous_command_delta=previous_command_delta,
     )
     maybe_check_action_safety(action, last_action, args, first_action=first_action)
-    maybe_check_xyz_safety(env, args)
     flag = np.asarray([1, 1], dtype=np.float32)
     if env is not None and bool(args.execute):
-        if first_action and bool(args.interpolate_first_action):
-            interpolate_robot(env, last_action, action, max_step=float(args.first_action_interp_step), flag=flag)
-            substeps = [action]
-        else:
-            substeps = build_execution_substeps(last_action, action, args)
-        obs = None
-        sleep_sec = max(0.0, float(getattr(args, "execution_substep_sleep_sec", 0.0)))
-        for idx, substep in enumerate(substeps):
-            obs = env.step(substep.astype(np.float32), flag)
-            if sleep_sec > 0.0 and idx < len(substeps) - 1:
-                time.sleep(sleep_sec)
-        if obs is None:
-            obs = {"joint_positions": action.astype(np.float32)}
+        with robot_io_guard(args):
+            maybe_check_xyz_safety(env, args)
+            if first_action and bool(args.interpolate_first_action):
+                interpolate_robot(env, last_action, action, max_step=float(args.first_action_interp_step), flag=flag)
+                substeps = [action]
+            else:
+                substeps = build_execution_substeps(last_action, action, args)
+            obs = None
+            sleep_sec = max(0.0, float(getattr(args, "execution_substep_sleep_sec", 0.0)))
+            for idx, substep in enumerate(substeps):
+                obs = env.step(substep.astype(np.float32), flag)
+                if sleep_sec > 0.0 and idx < len(substeps) - 1:
+                    time.sleep(sleep_sec)
+            if obs is None:
+                obs = {"joint_positions": action.astype(np.float32)}
         joints = np.asarray(obs["joint_positions"], dtype=np.float32).reshape(14)
         joints[6] = action[6]
         joints[13] = action[13]
         return joints
+    maybe_check_xyz_safety(env, args)
     return action.copy()
 
 
@@ -1571,6 +1600,8 @@ class AsyncActionController:
 def run_real_inference(args: argparse.Namespace) -> None:
     if bool(args.execute) and bool(args.no_robot):
         raise ValueError("--execute cannot be used together with --no_robot")
+    if getattr(args, "robot_io_lock", None) is None:
+        args.robot_io_lock = threading.RLock()
 
     print("[INFO] Starting real DP3 inference.")
     placeholders = parse_placeholder_list(args.object_placeholders)

@@ -346,6 +346,14 @@ Real DP3 EEF IK failure diagnostics
 - [x] Verify xtrainer robot-node tests, real inference action tests, syntax checks, and whitespace.
 - **Status:** complete
 
+### Phase 36: Real DP3 EEF Async Robot-I/O Serialization
+- [x] Diagnose `ZMQError: Operation cannot be accomplished in current state` during EEF async inference.
+- [x] Identify the root cause as concurrent use of one xtrainer ZMQ REQ socket by async `step/get_obs` and main-thread EEF IK conversion.
+- [x] Add a shared robot I/O lock to serialize IK and `env.step` calls without changing the policy/action representation.
+- [x] Add regression coverage requiring EEF IK and command execution to use the shared lock.
+- [x] Verify the real inference action tests, Python compilation, and whitespace check.
+- **Status:** complete
+
 ## Decisions Made
 
 | Decision | Rationale |
@@ -375,6 +383,7 @@ Real DP3 EEF IK failure diagnostics
 | SAM2 postprocess failed in `scaled_dot_product_attention` with `RuntimeError: No available kernel` | User ran `postprocess_real_zed_sam2_objpc_dataset.py` on GPU; warnings showed Q/K/V were float32 and Flash/Memory Efficient attention kernels were unavailable for that dtype | Wrapped SAM2 predictor calls in CUDA autocast, defaulting to `bfloat16`, and enabled CUDA SDP kernels in the SAM2 loader |
 | Real DP3 wrapper opened `/home/zheng/script/...` from repo-root invocation | Initial wrappers used `cd ../..`, which only works when launched from `policy/DP3` | Switched both wrappers to resolve the repository root from `${BASH_SOURCE[0]}` |
 | EEF objpc training failed with `PathNotFoundError("nothing found at path ''")` | `train_objpc_eef_absolute6d_global.sh` used the shared train helper without an explicit `task.dataset.zarr_path`, and Hydra resolved the dataset path to an empty string | Added optional zarr-path forwarding in shared train helpers and passed `../../../data/<task>-<config>-<num><suffix>.zarr` from EEF train wrappers |
+| EEF async inference failed with `ZMQError: Operation cannot be accomplished in current state` | Main thread called Dobot IK while the async control thread was sending `step/get_obs` through the same xtrainer ZMQ REQ socket | Added a shared robot I/O lock around EEF IK and robot command execution |
 
 ## Notes
 

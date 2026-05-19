@@ -480,6 +480,60 @@ class RealZedInferencePointcloudTest(unittest.TestCase):
         np.testing.assert_allclose(joint_actions[0, 7:13], np.arange(6, 12, dtype=np.float32) * 0.01)
         self.assertAlmostEqual(float(joint_actions[0, 13]), 0.3, places=6)
 
+    def test_eef_policy_actions_fallback_to_robot_get_ik_when_env_lacks_get_ik(self):
+        from script.real_zed_inference.real_dp3_inference import policy_actions_to_joint_actions
+        from eef_action_utils import eef14_to_action20
+
+        class FakeRobot:
+            def __init__(self):
+                self.ik_inputs = []
+
+            def get_ik(self, eef_state):
+                self.ik_inputs.append(np.asarray(eef_state, dtype=np.float32).copy())
+                return np.arange(12, dtype=np.float32) * 0.02
+
+        class FakeEnvWithoutGetIk:
+            def __init__(self):
+                self._robot = FakeRobot()
+
+            def robot(self):
+                return self._robot
+
+        eef14 = np.asarray(
+            [
+                0.1,
+                -0.2,
+                0.3,
+                0.0,
+                0.1,
+                0.0,
+                0.7,
+                -0.1,
+                -0.25,
+                0.35,
+                0.0,
+                -0.1,
+                0.0,
+                0.3,
+            ],
+            dtype=np.float32,
+        )
+        env = FakeEnvWithoutGetIk()
+        args = argparse.Namespace(action_mode="eef_absolute6d")
+
+        joint_actions = policy_actions_to_joint_actions(
+            eef14_to_action20(eef14)[None, :],
+            env=env,
+            args=args,
+            t_world_from_left_base=np.eye(4),
+            t_world_from_right_base=np.eye(4),
+        )
+
+        self.assertEqual(len(env._robot.ik_inputs), 1)
+        self.assertEqual(joint_actions.shape, (1, 14))
+        np.testing.assert_allclose(joint_actions[0, :6], np.arange(6, dtype=np.float32) * 0.02)
+        np.testing.assert_allclose(joint_actions[0, 7:13], np.arange(6, 12, dtype=np.float32) * 0.02)
+
     def test_eef_policy_action_reports_target_when_ik_fails(self):
         from script.real_zed_inference.real_dp3_inference import policy_actions_to_joint_actions
         from eef_action_utils import eef14_to_action20
@@ -517,6 +571,93 @@ class RealZedInferencePointcloudTest(unittest.TestCase):
                 t_world_from_left_base=np.eye(4),
                 t_world_from_right_base=np.eye(4),
             )
+
+    def test_robot_io_calls_use_shared_lock_for_eef_ik_and_step(self):
+        from script.real_zed_inference.real_dp3_inference import execute_action, policy_actions_to_joint_actions
+        from eef_action_utils import eef14_to_action20
+
+        class TrackingLock:
+            def __init__(self):
+                self.depth = 0
+
+            def __enter__(self):
+                self.depth += 1
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                self.depth -= 1
+
+            @property
+            def held(self):
+                return self.depth > 0
+
+        class FakeEnv:
+            def __init__(self, lock):
+                self.lock = lock
+
+            def get_ik(self, eef_state):
+                if not self.lock.held:
+                    raise AssertionError("IK was called without robot I/O lock")
+                return np.arange(12, dtype=np.float32) * 0.01
+
+            def step(self, action, flag):
+                if not self.lock.held:
+                    raise AssertionError("step was called without robot I/O lock")
+                return {"joint_positions": np.asarray(action, dtype=np.float32).copy()}
+
+        lock = TrackingLock()
+        args = argparse.Namespace(
+            action_mode="eef_absolute6d",
+            robot_io_lock=lock,
+            execute=True,
+            max_executed_joint_delta=0.12,
+            max_executed_gripper_delta=1.0,
+            max_executed_joint_delta_change=0.0,
+            max_executed_gripper_delta_change=0.0,
+            execution_substeps=1,
+            execution_substep_sleep_sec=0.0,
+            disable_action_delta_safety=True,
+            max_action_delta=0.35,
+            interpolate_first_action=False,
+            disable_xyz_safety=True,
+        )
+        env = FakeEnv(lock)
+        eef14 = np.asarray(
+            [
+                0.1,
+                -0.2,
+                0.3,
+                0.0,
+                0.1,
+                0.0,
+                0.7,
+                -0.1,
+                -0.25,
+                0.35,
+                0.0,
+                -0.1,
+                0.0,
+                0.3,
+            ],
+            dtype=np.float32,
+        )
+
+        actions = policy_actions_to_joint_actions(
+            eef14_to_action20(eef14)[None, :],
+            env=env,
+            args=args,
+            t_world_from_left_base=np.eye(4),
+            t_world_from_right_base=np.eye(4),
+        )
+        returned = execute_action(
+            env=env,
+            action=actions[0],
+            last_action=np.zeros(14, dtype=np.float32),
+            args=args,
+            first_action=False,
+        )
+
+        np.testing.assert_allclose(returned, actions[0], atol=1e-6)
 
     def test_configure_robot_servo_params_calls_robot_env(self):
         from script.real_zed_inference.real_dp3_inference import configure_robot_servo_params

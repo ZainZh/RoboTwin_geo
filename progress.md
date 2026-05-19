@@ -47,6 +47,17 @@
 - Added fail-fast behavior to `train_objpc.sh` so a failed preprocessing step does not continue into Hydra training.
 - Verified the fix with the resource override unit test, shell syntax checks, a mocked `process_data_objpc.sh` argument capture showing `--output_suffix=-objpc-pc2048`, EEF wrapper tests, eval pointwise interface tests, and `git diff --check`.
 
+## 2026-05-19: Real DP3 EEF Async Robot-I/O Serialization
+- Traced the EEF async inference crash to xtrainer `ZMQClientRobot.get_ik(...)` raising `ZMQError: Operation cannot be accomplished in current state`.
+- Identified that async control sends `env.step(...)` from a background thread while the policy thread converts EEF action chunks through Dobot IK, both using the same ZeroMQ REQ socket.
+- Added `robot_io_guard(...)` and a per-run `threading.RLock` in `script/real_zed_inference/real_dp3_inference.py`.
+- Wrapped EEF IK conversion and real robot command execution in the shared robot I/O guard.
+- Added regression coverage requiring both `get_ik` and `step` to run under the same lock.
+- Verified:
+  - `python -m unittest script.test_real_zed_inference_actions`
+  - `python -m py_compile script/real_zed_inference/real_dp3_inference.py script/test_real_zed_inference_actions.py`
+  - `git diff --check`
+
 ## Session: 2026-04-16 (`pour_kettle_mug`)
 
 ### Phase 1: Planning & Test Scope
