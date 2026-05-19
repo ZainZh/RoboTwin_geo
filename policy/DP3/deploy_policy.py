@@ -526,7 +526,11 @@ def get_model(usr_args):
         or use_utonia_pointwise
     )
     object_placeholders = parse_placeholder_list(usr_args.get("object_placeholders", "{A},{B}"))
-    target_num_points = int(cfg.task.shape_meta.obs.point_cloud.shape[0])
+    point_cloud_shape = list(cfg.task.shape_meta.obs.point_cloud.shape)
+    point_cloud_dim = int(point_cloud_shape[1]) if len(point_cloud_shape) > 1 else 6
+    point_cloud_num = int(usr_args.get("point_cloud_num", point_cloud_shape[0]))
+    cfg.task.shape_meta.obs.point_cloud.shape = [point_cloud_num, point_cloud_dim]
+    target_num_points = point_cloud_num
     ndf_feat_dim = 256
     ndf_point_num = int(usr_args.get("ndf_point_num", 128))
     ndf_device = torch.device(usr_args.get("ndf_device", "cuda:0") if torch.cuda.is_available() else "cpu")

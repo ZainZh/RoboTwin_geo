@@ -33,6 +33,7 @@ normalize_ndf_train_args() {
     pin_memory="${args[16]:-true}"
     val_pin_memory="${args[17]:-false}"
     max_val_steps="${args[18]:-2}"
+    point_cloud_num="${args[19]:-1024}"
     ndf_legacy_shifted=false
 
     if looks_like_placeholder_arg "${args[8]:-}" && looks_like_integer_arg "${args[9]:-}"; then
@@ -47,6 +48,7 @@ normalize_ndf_train_args() {
         pin_memory="${args[15]:-true}"
         val_pin_memory="${args[16]:-false}"
         max_val_steps="${args[17]:-2}"
+        point_cloud_num="${args[18]:-1024}"
         ndf_legacy_shifted=true
     fi
 }
@@ -115,14 +117,18 @@ normalize_ndf_process_actorseg_args() {
     ndf_dgcnn_placeholders="${args[6]:-}"
     object_placeholders="${args[7]:-${DEFAULT_OBJECT_PLACEHOLDERS}}"
     ndf_point_num="${args[8]:-128}"
-    actorseg_camera_names="${args[9]:-head_camera,front_camera}"
+    target_num_points="${args[9]:-1024}"
+    output_suffix="${args[10]:--objpc-actorseg-ndf-pointwise-hybrid}"
+    actorseg_camera_names="${args[11]:-head_camera,front_camera}"
     ndf_legacy_shifted=false
 
     if looks_like_placeholder_arg "${args[6]:-}" && looks_like_integer_arg "${args[7]:-}"; then
         ndf_dgcnn_placeholders=""
         object_placeholders="${args[6]}"
         ndf_point_num="${args[7]}"
-        actorseg_camera_names="${args[8]:-head_camera,front_camera}"
+        target_num_points="${args[8]:-1024}"
+        output_suffix="${args[9]:--objpc-actorseg-ndf-pointwise-hybrid}"
+        actorseg_camera_names="${args[10]:-head_camera,front_camera}"
         ndf_legacy_shifted=true
     fi
 }

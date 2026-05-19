@@ -51,6 +51,7 @@ run_and_capture "${capture_ndf}" \
     /tmp/mug_ndf.pth
 assert_flag_equals "${capture_ndf}" "--task_config" "demo_eval_cfg"
 assert_flag_equals "${capture_ndf}" "--ckpt_setting" "demo_ckpt_cfg"
+assert_flag_equals "${capture_ndf}" "--point_cloud_num" "1024"
 
 capture_ndf_hybrid="$(mktemp "${tmpdir}/ndf_hybrid.XXXX")"
 run_and_capture "${capture_ndf_hybrid}" \
@@ -63,7 +64,8 @@ run_and_capture "${capture_ndf_hybrid}" \
     0 \
     /tmp/mug_ndf.pth
 assert_flag_equals "${capture_ndf_hybrid}" "--task_config" "demo_eval_cfg"
-assert_flag_equals "${capture_ndf_hybrid}" "--ckpt_setting" "demo_ckpt_cfg"
+assert_flag_equals "${capture_ndf_hybrid}" "--ckpt_setting" "demo_ckpt_cfg-objpc-ndf-pointwise-hybrid"
+assert_flag_equals "${capture_ndf_hybrid}" "--point_cloud_num" "1024"
 
 capture_ndf_actorseg="$(mktemp "${tmpdir}/ndf_actorseg.XXXX")"
 run_and_capture "${capture_ndf_actorseg}" \
@@ -77,6 +79,7 @@ run_and_capture "${capture_ndf_actorseg}" \
     /tmp/mug_ndf.pth
 assert_flag_equals "${capture_ndf_actorseg}" "--task_config" "demo_eval_cfg"
 assert_flag_equals "${capture_ndf_actorseg}" "--ckpt_setting" "demo_ckpt_cfg"
+assert_flag_equals "${capture_ndf_actorseg}" "--point_cloud_num" "1024"
 
 capture_semantic="$(mktemp "${tmpdir}/semantic.XXXX")"
 run_and_capture "${capture_semantic}" \
@@ -90,6 +93,7 @@ run_and_capture "${capture_semantic}" \
     /tmp/mug_sem.ckpt
 assert_flag_equals "${capture_semantic}" "--task_config" "demo_eval_cfg"
 assert_flag_equals "${capture_semantic}" "--ckpt_setting" "demo_ckpt_cfg"
+assert_flag_equals "${capture_semantic}" "--point_cloud_num" "1024"
 
 capture_sem_actorseg="$(mktemp "${tmpdir}/semantic_actorseg.XXXX")"
 run_and_capture "${capture_sem_actorseg}" \
@@ -103,3 +107,23 @@ run_and_capture "${capture_sem_actorseg}" \
     /tmp/mug_sem.ckpt
 assert_flag_equals "${capture_sem_actorseg}" "--task_config" "demo_eval_cfg"
 assert_flag_equals "${capture_sem_actorseg}" "--ckpt_setting" "demo_ckpt_cfg"
+assert_flag_equals "${capture_sem_actorseg}" "--point_cloud_num" "1024"
+
+capture_semantic_hybrid_pc="$(mktemp "${tmpdir}/semantic_hybrid_pc.XXXX")"
+run_and_capture "${capture_semantic_hybrid_pc}" \
+    eval_semantic_pointwise_hybrid.sh \
+    hanging_mug \
+    demo_eval_cfg \
+    demo_ckpt_cfg \
+    50 \
+    0 \
+    0 \
+    /tmp/mug_sem.ckpt \
+    none \
+    cuda:0 \
+    "{A},{B}" \
+    3000 \
+    128 \
+    2048
+assert_flag_equals "${capture_semantic_hybrid_pc}" "--ckpt_setting" "demo_ckpt_cfg-objpc-semantic-pointwise-hybrid-pc2048"
+assert_flag_equals "${capture_semantic_hybrid_pc}" "--point_cloud_num" "2048"

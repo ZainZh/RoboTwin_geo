@@ -36,9 +36,9 @@ from script.real_zed_collection.select_sam2_bboxes import load_sam2_prompt_recor
 from script.real_zed_collection.workspace_crop_utils import WorkspaceBounds
 
 
-DEFAULT_TASK_NAME = "grasp_mug"
+DEFAULT_TASK_NAME = "pour_water"
 DEFAULT_TASK_CONFIG = "demo_real_zed_sam2_objpc"
-DEFAULT_OBJECT_PROMPTS = "{A}:mug,{B}:plate"
+DEFAULT_OBJECT_PROMPTS = "{A}:mug,{B}:teapot"
 DEFAULT_CAMERA_LABELS = "global,back"
 REPO_ROOT = Path(__file__).resolve().parents[3]
 AUTO_VALUE_STRINGS = {"", "auto", "manifest"}
@@ -64,6 +64,24 @@ def default_bbox_prompt_root(task_name: str = DEFAULT_TASK_NAME, *, user: str | 
 def default_output_dir(task_name: str, task_config: str, *, user: str | None = None) -> Path:
     resolved_user = user or os.environ.get("USER") or os.environ.get("USERNAME") or "zheng"
     return Path("/media") / resolved_user / "Extreme SSD" / "geo_mani_data" / str(task_name) / "robotwin_objpc" / str(task_config)
+
+
+def output_frame_task_config_token(output_frame: str) -> str:
+    frame = str(output_frame).strip()
+    if frame == "source":
+        return "global"
+    if frame in {"workspace", "left_base", "right_base"}:
+        return frame
+    raise ValueError(f"Unsupported output_frame={output_frame!r}")
+
+
+def task_config_with_output_frame(task_config: str, output_frame: str) -> str:
+    base = str(task_config).strip()
+    token = output_frame_task_config_token(output_frame)
+    known_suffixes = ("global", "source", "workspace", "left_base", "leftbase", "right_base", "rightbase")
+    if any(base.endswith(f"_{suffix}") for suffix in known_suffixes):
+        return base
+    return f"{base}_{token}"
 
 
 def repo_data_link_path(task_name: str, task_config: str) -> Path:
@@ -601,15 +619,17 @@ def resolve_camera_workspace_mask_root(args: argparse.Namespace) -> Path | None:
 
 
 def process_dataset(args: argparse.Namespace) -> dict[str, Any]:
+    requested_task_config = str(args.task_config)
+    output_task_config = task_config_with_output_frame(requested_task_config, args.output_frame)
     output_dir = ensure_dir(
         args.output_dir
         if str(args.output_dir).strip()
-        else default_output_dir(args.task_name, args.task_config)
+        else default_output_dir(args.task_name, output_task_config)
     )
     repo_data_link = ensure_repo_data_link(
         output_dir=output_dir,
         task_name=str(args.task_name),
-        task_config=str(args.task_config),
+        task_config=output_task_config,
         enabled=not bool(args.no_link_repo_data),
         overwrite=bool(args.overwrite_repo_link),
     )
@@ -805,7 +825,9 @@ def process_dataset(args: argparse.Namespace) -> dict[str, Any]:
 
     meta = {
         "task_name": str(args.task_name),
-        "task_config": str(args.task_config),
+        "task_config": output_task_config,
+        "requested_task_config": requested_task_config,
+        "output_task_config": output_task_config,
         "output_dir": str(output_dir),
         "repo_data_link": None if repo_data_link is None else str(repo_data_link),
         "raw_root": str(raw_root),
@@ -848,7 +870,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--require_per_episode_bboxes", action="store_true", default=False)
     parser.add_argument("--calibration_path", default="auto")
     parser.add_argument("--frame_mode", default="auto", choices=["auto", "reference_camera", "workspace"])
-    parser.add_argument("--output_frame", default="right_base", choices=["source", "workspace", "left_base", "right_base"])
+    parser.add_argument("--output_frame", default="source", choices=["source", "workspace", "left_base", "right_base"])
     parser.add_argument("--robot_camera_calibration_path", default="")
     parser.add_argument("--start_episode", type=int, default=0)
     parser.add_argument("--max_episodes", type=int, default=-1)

@@ -8,6 +8,7 @@ import numpy as np
 import torch
 
 from incremental_objpc_zarr import append_episode_to_buffer, open_or_reset_replay_buffer
+from eef_action_utils import add_eef_preprocess_args, eef_arrays_for_episode, validate_eef_dataset_frame
 from ndf_feature_utils import summarize_modes
 from object_pointcloud_utils import (
     default_placeholder_order,
@@ -98,6 +99,7 @@ def build_parser():
     parser.add_argument("--table_margin", type=float, default=0.01)
     parser.add_argument("--save_placeholder_point_clouds", action="store_true")
     parser.add_argument("--keep_feature_placeholders_in_context", action="store_true")
+    add_eef_preprocess_args(parser)
     return parser
 
 
@@ -109,6 +111,11 @@ def main(argv=None):
     task_config = args.task_config
     num = int(args.expert_data_num)
     load_dir = os.path.join("../../data", str(task_name), str(task_config))
+    validate_eef_dataset_frame(
+        action_mode=args.action_mode,
+        eef_frame_mode=args.eef_frame_mode,
+        load_dir=load_dir,
+    )
     save_dir = f"./data/{task_name}-{task_config}-{num}{args.output_suffix}.zarr"
     meta_path = f"./data/{task_name}-{task_config}-{num}{args.output_suffix}_meta.json"
 
@@ -180,6 +187,7 @@ def main(argv=None):
         load_path = os.path.join(load_dir, f"data/episode{current_ep}.hdf5")
         episode = load_hdf5(load_path)
         vector_all = episode["vector"]
+        eef_arrays = eef_arrays_for_episode(args, episode)
         prev_centroids = {placeholder: None for placeholder in placeholders}
         local_modes = {placeholder: Counter() for placeholder in placeholders}
         asset_specs = {}
@@ -227,7 +235,7 @@ def main(argv=None):
                     keep_feature_placeholders_in_context=bool(args.keep_feature_placeholders_in_context),
                 )
                 episode_point_cloud_arrays.append(context_point_cloud.astype(np.float32))
-                episode_state_arrays.append(vector_all[frame_idx])
+                episode_state_arrays.append(eef_arrays[0][frame_idx] if eef_arrays is not None else vector_all[frame_idx])
 
                 for placeholder in placeholders:
                     object_pc = per_placeholder_point_clouds[placeholder]
@@ -244,7 +252,7 @@ def main(argv=None):
                     )
 
             if frame_idx != 0:
-                episode_joint_action_arrays.append(vector_all[frame_idx])
+                episode_joint_action_arrays.append(eef_arrays[1][frame_idx - 1] if eef_arrays is not None else vector_all[frame_idx])
 
         episode_data = {
             "point_cloud": np.asarray(episode_point_cloud_arrays, dtype=np.float32),

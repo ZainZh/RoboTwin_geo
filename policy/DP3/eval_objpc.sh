@@ -14,6 +14,7 @@ if [[ ${3:-} =~ ^[0-9]+$ ]]; then
     gpu_id=${5}
     object_placeholders=${6:-\{A\},\{B\}}
     checkpoint_num=${7:-3000}
+    point_cloud_num=${8:-1024}
 else
     ckpt_config=${3:-${task_config}}
     expert_data_num=${4}
@@ -21,9 +22,14 @@ else
     gpu_id=${6}
     object_placeholders=${7:-\{A\},\{B\}}
     checkpoint_num=${8:-3000}
+    point_cloud_num=${9:-1024}
 fi
 
-ckpt_setting=${ckpt_config}-objpc
+point_cloud_suffix=""
+if [ "${point_cloud_num}" != "1024" ]; then
+    point_cloud_suffix="-pc${point_cloud_num}"
+fi
+ckpt_setting=${ckpt_config}-objpc${point_cloud_suffix}
 
 export CUDA_VISIBLE_DEVICES=${gpu_id}
 export HYDRA_FULL_ERROR=1
@@ -42,4 +48,5 @@ python script/eval_policy.py --config policy/${policy_name}/deploy_policy.yml \
     --seed "${seed}" \
     --config_name robot_dp3_objpc \
     --object_placeholders "${object_placeholders}" \
-    --checkpoint_num "${checkpoint_num}"
+    --checkpoint_num "${checkpoint_num}" \
+    --point_cloud_num "${point_cloud_num}"

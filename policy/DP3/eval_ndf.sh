@@ -12,8 +12,13 @@ ndf_device=${8:-cuda:0}
 ndf_dgcnn_placeholders=${9:-}
 object_placeholders=${10:-\{A\},\{B\}}
 checkpoint_num=${11:-3000}
+point_cloud_num=${12:-1024}
+point_cloud_suffix=""
+if [ "${point_cloud_num}" != "1024" ]; then
+    point_cloud_suffix="-pc${point_cloud_num}"
+fi
 
-ckpt_setting=${task_config}-objpc-ndf
+ckpt_setting=${task_config}-objpc-ndf${point_cloud_suffix}
 
 extra_overrides=()
 if [ "${ndf_ckpt_A}" != "none" ] && [ -n "${ndf_ckpt_A}" ]; then
@@ -47,5 +52,5 @@ python script/eval_policy.py --config policy/${policy_name}/deploy_policy.yml \
     --config_name robot_dp3_ndf \
     --object_placeholders "${object_placeholders}" \
     --checkpoint_num ${checkpoint_num} \
+    --point_cloud_num ${point_cloud_num} \
     "${extra_overrides[@]}"
-

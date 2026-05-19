@@ -5,10 +5,12 @@ task_config=${2}
 expert_data_num=${3}
 object_placeholders=${4:-\{A\},\{B\}}
 target_num_points=${5:-1024}
+output_suffix=${6:--objpc}
 
 python scripts/process_data_objpc.py \
     "${task_name}" \
     "${task_config}" \
     "${expert_data_num}" \
     --object_placeholders "${object_placeholders}" \
-    --target_num_points "${target_num_points}"
+    --target_num_points "${target_num_points}" \
+    --output_suffix="${output_suffix}"

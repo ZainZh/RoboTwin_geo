@@ -386,6 +386,7 @@ def postprocess_episode(
     placeholders = list(object_prompts.keys())
 
     joint_vectors = []
+    control_vectors = []
     scene_point_clouds = []
     object_point_clouds = {placeholder: [] for placeholder in placeholders}
     intrinsic_by_camera: dict[str, np.ndarray] = {}
@@ -400,7 +401,11 @@ def postprocess_episode(
         joint_vector = np.asarray(robot.get("joint_vector", robot.get("joint_positions")), dtype=np.float32)
         if joint_vector.shape != (14,):
             raise ValueError(f"Expected robot joint vector shape (14,), got {joint_vector.shape}")
+        control_vector = np.asarray(robot.get("control", joint_vector), dtype=np.float32).reshape(-1)
+        if control_vector.shape != (14,):
+            raise ValueError(f"Expected robot control vector shape (14,), got {control_vector.shape}")
         joint_vectors.append(joint_vector)
+        control_vectors.append(control_vector)
 
         scene_chunks = []
         object_chunks_by_placeholder = {placeholder: [] for placeholder in placeholders}
@@ -501,7 +506,9 @@ def postprocess_episode(
     with h5py.File(hdf5_path, "w") as root:
         joint_group = root.create_group("joint_action")
         vector = np.asarray(joint_vectors, dtype=np.float32)
+        control = np.asarray(control_vectors, dtype=np.float32)
         joint_group.create_dataset("vector", data=vector)
+        joint_group.create_dataset("control", data=control)
         joint_group.create_dataset("left_arm", data=vector[:, :6])
         joint_group.create_dataset("left_gripper", data=vector[:, 6])
         joint_group.create_dataset("right_arm", data=vector[:, 7:13])

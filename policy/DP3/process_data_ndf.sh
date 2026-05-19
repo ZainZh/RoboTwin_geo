@@ -8,6 +8,8 @@ ndf_ckpt_B=${5:-none}
 ndf_device=${6:-cuda:0}
 ndf_dgcnn_placeholders=${7:-}
 object_placeholders=${8:-\{A\},\{B\}}
+target_num_points=${9:-1024}
+output_suffix=${10:--objpc-ndf}
 
 extra_args=()
 if [ "${ndf_ckpt_A}" != "none" ] && [ -n "${ndf_ckpt_A}" ]; then
@@ -26,4 +28,6 @@ python scripts/process_data_ndf.py \
     "${expert_data_num}" \
     --object_placeholders "${object_placeholders}" \
     --ndf_device "${ndf_device}" \
+    --target_num_points "${target_num_points}" \
+    --output_suffix="${output_suffix}" \
     "${extra_args[@]}"

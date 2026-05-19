@@ -14,7 +14,12 @@ ndf_dgcnn_placeholders=${10:-}
 object_placeholders=${11:-\{A\},\{B\}}
 checkpoint_num=${12:-3000}
 ndf_point_num=${13:-5000}
-output_suffix="-objpc-ndf-pointwise-hybrid-feat${ndf_point_num}"
+point_cloud_num=${14:-1024}
+point_cloud_suffix=""
+if [ "${point_cloud_num}" != "1024" ]; then
+    point_cloud_suffix="-pc${point_cloud_num}"
+fi
+output_suffix="-objpc-ndf-pointwise-hybrid-feat${ndf_point_num}${point_cloud_suffix}"
 ckpt_setting="${ckpt_setting_base}${output_suffix}"
 
 extra_overrides=()
@@ -50,4 +55,5 @@ python script/eval_policy.py --config policy/${policy_name}/deploy_policy.yml \
     --object_placeholders "${object_placeholders}" \
     --checkpoint_num ${checkpoint_num} \
     --ndf_point_num ${ndf_point_num} \
+    --point_cloud_num ${point_cloud_num} \
     "${extra_overrides[@]}"

@@ -13,7 +13,7 @@ import numpy as np
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_SAM2_CONFIG = "sam2.1/sam2.1_hiera_b+.yaml"
+DEFAULT_SAM2_CONFIG = "sam2.1/sam2.1_hiera_l.yaml"
 
 
 def _env_path(name: str) -> Path | None:
@@ -34,8 +34,8 @@ def default_sam2_root_candidates() -> list[Path]:
 def default_sam2_checkpoint_candidates() -> list[Path]:
     candidates = [
         _env_path("SAM2_CHECKPOINT"),
-        Path.home() / "Datasets" / "sam2" / "sam2.1_hiera_base_plus.pt",
-        Path.home() / "github" / "SAM2_streaming" / "checkpoints" / "sam2.1_hiera_base_plus.pt",
+        Path.home() / "Datasets" / "sam2" / "sam2.1_hiera_large.pt",
+        Path.home() / "github" / "SAM2_streaming" / "checkpoints" / "sam2.1_hiera_large.pt",
     ]
     return [path for path in candidates if path is not None]
 

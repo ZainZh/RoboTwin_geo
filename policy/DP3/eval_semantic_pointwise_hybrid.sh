@@ -3,7 +3,7 @@
 policy_name=DP3
 task_name=${1}
 task_config=${2}
-ckpt_setting=${3}-objpc-semantic-pointwise-hybrid
+ckpt_setting_base=${3}
 expert_data_num=${4}
 seed=${5}
 gpu_id=${6}
@@ -13,8 +13,15 @@ semantic_device=${9:-cuda:0}
 object_placeholders=${10:-\{A\},\{B\}}
 checkpoint_num=${11:-3000}
 semantic_point_num=${12:-128}
+point_cloud_num=${13:-1024}
+point_cloud_suffix=""
+if [ "${point_cloud_num}" != "1024" ]; then
+    point_cloud_suffix="-pc${point_cloud_num}"
+fi
+output_suffix="-objpc-semantic-pointwise-hybrid${point_cloud_suffix}"
+ckpt_setting=${ckpt_setting_base}${output_suffix}
 
-meta_path="./data/${task_name}-${task_config}-${expert_data_num}-objpc-semantic-pointwise-hybrid_meta.json"
+meta_path="./data/${task_name}-${task_config}-${expert_data_num}${output_suffix}_meta.json"
 
 if [ -f "${meta_path}" ]; then
     mapfile -t semantic_meta < <(python -c 'import json,sys; m=json.load(open(sys.argv[1], "r", encoding="utf-8")); print(int(m["semantic_num_points"]))' "${meta_path}")
@@ -53,4 +60,5 @@ python script/eval_policy.py --config policy/${policy_name}/deploy_policy.yml \
     --object_placeholders "${object_placeholders}" \
     --checkpoint_num ${checkpoint_num} \
     --semantic_point_num ${semantic_point_num} \
+    --point_cloud_num ${point_cloud_num} \
     "${extra_overrides[@]}"

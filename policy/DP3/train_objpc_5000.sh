@@ -11,19 +11,24 @@ val_dataloader_num_workers=${8:-2}
 pin_memory=${9:-true}
 val_pin_memory=${10:-false}
 max_val_steps=${11:-2}
-target_num_points=5000
+point_cloud_num=${12:-5000}
+point_cloud_suffix=""
+if [ "${point_cloud_num}" != "1024" ]; then
+    point_cloud_suffix="-pc${point_cloud_num}"
+fi
+output_suffix="-objpc${point_cloud_suffix}"
 
-if [ ! -d "./data/${task_name}-${task_config}-${expert_data_num}-objpc.zarr" ]; then
-    bash process_data_objpc.sh "${task_name}" "${task_config}" "${expert_data_num}" "${object_placeholders}" "${target_num_points}"
+if [ ! -d "./data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr" ]; then
+    bash process_data_objpc.sh "${task_name}" "${task_config}" "${expert_data_num}" "${object_placeholders}" "${point_cloud_num}" "${output_suffix}"
 fi
 
 DEBUG=False
 save_ckpt=True
 wandb_mode=online
-train_setting="${task_config}-objpc"
+train_setting="${task_config}${output_suffix}"
 exp_name="${task_name}-robot_dp3_objpc_5000-train_objpc"
 run_dir="data/outputs/${exp_name}_seed${seed}"
-zarr_path="../../../data/${task_name}-${task_config}-${expert_data_num}-objpc.zarr"
+zarr_path="../../../data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
 
 cd 3D-Diffusion-Policy
 
@@ -45,4 +50,5 @@ python train_dp3.py --config-name=robot_dp3_objpc_5000.yaml \
     val_dataloader.num_workers=${val_dataloader_num_workers} \
     val_dataloader.pin_memory=${val_pin_memory} \
     training.max_val_steps=${max_val_steps} \
+    task.shape_meta.obs.point_cloud.shape=[${point_cloud_num},6] \
     task.dataset.zarr_path=${zarr_path}

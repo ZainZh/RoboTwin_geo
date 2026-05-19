@@ -825,12 +825,29 @@ class RealZedCollectionPipelineTest(unittest.TestCase):
             DEFAULT_TASK_CONFIG,
             default_bbox_prompt_root,
             default_output_dir,
+            task_config_with_output_frame,
         )
 
         self.assertEqual(DEFAULT_TASK_CONFIG, "demo_real_zed_sam2_objpc")
         self.assertEqual(
-            default_output_dir("grasp_mug", DEFAULT_TASK_CONFIG, user="unit_user"),
-            Path("/media/unit_user/Extreme SSD/geo_mani_data/grasp_mug/robotwin_objpc/demo_real_zed_sam2_objpc"),
+            task_config_with_output_frame(DEFAULT_TASK_CONFIG, "source"),
+            "demo_real_zed_sam2_objpc_global",
+        )
+        self.assertEqual(
+            task_config_with_output_frame(DEFAULT_TASK_CONFIG, "right_base"),
+            "demo_real_zed_sam2_objpc_right_base",
+        )
+        self.assertEqual(
+            task_config_with_output_frame("demo_real_zed_sam2_objpc_right_base", "right_base"),
+            "demo_real_zed_sam2_objpc_right_base",
+        )
+        self.assertEqual(
+            default_output_dir(
+                "grasp_mug",
+                task_config_with_output_frame(DEFAULT_TASK_CONFIG, "right_base"),
+                user="unit_user",
+            ),
+            Path("/media/unit_user/Extreme SSD/geo_mani_data/grasp_mug/robotwin_objpc/demo_real_zed_sam2_objpc_right_base"),
         )
         self.assertEqual(
             default_bbox_prompt_root("grasp_mug", user="unit_user"),

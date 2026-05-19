@@ -114,6 +114,29 @@
 - `train_semantic_pointwise_hybrid.sh` now exposes train/val worker counts, train/val pin-memory flags, and `training.max_val_steps` so the epoch-boundary validation path can be constrained without globally shrinking training batch size.
 - The same controls are now propagated across the main DP3 train wrappers. The practical default is to keep train-side throughput (`dataloader_num_workers=4`, `pin_memory=true`) while constraining validation-side prefetch/pinned-memory pressure (`val_dataloader_num_workers=2`, `val_pin_memory=false`, `max_val_steps=2`).
 
+### DP3 main point-cloud count interface notes (2026-05-17)
+- `train_objpc.sh` currently defaults the merged `point_cloud` observation to 1024 points through the preprocessing target and the static Hydra shape config.
+- For object-PCD preprocessing, `--target_num_points` controls the final merged object-context `point_cloud` count, not the per-placeholder auxiliary feature count.
+- For hybrid semantic/NDF/Utonia branches, the main `point_cloud` count should stay independent from `semantic_point_num`, `ndf_point_num`, or Utonia point-feature counts.
+- If `point_cloud_num != 1024`, preprocessing output and checkpoint settings need a `-pcN` suffix so old 1024 zarrs are not silently reused and non-1024 checkpoints are not loaded with the wrong model shape.
+- Eval wrappers must pass the same `point_cloud_num` used in training. `deploy_policy.py` now treats it as the authoritative main `point_cloud` shape and online context sampling count.
+- For hybrid eval wrappers that derive checkpoint names from a base setting, non-default counts append after the branch suffix, e.g. `demo_cfg-objpc-semantic-pointwise-hybrid-pc2048`.
+- When an `argparse` option value itself starts with `-`, shell wrappers must pass it with equals syntax, e.g. `--output_suffix="${output_suffix}"`. Passing `--output_suffix "${output_suffix}"` makes values such as `-objpc-pc2048` look like a new option and triggers `argument --output_suffix: expected one argument`.
+
+### Real DP3 EEF absolute-6D notes (2026-05-16)
+- Hardware FK check showed local DH/TCP FK matches Dobot `PositiveSolution` within about 1.3 mm and 0.07 degrees, so offline joint-to-EEF conversion is acceptable for postprocessing current joint-space recordings.
+- The new EEF training representation keeps `agent_pos` at 14D: left `[xyz, rotvec, gripper]` plus right `[xyz, rotvec, gripper]`, expressed in the selected world/workspace frame.
+- The new EEF action representation is 20D: left `[xyz, rot6d, gripper]` plus right `[xyz, rot6d, gripper]`. The 6D rotation encoding follows the LZ xtrainer convention `R[:, :2].flatten()`.
+- DP3 temporal alignment remains unchanged: observations use current frame `t`, actions use next target frame `t+1`. If `/joint_action/control` exists, EEF action targets are converted from `control[t+1]`; otherwise old datasets fall back to `/joint_action/vector[t+1]`.
+- Real inference decodes policy action20 -> EEF14 world -> EEF14 base -> Dobot IK -> joint14, then reuses the existing ServoJ smoothing and async control loop. ServoP is intentionally not used.
+- `include/xtrainer_clover` is a symlink to `/home/zheng/github/xtrainer_clover`; the new Dobot FK/IK/ZMQ methods are therefore edits in that sibling repository, not normal RoboTwin_geo tracked files.
+- The EEF reference frame is now expected to be `right_base` by default. Point clouds, EEF `agent_pos`, and EEF actions must all use the same frame.
+- `load_world_from_base_transforms(..., frame_mode="right_base")` computes `T_right_base_from_left_base` and identity for the right arm by composing the workspace camera calibration with left/right robot-camera calibration files.
+- EEF zarr/checkpoint suffixes now include `rightbase` to avoid mixing older workspace-frame EEF artifacts with the right-base representation.
+- Real-ZED EEF preprocessing validates `real_zed_sam2_objpc_meta.json` and rejects a dataset whose `output_frame` does not match `--eef_frame_mode`, preventing silent pointcloud/action frame mismatch.
+- A parallel global-camera EEF wrapper set now uses `output_frame=source` and `eef_frame_mode=reference_camera`, with suffixes ending in `global`. In the current calibration convention, `source/reference_camera` is the `global` ZED reference camera frame.
+- Global EEF still needs left/right robot-camera calibration files because EEF FK targets must be transformed between each robot base and the global camera frame for training and IK-based inference.
+
 ## New Task: `pour_kettle_mug` (2026-04-16)
 
 ### Requirements
@@ -786,6 +809,11 @@
   - Before the fix, real inference did not expose or forward `zed_auto_exposure`, `zed_exposure`, `zed_gain`, or `zed_whitebalance_temp`, so the capture loop used its collection defaults: fixed exposure/gain and fixed `4500K` white balance.
   - Real inference now exposes those parameters and defaults to automatic exposure/gain plus automatic white balance (`--zed_auto_exposure`, `--zed_whitebalance_temp 0`).
   - Fixed controls remain available with `--no-zed_auto_exposure --zed_exposure <0-100> --zed_gain <0-100> --zed_whitebalance_temp <kelvin>`.
+- DP3 EEF training zarr-path finding:
+  - The failing `train_objpc_eef_absolute6d_global.sh` run reached Hydra with no `task.dataset.zarr_path` override, and `RobotDataset` attempted `zarr.open('')`.
+  - This is not a missing normal data directory path; it is an empty-path propagation bug in the shared `scripts/train_policy.sh` interface.
+  - EEF train wrappers now compute `../../../data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr` and pass it as the shared helper's 14th argument.
+  - `scripts/train_policy.sh` and `scripts/train_policy_rgb.sh` now forward that optional path as `task.dataset.zarr_path=...`, so Hydra no longer depends on nested interpolation to find the generated zarr.
 - LZ xtrainer EEF-control finding:
   - `include/lz_xtrainer/experiments/run_control.py` defaults `act_eef=True`. During data collection it still servo-follows leader joint commands, but it records the action as an EEF target by calling `agent.act_eef({})`.
   - `DobotAgent.act_eef(...)` converts leader joints to an EEF pose with `dobot_robot.get_fk(joint_actions[:6])`, then appends the leader gripper value. The recorded `control` is therefore `[x,y,z,rx,ry,rz,gripper]` per arm, not a 7D joint action.

@@ -9,8 +9,13 @@ seed=${5}
 gpu_id=${6}
 object_placeholders=${7:-\{A\},\{B\}}
 checkpoint_num=${8:-3000}
+point_cloud_num=${9:-5000}
+point_cloud_suffix=""
+if [ "${point_cloud_num}" != "1024" ]; then
+    point_cloud_suffix="-pc${point_cloud_num}"
+fi
 
-ckpt_setting=${ckpt_config}-objpc
+ckpt_setting=${ckpt_config}-objpc${point_cloud_suffix}
 
 export CUDA_VISIBLE_DEVICES=${gpu_id}
 export HYDRA_FULL_ERROR=1
@@ -29,4 +34,5 @@ python script/eval_policy.py --config policy/${policy_name}/deploy_policy.yml \
     --seed "${seed}" \
     --config_name robot_dp3_objpc_5000 \
     --object_placeholders "${object_placeholders}" \
-    --checkpoint_num "${checkpoint_num}"
+    --checkpoint_num "${checkpoint_num}" \
+    --point_cloud_num "${point_cloud_num}"

@@ -6,7 +6,7 @@ Design a real-robot data collection pipeline that keeps the robot-control behavi
 
 ## Current Phase
 
-Real DP3 inference now defaults to automatic ZED exposure and white balance
+DP3 EEF training wrappers need explicit dataset zarr-path forwarding
 
 ## Phases
 
@@ -218,6 +218,49 @@ Real DP3 inference now defaults to automatic ZED exposure and white balance
 - [x] Verify preview rendering and collection pipeline tests without hardware.
 - **Status:** complete with hardware UI check pending
 
+### Phase 26: DP3 Main Point-Cloud Count Training Interface
+- [x] Add failing tests that lock the desired shell-wrapper behavior.
+- [x] Add `point_cloud_num` to baseline, objpc, semantic, NDF, Utonia, actorseg, and EEF training wrappers.
+- [x] Forward the count into preprocessing `--target_num_points` and Hydra `point_cloud` shape overrides.
+- [x] Use `-pcN` suffixes for non-default main point-cloud counts to avoid zarr/checkpoint collisions.
+- [x] Verify tests plus shell syntax for touched wrappers.
+- **Status:** complete
+
+### Phase 27: DP3 Eval Main Point-Cloud Count Interface
+- [x] Add failing tests for eval wrappers and deploy-time shape override.
+- [x] Add `point_cloud_num` to all DP3 eval shell wrappers.
+- [x] Append `-pcN` to checkpoint settings for non-default main point-cloud counts.
+- [x] Pass `--point_cloud_num` through `eval_policy.py` overrides into `deploy_policy.py`.
+- [x] Override `cfg.task.shape_meta.obs.point_cloud.shape` before checkpoint loading.
+- [x] Verify eval wrapper tests, deploy compile, shell syntax, and diff whitespace.
+- **Status:** complete
+
+### Phase 26: Right-Base EEF Reference Frame
+- [x] Extend EEF frame handling from `workspace/reference_camera` to `left_base/right_base`.
+- [x] Make EEF preprocessing and real inference default to `right_base`.
+- [x] Add `rightbase` to EEF zarr/checkpoint suffixes to avoid mixing workspace-frame artifacts.
+- [x] Validate real-ZED dataset `output_frame` against `--eef_frame_mode` during EEF preprocessing.
+- [x] Verify EEF transform tests, real inference parser/action tests, wrapper tests, shell syntax, Python syntax, and whitespace checks.
+- **Status:** complete
+
+### Phase 27: Global-Camera EEF Wrapper Set
+- [x] Add independent global/reference-camera EEF preprocess wrappers.
+- [x] Add independent global/reference-camera EEF train wrappers for scene, objpc, and semantic hybrid.
+- [x] Add independent global/reference-camera real inference wrappers for baseline and semantic hybrid.
+- [x] Use `*-eef-absolute6d-global` suffixes to avoid mixing global and right-base EEF artifacts.
+- [x] Verify wrapper tests, shell syntax, Python syntax, and whitespace checks.
+- **Status:** complete
+
+### Phase 26: Real DP3 EEF Absolute-6D Training And Inference
+- [x] Validate local Dobot FK against controller `PositiveSolution`/`GetPose` on hardware.
+- [x] Add shared EEF pose/action utilities for joint14 -> EEF14 and EEF14 -> action20.
+- [x] Add optional EEF absolute-6D action conversion to scene, objpc, and semantic-pointwise DP3 preprocessing.
+- [x] Add independent EEF zarr suffixes, task configs, train scripts, and real inference wrappers.
+- [x] Add xtrainer_clover FK/IK/ZMQ/RobotEnv interfaces so real inference can decode EEF actions through Dobot IK and still execute with ServoJ smoothing.
+- [x] Verify EEF utility tests, real inference action tests, shell syntax, and Python syntax checks without hardware.
+- [ ] Run EEF inference on real robot hardware.
+- **Status:** complete with hardware run pending
+
 ### Phase 26: Real-ZED SAM2 Postprocess Debug Video And Keyframes
 - [x] Generate a per-demo MP4 that overlays SAM2 tracked masks on the active camera views for every processed frame.
 - [x] Switch default debug point-cloud frame selection to demo start, 20%, 40%, 60%, 80%, and final frame.
@@ -267,6 +310,15 @@ Real DP3 inference now defaults to automatic ZED exposure and white balance
 - [x] Verify parser tests, real inference tests, wrapper interface tests, syntax, and whitespace.
 - **Status:** complete
 
+### Phase 32: EEF Training Zarr Path Forwarding
+- [x] Diagnose `PathNotFoundError("nothing found at path ''")` in `train_objpc_eef_absolute6d_global.sh`.
+- [x] Confirm the generic `scripts/train_policy.sh` did not forward `task.dataset.zarr_path` explicitly.
+- [x] Add an optional zarr-path parameter to shared DP3 train helpers.
+- [x] Update EEF baseline/objpc train wrappers to pass their generated zarr path explicitly.
+- [x] Add regression coverage for the path forwarding contract.
+- [x] Verify targeted tests, shell syntax, mock Hydra arguments, and whitespace.
+- **Status:** complete
+
 ## Decisions Made
 
 | Decision | Rationale |
@@ -295,6 +347,7 @@ Real DP3 inference now defaults to automatic ZED exposure and white balance
 |-------|---------|------------|
 | SAM2 postprocess failed in `scaled_dot_product_attention` with `RuntimeError: No available kernel` | User ran `postprocess_real_zed_sam2_objpc_dataset.py` on GPU; warnings showed Q/K/V were float32 and Flash/Memory Efficient attention kernels were unavailable for that dtype | Wrapped SAM2 predictor calls in CUDA autocast, defaulting to `bfloat16`, and enabled CUDA SDP kernels in the SAM2 loader |
 | Real DP3 wrapper opened `/home/zheng/script/...` from repo-root invocation | Initial wrappers used `cd ../..`, which only works when launched from `policy/DP3` | Switched both wrappers to resolve the repository root from `${BASH_SOURCE[0]}` |
+| EEF objpc training failed with `PathNotFoundError("nothing found at path ''")` | `train_objpc_eef_absolute6d_global.sh` used the shared train helper without an explicit `task.dataset.zarr_path`, and Hydra resolved the dataset path to an empty string | Added optional zarr-path forwarding in shared train helpers and passed `../../../data/<task>-<config>-<num><suffix>.zarr` from EEF train wrappers |
 
 ## Notes
 

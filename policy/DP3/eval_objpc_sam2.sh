@@ -3,7 +3,7 @@
 policy_name=DP3
 task_name=${1}
 task_config=${2}
-ckpt_setting=${3}
+ckpt_setting_base=${3}
 expert_data_num=${4}
 seed=${5}
 gpu_id=${6}
@@ -18,6 +18,12 @@ sam2_interactive_init=${14:-True}
 sam2_min_mask_points=${15:-16}
 sam2_autocast_dtype=${16:-bfloat16}
 sam2_root=${17:-${SAM2_STREAMING_ROOT:-}}
+point_cloud_num=${18:-1024}
+point_cloud_suffix=""
+if [ "${point_cloud_num}" != "1024" ]; then
+    point_cloud_suffix="-pc${point_cloud_num}"
+fi
+ckpt_setting="${ckpt_setting_base}${point_cloud_suffix}"
 
 extra_overrides=(
     --sam2_camera_names "${sam2_camera_names}"
@@ -53,4 +59,5 @@ python script/eval_policy.py --config policy/${policy_name}/deploy_policy.yml \
     --config_name robot_dp3_objpc_sam2 \
     --object_placeholders "${object_placeholders}" \
     --checkpoint_num "${checkpoint_num}" \
+    --point_cloud_num "${point_cloud_num}" \
     "${extra_overrides[@]}"

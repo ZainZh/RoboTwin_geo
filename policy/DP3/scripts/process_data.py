@@ -9,6 +9,9 @@ import yaml
 import cv2
 import h5py
 
+from eef_action_utils import add_eef_preprocess_args, eef_arrays_for_episode, validate_eef_dataset_frame
+from object_pointcloud_utils import resample_point_cloud
+
 
 def load_hdf5(dataset_path):
     if not os.path.isfile(dataset_path):
@@ -25,12 +28,13 @@ def load_hdf5(dataset_path):
             root["/joint_action/right_arm"][()],
         )
         vector = root["/joint_action/vector"][()]
+        control = root["/joint_action/control"][()] if "/joint_action/control" in root else None
         pointcloud = root["/pointcloud"][()]
 
-    return left_gripper, left_arm, right_gripper, right_arm, vector, pointcloud
+    return left_gripper, left_arm, right_gripper, right_arm, vector, control, pointcloud
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description="Process some episodes.")
     parser.add_argument(
         "task_name",
@@ -43,17 +47,25 @@ def main():
         type=int,
         help="Number of episodes to process (e.g., 50)",
     )
-    args = parser.parse_args()
+    parser.add_argument("--output_suffix", default="")
+    parser.add_argument("--target_num_points", type=int, default=1024)
+    add_eef_preprocess_args(parser)
+    args = parser.parse_args(argv)
 
     task_name = args.task_name
     num = args.expert_data_num
     task_config = args.task_config
 
     load_dir = "../../data/" + str(task_name) + "/" + str(task_config)
+    validate_eef_dataset_frame(
+        action_mode=args.action_mode,
+        eef_frame_mode=args.eef_frame_mode,
+        load_dir=load_dir,
+    )
 
     total_count = 0
 
-    save_dir = f"./data/{task_name}-{task_config}-{num}.zarr"
+    save_dir = f"./data/{task_name}-{task_config}-{num}{args.output_suffix}.zarr"
 
     if os.path.exists(save_dir):
         shutil.rmtree(save_dir)
@@ -82,19 +94,24 @@ def main():
             right_gripper_all,
             right_arm_all,
             vector_all,
+            control_all,
             pointcloud_all,
         ) = load_hdf5(load_path)
+        episode = {"vector": vector_all}
+        if control_all is not None:
+            episode["control"] = control_all
+        eef_arrays = eef_arrays_for_episode(args, episode)
 
         for j in range(0, left_gripper_all.shape[0]):
 
-            pointcloud = pointcloud_all[j]
+            pointcloud = resample_point_cloud(pointcloud_all[j], args.target_num_points)
             joint_state = vector_all[j]
 
             if j != left_gripper_all.shape[0] - 1:
                 point_cloud_arrays.append(pointcloud)
-                state_arrays.append(joint_state)
+                state_arrays.append(eef_arrays[0][j] if eef_arrays is not None else joint_state)
             if j != 0:
-                joint_action_arrays.append(joint_state)
+                joint_action_arrays.append(eef_arrays[1][j - 1] if eef_arrays is not None else joint_state)
 
         current_ep += 1
         total_count += left_gripper_all.shape[0] - 1

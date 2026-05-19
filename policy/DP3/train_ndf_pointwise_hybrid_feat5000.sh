@@ -21,7 +21,12 @@ val_dataloader_num_workers=${16:-2}
 pin_memory=${17:-true}
 val_pin_memory=${18:-false}
 max_val_steps=${19:-2}
-output_suffix="-objpc-ndf-pointwise-hybrid-feat${ndf_point_num}"
+point_cloud_num=${20:-1024}
+point_cloud_suffix=""
+if [ "${point_cloud_num}" != "1024" ]; then
+    point_cloud_suffix="-pc${point_cloud_num}"
+fi
+output_suffix="-objpc-ndf-pointwise-hybrid-feat${ndf_point_num}${point_cloud_suffix}"
 zarr_dir="./data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
 
 if [ ! -d "${zarr_dir}" ]; then
@@ -34,7 +39,9 @@ if [ ! -d "${zarr_dir}" ]; then
         "${ndf_device}" \
         "${ndf_dgcnn_placeholders}" \
         "${object_placeholders}" \
-        "${ndf_point_num}"
+        "${ndf_point_num}" \
+        "${point_cloud_num}" \
+        "${output_suffix}"
 fi
 
 DEBUG=False
@@ -47,6 +54,7 @@ zarr_path="../../../data/${task_name}-${task_config}-${expert_data_num}${output_
 
 dataset_extra_keys=()
 shape_overrides=()
+shape_overrides+=("task.shape_meta.obs.point_cloud.shape=[${point_cloud_num},6]")
 if [ "${ndf_ckpt_A}" != "none" ] && [ -n "${ndf_ckpt_A}" ]; then
     dataset_extra_keys+=(ndf_point_cloud_A)
     shape_overrides+=("+task.shape_meta.obs.ndf_point_cloud_A.shape=[${ndf_point_num},259]")

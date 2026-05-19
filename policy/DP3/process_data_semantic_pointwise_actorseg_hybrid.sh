@@ -16,6 +16,8 @@ semantic_device=${6:-cuda:0}
 object_placeholders=${7:-${DEFAULT_OBJECT_PLACEHOLDERS}}
 semantic_point_num=${8:-128}
 actorseg_camera_names=${9:-head_camera,front_camera}
+target_num_points=${10:-1024}
+output_suffix=${11:--objpc-actorseg-semantic-pointwise-hybrid}
 
 extra_args=()
 if [ "${semantic_ckpt_A}" != "none" ] && [ -n "${semantic_ckpt_A}" ]; then
@@ -33,4 +35,6 @@ python scripts/process_data_semantic_pointwise_actorseg_hybrid.py \
     --camera_names "${actorseg_camera_names}" \
     --semantic_device "${semantic_device}" \
     --semantic_num_points "${semantic_point_num}" \
+    --target_num_points "${target_num_points}" \
+    --output_suffix="${output_suffix}" \
     "${extra_args[@]}"

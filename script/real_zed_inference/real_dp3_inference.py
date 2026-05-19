@@ -213,6 +213,12 @@ from script.real_zed_collection.postprocess.postprocess_raw_to_robotwin_hdf5 imp
 )
 from script.real_zed_collection.workspace_crop_utils import WorkspaceBounds, invert_transform  # noqa: E402
 from sam2_pointcloud_utils import run_camera_tasks_parallel  # noqa: E402
+from eef_action_utils import (  # noqa: E402
+    action20_to_eef14,
+    eef14_world_to_base,
+    joint14_to_eef14,
+    load_world_from_base_transforms,
+)
 
 
 def parse_placeholder_list(text: str | Sequence[str]) -> list[str]:
@@ -511,7 +517,7 @@ def build_robotwin_observation(
     *,
     args: argparse.Namespace,
     live: LiveZedCameras,
-    joint_vector: np.ndarray,
+    agent_vector: np.ndarray,
 ) -> tuple[dict[str, Any], np.ndarray]:
     frames_by_label = snapshot_frames(live)
     camera_obs: dict[str, dict[str, Any]] = {}
@@ -575,7 +581,7 @@ def build_robotwin_observation(
     dense_scene = merge_point_clouds(scene_chunks)
     scene_point_cloud = deterministic_resample(dense_scene, int(args.scene_point_num))
     observation = {
-        "joint_action": {"vector": np.asarray(joint_vector, dtype=np.float32).reshape(14)},
+        "joint_action": {"vector": np.asarray(agent_vector, dtype=np.float32).reshape(14)},
         "pointcloud": scene_point_cloud.astype(np.float32),
         "observation": camera_obs,
     }
@@ -699,10 +705,99 @@ def should_print_step_timing(args: argparse.Namespace, step: int) -> bool:
     return int(step) == 1 or int(step) % interval == 0
 
 
-def encoded_obs_with_joint_vector(encoded_obs: Mapping[str, Any], joint_vector: np.ndarray) -> dict[str, Any]:
+def encoded_obs_with_agent_vector(encoded_obs: Mapping[str, Any], agent_vector: np.ndarray) -> dict[str, Any]:
     out = dict(encoded_obs)
-    out["agent_pos"] = np.asarray(joint_vector, dtype=np.float32).reshape(14)
+    out["agent_pos"] = np.asarray(agent_vector, dtype=np.float32).reshape(14)
     return out
+
+
+def action_dim_for_mode(args: argparse.Namespace) -> int:
+    return 20 if str(getattr(args, "action_mode", "joint")) == "eef_absolute6d" else 14
+
+
+def load_eef_world_from_base_transforms(args: argparse.Namespace) -> tuple[np.ndarray, np.ndarray]:
+    if str(getattr(args, "action_mode", "joint")) != "eef_absolute6d":
+        return np.eye(4, dtype=np.float64), np.eye(4, dtype=np.float64)
+    return load_world_from_base_transforms(
+        calibration_path=getattr(args, "eef_calibration_path", ""),
+        frame_mode=getattr(args, "eef_frame_mode", "right_base"),
+        left_robot_camera_calibration_path=getattr(args, "left_robot_camera_calibration_path", ""),
+        right_robot_camera_calibration_path=getattr(args, "right_robot_camera_calibration_path", ""),
+    )
+
+
+def agent_vector_from_joint_action(
+    joint_action: np.ndarray,
+    args: argparse.Namespace,
+    t_world_from_left_base: np.ndarray,
+    t_world_from_right_base: np.ndarray,
+) -> np.ndarray:
+    if str(getattr(args, "action_mode", "joint")) != "eef_absolute6d":
+        return np.asarray(joint_action, dtype=np.float32).reshape(14)
+    return joint14_to_eef14(
+        joint_action,
+        t_world_from_left_base=t_world_from_left_base,
+        t_world_from_right_base=t_world_from_right_base,
+        tool_x_m=float(getattr(args, "eef_tool_x_m", 0.0)),
+        tool_y_m=float(getattr(args, "eef_tool_y_m", 0.0)),
+        tool_z_m=float(getattr(args, "eef_tool_z_m", 0.197)),
+    )
+
+
+def eef_policy_action_to_joint_action(
+    action20: np.ndarray,
+    *,
+    env,
+    t_world_from_left_base: np.ndarray,
+    t_world_from_right_base: np.ndarray,
+) -> np.ndarray:
+    if env is None:
+        raise RuntimeError("EEF action mode requires a robot environment for Dobot IK conversion.")
+    eef_world = action20_to_eef14(action20)
+    eef_base = eef14_world_to_base(
+        eef_world,
+        t_world_from_left_base=t_world_from_left_base,
+        t_world_from_right_base=t_world_from_right_base,
+    )
+    ik_joints = np.asarray(env.get_ik(eef_base), dtype=np.float32).reshape(-1)
+    if ik_joints.shape[0] == 14:
+        out = ik_joints.copy()
+        out[6] = eef_base[6]
+        out[13] = eef_base[13]
+        return clamp_action(out)
+    if ik_joints.shape[0] != 12:
+        raise RuntimeError(f"Expected Dobot IK to return 12 or 14 values for bimanual arms, got {ik_joints.shape}")
+    out = np.zeros(14, dtype=np.float32)
+    out[:6] = ik_joints[:6]
+    out[6] = eef_base[6]
+    out[7:13] = ik_joints[6:12]
+    out[13] = eef_base[13]
+    return clamp_action(out)
+
+
+def policy_actions_to_joint_actions(
+    raw_actions: np.ndarray,
+    *,
+    env,
+    args: argparse.Namespace,
+    t_world_from_left_base: np.ndarray,
+    t_world_from_right_base: np.ndarray,
+) -> np.ndarray:
+    actions = np.asarray(raw_actions, dtype=np.float32).reshape(-1, action_dim_for_mode(args))
+    if str(getattr(args, "action_mode", "joint")) != "eef_absolute6d":
+        return np.asarray([clamp_action(action) for action in actions], dtype=np.float32)
+    return np.asarray(
+        [
+            eef_policy_action_to_joint_action(
+                action,
+                env=env,
+                t_world_from_left_base=t_world_from_left_base,
+                t_world_from_right_base=t_world_from_right_base,
+            )
+            for action in actions
+        ],
+        dtype=np.float32,
+    )
 
 
 def derive_dp3_settings(args: argparse.Namespace) -> tuple[str, str]:
@@ -1482,6 +1577,7 @@ def run_real_inference(args: argparse.Namespace) -> None:
 
     print("[INFO] Starting ZED cameras ...")
     live = start_zed_cameras(args)
+    t_world_from_left_base, t_world_from_right_base = load_eef_world_from_base_transforms(args)
     env = None
     keyboard_listener = KeyboardCommandListener(
         enabled=bool(args.keyboard_control),
@@ -1538,10 +1634,16 @@ def run_real_inference(args: argparse.Namespace) -> None:
                         joints = controller.latest_action()
                     else:
                         joints = last_action.copy()
+                    agent_vector = agent_vector_from_joint_action(
+                        joints,
+                        args,
+                        t_world_from_left_base,
+                        t_world_from_right_base,
+                    )
                     chunk_timings: dict[str, float] = {}
                     print("[TRACE] Building live point-cloud observation ...", flush=True)
                     with profile_section(chunk_timings, "build_obs_pre", bool(args.profile_timing)):
-                        observation, dense_scene = build_robotwin_observation(args=args, live=live, joint_vector=joints)
+                        observation, dense_scene = build_robotwin_observation(args=args, live=live, agent_vector=agent_vector)
                     if keyboard_listener.reset_requested() or keyboard_listener.quit_requested():
                         continue
                     if needs_sam2_objpc:
@@ -1570,7 +1672,14 @@ def run_real_inference(args: argparse.Namespace) -> None:
                     model.update_obs(encoded_obs)
                     print("[TRACE] Running DP3 policy inference ...", flush=True)
                     with profile_section(chunk_timings, "dp3_policy", bool(args.profile_timing)):
-                        actions = np.asarray(model.get_action(), dtype=np.float32).reshape(-1, 14)
+                        raw_actions = np.asarray(model.get_action(), dtype=np.float32).reshape(-1, action_dim_for_mode(args))
+                        actions = policy_actions_to_joint_actions(
+                            raw_actions,
+                            env=env,
+                            args=args,
+                            t_world_from_left_base=t_world_from_left_base,
+                            t_world_from_right_base=t_world_from_right_base,
+                        )
                     if keyboard_listener.reset_requested() or keyboard_listener.quit_requested():
                         continue
                     if controller is None:
@@ -1633,7 +1742,13 @@ def run_real_inference(args: argparse.Namespace) -> None:
                 joints = current_joint_vector(env, last_action)
             print("[TRACE] Building live point-cloud observation ...", flush=True)
             with profile_section(chunk_timings, "build_obs_pre", bool(args.profile_timing)):
-                observation, dense_scene = build_robotwin_observation(args=args, live=live, joint_vector=joints)
+                agent_vector = agent_vector_from_joint_action(
+                    joints,
+                    args,
+                    t_world_from_left_base,
+                    t_world_from_right_base,
+                )
+                observation, dense_scene = build_robotwin_observation(args=args, live=live, agent_vector=agent_vector)
             if keyboard_listener.reset_requested() or keyboard_listener.quit_requested():
                 continue
             if needs_sam2_objpc:
@@ -1662,7 +1777,14 @@ def run_real_inference(args: argparse.Namespace) -> None:
             model.update_obs(encoded_obs)
             print("[TRACE] Running DP3 policy inference ...", flush=True)
             with profile_section(chunk_timings, "dp3_policy", bool(args.profile_timing)):
-                actions = np.asarray(model.get_action(), dtype=np.float32).reshape(-1, 14)
+                raw_actions = np.asarray(model.get_action(), dtype=np.float32).reshape(-1, action_dim_for_mode(args))
+                actions = policy_actions_to_joint_actions(
+                    raw_actions,
+                    env=env,
+                    args=args,
+                    t_world_from_left_base=t_world_from_left_base,
+                    t_world_from_right_base=t_world_from_right_base,
+                )
             if keyboard_listener.reset_requested() or keyboard_listener.quit_requested():
                 continue
             if bool(args.profile_timing):
@@ -1739,7 +1861,13 @@ def run_real_inference(args: argparse.Namespace) -> None:
                     with profile_section(step_timings, "robot_obs", bool(args.profile_timing)):
                         joints = current_joint_vector(env, last_action)
                     with profile_section(step_timings, "build_obs", bool(args.profile_timing)):
-                        observation, dense_scene = build_robotwin_observation(args=args, live=live, joint_vector=joints)
+                        agent_vector = agent_vector_from_joint_action(
+                            joints,
+                            args,
+                            t_world_from_left_base,
+                            t_world_from_right_base,
+                        )
+                        observation, dense_scene = build_robotwin_observation(args=args, live=live, agent_vector=agent_vector)
                     if needs_sam2_objpc:
                         tracker_factory, extract_all_fn, _ = sam2_runtime
                         with profile_section(step_timings, "sam2", bool(args.profile_timing)):
@@ -1758,7 +1886,15 @@ def run_real_inference(args: argparse.Namespace) -> None:
                         encoded_obs = encode_obs(observation, model)
                 else:
                     with profile_section(step_timings, "reuse_obs", bool(args.profile_timing)):
-                        encoded_obs = encoded_obs_with_joint_vector(encoded_obs, last_action)
+                        encoded_obs = encoded_obs_with_agent_vector(
+                            encoded_obs,
+                            agent_vector_from_joint_action(
+                                last_action,
+                                args,
+                                t_world_from_left_base,
+                                t_world_from_right_base,
+                            ),
+                        )
                 model.update_obs(encoded_obs)
                 if bool(args.show_img):
                     with profile_section(step_timings, "show_img", bool(args.profile_timing)):
@@ -1796,6 +1932,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config_name", default="")
     parser.add_argument("--gpu_id", default="0")
     parser.add_argument("--use_rgb", action="store_true")
+    parser.add_argument(
+        "--action_mode",
+        choices=["joint", "eef_absolute6d"],
+        default="joint",
+        help="Policy action representation. eef_absolute6d decodes 20D EEF actions in --eef_frame_mode through Dobot IK before ServoJ.",
+    )
 
     parser.add_argument("--semantic_ckpt_A", default=str(DEFAULT_SEMANTIC_CKPT_A))
     parser.add_argument("--semantic_ckpt_B", default="none")
@@ -1807,6 +1949,23 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--frame_mode", choices=["reference_camera", "workspace"], default="workspace")
     parser.add_argument("--output_frame", choices=["source", "workspace", "left_base", "right_base"], default="source")
     parser.add_argument("--robot_camera_calibration_path", default="")
+    parser.add_argument("--eef_calibration_path", default=str(DEFAULT_WORKSPACE_CALIBRATION))
+    parser.add_argument(
+        "--eef_frame_mode",
+        choices=["reference_camera", "workspace", "left_base", "right_base"],
+        default="right_base",
+    )
+    parser.add_argument(
+        "--left_robot_camera_calibration_path",
+        default=str(DEFAULT_ROBOT_CAMERA_CALIBRATION_DIR / "robot_camera_apriltag_left_global.yaml"),
+    )
+    parser.add_argument(
+        "--right_robot_camera_calibration_path",
+        default=str(DEFAULT_ROBOT_CAMERA_CALIBRATION_DIR / "robot_camera_apriltag_right_global.yaml"),
+    )
+    parser.add_argument("--eef_tool_x_m", type=float, default=0.0)
+    parser.add_argument("--eef_tool_y_m", type=float, default=0.0)
+    parser.add_argument("--eef_tool_z_m", type=float, default=0.197)
     parser.add_argument("--serial_remap", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument(
         "--camera_labels",

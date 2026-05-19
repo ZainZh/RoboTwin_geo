@@ -31,4 +31,6 @@ python scripts/process_data_ndf_pointwise_actorseg_hybrid.py \
     --camera_names "${actorseg_camera_names}" \
     --ndf_device "${ndf_device}" \
     --ndf_num_points "${ndf_point_num}" \
+    --target_num_points "${target_num_points}" \
+    --output_suffix="${output_suffix}" \
     "${extra_args[@]}"
