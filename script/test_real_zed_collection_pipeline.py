@@ -101,6 +101,106 @@ class RealZedCollectionPipelineTest(unittest.TestCase):
         self.assertGreater(canvas.shape[1], 100)
         self.assertGreater(int(canvas.sum()), 0)
 
+    def test_export_raw_rgb_images_writes_selected_episode_frames(self):
+        from script.real_zed_collection.export_raw_rgb_images import export_raw_rgb_images, resolve_raw_episode_dir
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw_root = root / "geo_mani_data" / "grasp_mug" / "real_zed_raw"
+            episode0 = raw_root / "episode_20260501000000"
+            episode1 = raw_root / "episode_20260501000001"
+            episode0.mkdir(parents=True)
+            episode1.mkdir(parents=True)
+
+            (episode0 / "manifest.json").write_text(json.dumps({"frames": []}), encoding="utf-8")
+            frames = []
+            for frame_idx in range(3):
+                cameras = {}
+                for camera_label, value in (("global", 10), ("left", 30)):
+                    rgb = np.full((4, 5, 3), value + frame_idx, dtype=np.uint8)
+                    path = episode1 / f"{camera_label}_{frame_idx:06d}.npz"
+                    np.savez(path, rgb=rgb)
+                    cameras[camera_label] = path.name
+                frames.append({"frame_index": frame_idx, "cameras": cameras})
+            (episode1 / "manifest.json").write_text(
+                json.dumps({"camera_labels": ["global", "left"], "frames": frames}),
+                encoding="utf-8",
+            )
+
+            resolved = resolve_raw_episode_dir(task_name="grasp_mug", episode="1", raw_root=raw_root)
+            self.assertEqual(resolved, episode1.resolve())
+
+            summary = export_raw_rgb_images(
+                raw_episode_dir=episode1,
+                output_dir=root / "exports",
+                camera_labels=["left"],
+                frame_stride=2,
+                max_frames=None,
+            )
+
+            self.assertEqual(summary["saved_count"], 2)
+            self.assertEqual(summary["camera_labels"], ["left"])
+            self.assertTrue((root / "exports" / "left" / "frame_000000.png").exists())
+            self.assertFalse((root / "exports" / "global").exists())
+
+    def test_export_raw_colored_pointclouds_writes_selected_episode_ply(self):
+        from script.real_zed_collection.export_raw_colored_pointclouds import export_raw_colored_pointclouds
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw_episode = root / "geo_mani_data" / "grasp_mug" / "real_zed_raw" / "episode_20260501000001"
+            raw_episode.mkdir(parents=True)
+            calib_path = raw_episode / "calibration_snapshot.yaml"
+            calib_path.write_text(
+                "\n".join(
+                    [
+                        "reference_camera: global",
+                        "cameras:",
+                        "  global:",
+                        "    serial_number: 111",
+                        "    camera_matrix: [[1, 0, 0], [0, 1, 0], [0, 0, 1]]",
+                        "relative_to_reference:",
+                        "  global:",
+                        "    t_ref_from_cam: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            frames = []
+            for frame_idx in range(2):
+                rgb = np.zeros((2, 2, 3), dtype=np.uint8)
+                rgb[..., 0] = 10 + frame_idx
+                depth = np.ones((2, 2), dtype=np.float32)
+                camera_path = raw_episode / f"global_{frame_idx:06d}.npz"
+                np.savez(camera_path, rgb=rgb, depth_m=depth, camera_matrix=np.eye(3, dtype=np.float32))
+                frames.append({"frame_index": frame_idx, "cameras": {"global": camera_path.name}})
+            (raw_episode / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "camera_labels": ["global"],
+                        "camera_serials": {"global": 111},
+                        "calibration_snapshot_path": calib_path.name,
+                        "frames": frames,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            summary = export_raw_colored_pointclouds(
+                raw_episode_dir=raw_episode,
+                output_dir=root / "pcd_exports",
+                camera_labels=["global"],
+                frame_stride=1,
+                max_frames=1,
+                point_num=0,
+            )
+
+            ply_path = root / "pcd_exports" / "fused" / "frame_000000.ply"
+            self.assertEqual(summary["saved_count"], 1)
+            self.assertTrue(ply_path.exists())
+            header = ply_path.read_bytes().split(b"end_header\n", 1)[0].decode("ascii")
+            self.assertIn("element vertex 4", header)
+
     def test_dp_real_zed_preprocess_can_write_three_camera_zarr(self):
         module_path = Path(__file__).resolve().parents[1] / "policy" / "DP" / "process_data_real_zed.py"
         spec = importlib.util.spec_from_file_location("process_data_real_zed_for_test", module_path)

@@ -759,7 +759,15 @@ def eef_policy_action_to_joint_action(
         t_world_from_left_base=t_world_from_left_base,
         t_world_from_right_base=t_world_from_right_base,
     )
-    ik_joints = np.asarray(env.get_ik(eef_base), dtype=np.float32).reshape(-1)
+    try:
+        ik_joints = np.asarray(env.get_ik(eef_base), dtype=np.float32).reshape(-1)
+    except Exception as exc:
+        raise RuntimeError(
+            "Dobot IK failed while converting EEF policy action. "
+            f"eef_world={np.round(eef_world, 4).tolist()} "
+            f"eef_base={np.round(eef_base, 4).tolist()} "
+            f"cause={type(exc).__name__}: {exc}"
+        ) from exc
     if ik_joints.shape[0] == 14:
         out = ik_joints.copy()
         out[6] = eef_base[6]
