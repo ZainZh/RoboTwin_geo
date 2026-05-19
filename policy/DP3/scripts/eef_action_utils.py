@@ -129,6 +129,21 @@ def joint14_to_eef14(
     return np.concatenate([left_pose, [joints[6]], right_pose, [joints[13]]]).astype(np.float32)
 
 
+def eef_pose12_base_to_eef14(
+    eef_pose_base: np.ndarray,
+    gripper_source: np.ndarray,
+    t_world_from_left_base: np.ndarray | None = None,
+    t_world_from_right_base: np.ndarray | None = None,
+) -> np.ndarray:
+    eef_pose = np.asarray(eef_pose_base, dtype=np.float64).reshape(12)
+    grippers = np.asarray(gripper_source, dtype=np.float64).reshape(14)
+    left_tf = np.eye(4, dtype=np.float64) if t_world_from_left_base is None else np.asarray(t_world_from_left_base, dtype=np.float64).reshape(4, 4)
+    right_tf = np.eye(4, dtype=np.float64) if t_world_from_right_base is None else np.asarray(t_world_from_right_base, dtype=np.float64).reshape(4, 4)
+    left_pose = transform_pose6(eef_pose[:6], left_tf)
+    right_pose = transform_pose6(eef_pose[6:12], right_tf)
+    return np.concatenate([left_pose, [grippers[6]], right_pose, [grippers[13]]]).astype(np.float32)
+
+
 def eef14_to_action20(eef14: np.ndarray) -> np.ndarray:
     eef = np.asarray(eef14, dtype=np.float64).reshape(14)
     return np.concatenate(
@@ -176,6 +191,7 @@ def episode_eef_state_action_arrays(
     joint_vectors: np.ndarray,
     *,
     control_vectors: np.ndarray | None = None,
+    eef_pose_base: np.ndarray | None = None,
     t_world_from_left_base: np.ndarray | None = None,
     t_world_from_right_base: np.ndarray | None = None,
     tool_x_m: float = 0.0,
@@ -190,6 +206,32 @@ def episode_eef_state_action_arrays(
     controls = joints if control_vectors is None else np.asarray(control_vectors, dtype=np.float64)
     if controls.shape != joints.shape:
         raise ValueError(f"Expected control_vectors shape {joints.shape}, got {controls.shape}")
+
+    if eef_pose_base is not None:
+        measured_eef = np.asarray(eef_pose_base, dtype=np.float64)
+        if measured_eef.shape != (joints.shape[0], 12):
+            raise ValueError(f"Expected eef_pose_base shape ({joints.shape[0]},12), got {measured_eef.shape}")
+        states = [
+            eef_pose12_base_to_eef14(
+                measured_eef[idx],
+                joints[idx],
+                t_world_from_left_base=t_world_from_left_base,
+                t_world_from_right_base=t_world_from_right_base,
+            )
+            for idx in range(joints.shape[0] - 1)
+        ]
+        actions = [
+            eef14_to_action20(
+                eef_pose12_base_to_eef14(
+                    measured_eef[idx],
+                    controls[idx],
+                    t_world_from_left_base=t_world_from_left_base,
+                    t_world_from_right_base=t_world_from_right_base,
+                )
+            )
+            for idx in range(1, measured_eef.shape[0])
+        ]
+        return np.asarray(states, dtype=np.float32), np.asarray(actions, dtype=np.float32)
 
     states = [
         joint14_to_eef14(
@@ -368,6 +410,7 @@ def eef_arrays_for_episode(args: Any, episode: dict[str, Any]) -> tuple[np.ndarr
     return episode_eef_state_action_arrays(
         episode["vector"],
         control_vectors=episode.get("control"),
+        eef_pose_base=episode.get("eef_pose_base"),
         t_world_from_left_base=t_world_from_left_base,
         t_world_from_right_base=t_world_from_right_base,
         tool_x_m=float(getattr(args, "eef_tool_x_m", 0.0)),

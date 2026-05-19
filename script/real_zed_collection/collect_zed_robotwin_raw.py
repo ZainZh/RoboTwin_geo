@@ -497,10 +497,16 @@ def _workspace_bounds_from_args(args: Args) -> WorkspaceBounds:
 def _build_robot_snapshot(obs: dict[str, Any], action: np.ndarray) -> dict[str, np.ndarray]:
     joint_positions = np.asarray(obs.get("joint_positions", action), dtype=np.float32).reshape(-1).copy()
     joint_velocities = np.asarray(obs.get("joint_velocities", np.zeros_like(joint_positions)), dtype=np.float32).reshape(-1).copy()
-    return {
+    snapshot = {
         "joint_positions": joint_positions,
         "joint_velocities": joint_velocities,
     }
+    if "eef_pose_base" in obs or "ee_pos_quat" in obs:
+        eef_pose = np.asarray(obs.get("eef_pose_base", obs.get("ee_pos_quat")), dtype=np.float32).reshape(-1).copy()
+        if eef_pose.shape[0] != 12:
+            raise ValueError(f"Expected 12-dim real EEF pose, got {eef_pose.shape}")
+        snapshot["eef_pose_base"] = eef_pose
+    return snapshot
 
 
 def _write_task_queue_loop(task_queue: Queue, manifest_flush_interval: int, compress_camera_frames: bool) -> None:
@@ -892,14 +898,16 @@ def _save_raw_frame(
     joint_positions = np.asarray(obs.get("joint_positions", action), dtype=np.float32).reshape(-1)
     if joint_positions.shape[0] != 14:
         raise ValueError(f"Expected 14-dim joint_positions, got {joint_positions.shape}")
-    np.savez(
-        robot_path,
-        timestamp_unix_sec=np.asarray(time.time(), dtype=np.float64),
-        joint_vector=joint_positions,
-        joint_positions=joint_positions,
-        joint_velocities=np.asarray(obs.get("joint_velocities", np.zeros_like(joint_positions)), dtype=np.float32),
-        control=np.asarray(action, dtype=np.float32),
-    )
+    robot_payload = {
+        "timestamp_unix_sec": np.asarray(time.time(), dtype=np.float64),
+        "joint_vector": joint_positions,
+        "joint_positions": joint_positions,
+        "joint_velocities": np.asarray(obs.get("joint_velocities", np.zeros_like(joint_positions)), dtype=np.float32),
+        "control": np.asarray(action, dtype=np.float32),
+    }
+    if "eef_pose_base" in obs:
+        robot_payload["eef_pose_base"] = np.asarray(obs["eef_pose_base"], dtype=np.float32).reshape(12)
+    np.savez(robot_path, **robot_payload)
 
     camera_rel_paths = {}
     camera_quality = {}

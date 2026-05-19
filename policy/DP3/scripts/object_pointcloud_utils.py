@@ -23,6 +23,7 @@ def load_hdf5(dataset_path: str) -> dict:
         data = {
             "vector": root["/joint_action/vector"][()],
             "control": _read_optional(root, "/joint_action/control"),
+            "eef_pose_base": _read_optional(root, "/eef_action/base_pose6"),
             "pointcloud": root["/pointcloud"][()],
             "intrinsic_cv": _read_optional(head_group, "intrinsic_cv") if head_group is not None else None,
             "extrinsic_cv": _read_optional(head_group, "extrinsic_cv") if head_group is not None else None,
