@@ -1,9 +1,9 @@
 #!/bin/bash
 
 task_name=${1:-grasp_mug}
-task_config=${2:-demo_real_zed_sam2_objpc_global}
+task_config=${2:-demo_real_zed_sam2_objpc_global-objpc}
 ckpt_setting="${task_config}-eef-absolute6d-global"
-expert_data_num=${3:-32}
+expert_data_num=${3:-50}
 seed=${4:-0}
 gpu_id=${5:-0}
 checkpoint_num=${6:-3000}

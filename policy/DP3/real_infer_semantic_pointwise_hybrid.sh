@@ -2,16 +2,19 @@
 
 task_name=${1:-grasp_mug}
 task_config=${2:-demo_real_zed_sam2_objpc}
-ckpt_setting="${task_config}-objpc-semantic-pointwise-hybrid"
-expert_data_num=${3:-32}
+ckpt_setting="${task_config}_global-objpc-semantic-pointwise-hybrid"
+#ckpt_setting="${task_config}_global-objpc"
+expert_data_num=${3:-50}
 seed=${4:-0}
 gpu_id=${5:-0}
 semantic_ckpt_A=${6:-${SEMANTIC_CKPT_A:-${HOME}/DataModel/semantic/mug.pt}}
-semantic_ckpt_B=${7:-${SEMANTIC_CKPT_B:-none}}
+#semantic_ckpt_A=${6:-${SEMANTIC_CKPT_A:-none}}
+#semantic_ckpt_B=${7:-${SEMANTIC_CKPT_B::-${HOME}/DataModel/semantic/Teapot_old.pt}}
+semantic_ckpt_B=${7:-${SEMANTIC_CKPT_B::-none}}
 semantic_device=${8:-cuda:0}
 object_placeholders=${9:-\{A\},\{B\}}
 checkpoint_num=${10:-3000}
-semantic_point_num=${11:-1024}
+semantic_point_num=${11:-256}
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(cd "${script_dir}/../.." && pwd)
@@ -31,8 +34,7 @@ else
     extra_flags=("${@:14}")
 fi
 
-#output_frame=$(resolve_real_zed_output_frame "${repo_root}" "${task_name}" "${task_config}" "${output_frame_arg}")
-output_frame=right_base
+output_frame=$(resolve_real_zed_output_frame "${repo_root}" "${task_name}" "${task_config}" "${output_frame_arg}")
 robot_camera_calibration_path=$(
     resolve_real_zed_robot_camera_calibration_path \
         "${repo_root}" \
