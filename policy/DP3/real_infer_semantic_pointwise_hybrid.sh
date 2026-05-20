@@ -1,9 +1,9 @@
 #!/bin/bash
 
-task_name=${1:-grasp_mug}
+task_name=${1:-grasp_mug_new}
 task_config=${2:-demo_real_zed_sam2_objpc}
 ckpt_setting="${task_config}_global-objpc-semantic-pointwise-hybrid"
-expert_data_num=${3:-50}
+expert_data_num=${3:-70}
 seed=${4:-0}
 gpu_id=${5:-0}
 semantic_ckpt_A=${6:-${SEMANTIC_CKPT_A:-${HOME}/DataModel/semantic/mug.pt}}
