@@ -10,9 +10,9 @@ camera_label=${6:-global}
 head_camera_type=${7:-Large_L515}
 resume=${8:-true}
 meta_path=${9:-}
-batch_size=${10:-64}
+batch_size=${10:-32}
 val_batch_size=${11:-${batch_size}}
-gradient_accumulate_every=${12:-2}
+gradient_accumulate_every=${12:-4}
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(cd "${script_dir}/../.." && pwd)
