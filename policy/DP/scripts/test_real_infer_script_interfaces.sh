@@ -46,3 +46,22 @@ if grep -F -- '--execute' "${capture_multi}" >/dev/null; then
     echo "DP real inference wrapper should stay dry-run unless caller passes --execute" >&2
     exit 1
 fi
+
+capture_eef="${tmp_dir}/eef_args.txt"
+REAL_DP_INFER_CAPTURE="${capture_eef}" PATH="${fake_bin}:${PATH}" \
+    bash "${repo_root}/policy/DP/real_infer_eef_absolute6d_global.sh" \
+    grasp_mug demo_real_zed_sam2_objpc_global 50 0 0 global 3000
+
+grep -F -- 'script/real_zed_inference/real_dp_inference.py' "${capture_eef}" >/dev/null
+grep -F -- '--action_mode' "${capture_eef}" >/dev/null
+grep -F -- 'eef_absolute6d' "${capture_eef}" >/dev/null
+grep -F -- '--eef_frame_mode' "${capture_eef}" >/dev/null
+grep -F -- 'reference_camera' "${capture_eef}" >/dev/null
+grep -F -- '--ckpt_setting' "${capture_eef}" >/dev/null
+grep -F -- 'demo_real_zed_sam2_objpc_global-dp-global-eef-absolute6d-global' "${capture_eef}" >/dev/null
+grep -F -- '--dp_camera_map' "${capture_eef}" >/dev/null
+grep -F -- 'head_cam:global' "${capture_eef}" >/dev/null
+if grep -F -- '--execute' "${capture_eef}" >/dev/null; then
+    echo "DP EEF real inference wrapper should stay dry-run unless caller passes --execute" >&2
+    exit 1
+fi

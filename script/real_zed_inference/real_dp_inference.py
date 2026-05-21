@@ -31,6 +31,8 @@ from script.real_zed_collection.collect_zed_robotwin_raw import (  # noqa: E402
 from script.real_zed_collection.real_zed_utils import load_three_zed_calibration  # noqa: E402
 from script.real_zed_inference.real_dp3_inference import (  # noqa: E402
     AsyncActionController,
+    action_dim_for_mode,
+    agent_vector_from_joint_action,
     build_action_diagnostic_row,
     build_robot_env,
     clamp_action,
@@ -38,10 +40,12 @@ from script.real_zed_inference.real_dp3_inference import (  # noqa: E402
     current_joint_vector,
     execute_action,
     format_timings,
+    load_eef_world_from_base_transforms,
     prepare_action_for_execution,
     print_info,
     print_warning,
     profile_section,
+    policy_actions_to_joint_actions,
     reset_robot_to_photo_pose,
     resolve_path,
     should_print_step_timing,
@@ -49,6 +53,7 @@ from script.real_zed_inference.real_dp3_inference import (  # noqa: E402
 
 
 DEFAULT_CALIBRATION = REPO_ROOT / "script" / "real_zed_collection" / "calibration" / "three_camera_workspace_extrinsics.yaml"
+DEFAULT_ROBOT_CAMERA_CALIBRATION_DIR = REPO_ROOT / "script" / "real_zed_collection" / "calibration"
 STANDARD_DP_CAMERA_MAP = {
     "head_cam": "global",
     "left_cam": "left",
@@ -176,7 +181,7 @@ def _resize_rgb_if_needed(rgb: np.ndarray, image_shape_chw: tuple[int, int, int]
 def build_dp_image_observation(
     *,
     frames_by_label: Mapping[str, Mapping[str, Any]],
-    joint_vector: np.ndarray,
+    agent_vector: np.ndarray,
     obs_keys: Sequence[str],
     camera_map: Mapping[str, str],
     image_shapes: Mapping[str, tuple[int, int, int]],
@@ -188,7 +193,7 @@ def build_dp_image_observation(
             raise KeyError(f"Live camera frame for label {label!r} is missing.")
         rgb = _resize_rgb_if_needed(np.asarray(frames_by_label[label]["rgb"], dtype=np.uint8), image_shapes[str(obs_key)])
         obs[str(obs_key)] = (np.moveaxis(rgb, -1, 0).astype(np.float32) / 255.0)
-    obs["agent_pos"] = np.asarray(joint_vector, dtype=np.float32).reshape(14)
+    obs["agent_pos"] = np.asarray(agent_vector, dtype=np.float32).reshape(14)
     return obs
 
 
@@ -465,6 +470,10 @@ def _cfg_int(cfg: Any, key: str, default: int) -> int:
 def run_real_inference(args: argparse.Namespace) -> None:
     if bool(args.execute) and bool(args.no_robot):
         raise ValueError("--execute cannot be used together with --no_robot")
+    if str(getattr(args, "action_mode", "joint")) == "eef_absolute6d" and bool(args.no_robot):
+        raise ValueError("DP EEF inference requires a robot environment for Dobot IK; do not use --no_robot.")
+    if getattr(args, "robot_io_lock", None) is None:
+        args.robot_io_lock = threading.RLock()
 
     print("[INFO] Starting real DP image inference.")
     print("[INFO] Loading DP policy ...")
@@ -480,6 +489,7 @@ def run_real_inference(args: argparse.Namespace) -> None:
     live = start_rgb_zed_cameras(args)
     camera_map = parse_dp_camera_map(args.dp_camera_map, required_keys=obs_keys, live_labels=live.labels)
     print(f"[INFO] DP obs camera map: {camera_map}")
+    t_world_from_left_base, t_world_from_right_base = load_eef_world_from_base_transforms(args)
 
     env = None
     try:
@@ -510,6 +520,8 @@ def run_real_inference(args: argparse.Namespace) -> None:
                 image_shapes=image_shapes,
                 camera_map=camera_map,
                 initial_action=last_action,
+                t_world_from_left_base=t_world_from_left_base,
+                t_world_from_right_base=t_world_from_right_base,
             )
         else:
             _run_sync_loop(
@@ -522,6 +534,8 @@ def run_real_inference(args: argparse.Namespace) -> None:
                 image_shapes=image_shapes,
                 camera_map=camera_map,
                 initial_action=last_action,
+                t_world_from_left_base=t_world_from_left_base,
+                t_world_from_right_base=t_world_from_right_base,
             )
     finally:
         live.stop()
@@ -533,7 +547,7 @@ def _build_current_obs(
     *,
     args: argparse.Namespace,
     live: LiveRGBCameras,
-    joints: np.ndarray,
+    agent_vector: np.ndarray,
     obs_keys: Sequence[str],
     image_shapes: Mapping[str, tuple[int, int, int]],
     camera_map: Mapping[str, str],
@@ -547,7 +561,7 @@ def _build_current_obs(
     with profile_section(timings, "encode_rgb", bool(args.profile_timing)):
         obs = build_dp_image_observation(
             frames_by_label=frames,
-            joint_vector=joints,
+            agent_vector=agent_vector,
             obs_keys=obs_keys,
             camera_map=camera_map,
             image_shapes=image_shapes,
@@ -566,6 +580,8 @@ def _run_async_loop(
     image_shapes: Mapping[str, tuple[int, int, int]],
     camera_map: Mapping[str, str],
     initial_action: np.ndarray,
+    t_world_from_left_base: np.ndarray,
+    t_world_from_right_base: np.ndarray,
 ) -> None:
     controller: AsyncActionController | None = None
     try:
@@ -575,18 +591,31 @@ def _run_async_loop(
                 joints = controller.latest_action()
             else:
                 joints = np.asarray(initial_action, dtype=np.float32).reshape(14)
+            agent_vector = agent_vector_from_joint_action(
+                joints,
+                args,
+                t_world_from_left_base,
+                t_world_from_right_base,
+            )
             chunk_timings: dict[str, float] = {}
             obs, _frames = _build_current_obs(
                 args=args,
                 live=live,
-                joints=joints,
+                agent_vector=agent_vector,
                 obs_keys=obs_keys,
                 image_shapes=image_shapes,
                 camera_map=camera_map,
                 timings=chunk_timings,
             )
             with profile_section(chunk_timings, "dp_policy", bool(args.profile_timing)):
-                actions = runner.get_action(policy, obs)
+                raw_actions = runner.get_action(policy, obs).reshape(-1, action_dim_for_mode(args))
+                actions = policy_actions_to_joint_actions(
+                    raw_actions,
+                    env=env,
+                    args=args,
+                    t_world_from_left_base=t_world_from_left_base,
+                    t_world_from_right_base=t_world_from_right_base,
+                )
             if controller is None:
                 controller = AsyncActionController(env=env, args=args, initial_action=joints)
                 controller.start()
@@ -616,6 +645,8 @@ def _run_sync_loop(
     image_shapes: Mapping[str, tuple[int, int, int]],
     camera_map: Mapping[str, str],
     initial_action: np.ndarray,
+    t_world_from_left_base: np.ndarray,
+    t_world_from_right_base: np.ndarray,
 ) -> None:
     action_step = 0
     first_action = True
@@ -647,17 +678,30 @@ def _run_sync_loop(
             chunk_timings: dict[str, float] = {}
             with profile_section(chunk_timings, "robot_obs_pre", bool(args.profile_timing)):
                 joints = current_joint_vector(env, last_action)
+                agent_vector = agent_vector_from_joint_action(
+                    joints,
+                    args,
+                    t_world_from_left_base,
+                    t_world_from_right_base,
+                )
             obs, _frames = _build_current_obs(
                 args=args,
                 live=live,
-                joints=joints,
+                agent_vector=agent_vector,
                 obs_keys=obs_keys,
                 image_shapes=image_shapes,
                 camera_map=camera_map,
                 timings=chunk_timings,
             )
             with profile_section(chunk_timings, "dp_policy", bool(args.profile_timing)):
-                actions = runner.get_action(policy, obs)
+                raw_actions = runner.get_action(policy, obs).reshape(-1, action_dim_for_mode(args))
+                actions = policy_actions_to_joint_actions(
+                    raw_actions,
+                    env=env,
+                    args=args,
+                    t_world_from_left_base=t_world_from_left_base,
+                    t_world_from_right_base=t_world_from_right_base,
+                )
             if bool(args.profile_timing):
                 chunk_timings["chunk_total"] = sum(chunk_timings.values())
                 print_info(f"[TIMING dp_chunk@step {action_step + 1:04d}] {format_timings(chunk_timings)} actions={len(actions)}")
@@ -709,7 +753,12 @@ def _run_sync_loop(
                     obs, _frames = _build_current_obs(
                         args=args,
                         live=live,
-                        joints=current_joint_vector(env, last_action),
+                        agent_vector=agent_vector_from_joint_action(
+                            current_joint_vector(env, last_action),
+                            args,
+                            t_world_from_left_base,
+                            t_world_from_right_base,
+                        ),
                         obs_keys=obs_keys,
                         image_shapes=image_shapes,
                         camera_map=camera_map,
@@ -718,7 +767,12 @@ def _run_sync_loop(
                     runner.update_obs(obs)
                 else:
                     obs = dict(obs)
-                    obs["agent_pos"] = last_action.copy()
+                    obs["agent_pos"] = agent_vector_from_joint_action(
+                        last_action,
+                        args,
+                        t_world_from_left_base,
+                        t_world_from_right_base,
+                    )
                     runner.update_obs(obs)
                 elapsed_total = time.perf_counter() - loop_start
                 if rate_sec > 0 and elapsed_total < rate_sec:
@@ -747,8 +801,31 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--n_obs_steps", type=int, default=3)
     parser.add_argument("--n_action_steps", type=int, default=6)
+    parser.add_argument(
+        "--action_mode",
+        choices=["joint", "eef_absolute6d"],
+        default="joint",
+        help="Policy action representation. EEF mode decodes 20D actions through Dobot IK before ServoJ.",
+    )
 
     parser.add_argument("--calibration_path", default=str(DEFAULT_CALIBRATION))
+    parser.add_argument("--eef_calibration_path", default=str(DEFAULT_CALIBRATION))
+    parser.add_argument(
+        "--eef_frame_mode",
+        choices=["reference_camera", "workspace", "left_base", "right_base"],
+        default="reference_camera",
+    )
+    parser.add_argument(
+        "--left_robot_camera_calibration_path",
+        default=str(DEFAULT_ROBOT_CAMERA_CALIBRATION_DIR / "robot_camera_apriltag_left_global.yaml"),
+    )
+    parser.add_argument(
+        "--right_robot_camera_calibration_path",
+        default=str(DEFAULT_ROBOT_CAMERA_CALIBRATION_DIR / "robot_camera_apriltag_right_global.yaml"),
+    )
+    parser.add_argument("--eef_tool_x_m", type=float, default=0.0)
+    parser.add_argument("--eef_tool_y_m", type=float, default=0.0)
+    parser.add_argument("--eef_tool_z_m", type=float, default=0.197)
     parser.add_argument("--camera_labels", default="left")
     parser.add_argument("--dp_camera_map", default="")
     parser.add_argument("--zed_serials", default="")

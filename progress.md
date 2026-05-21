@@ -72,6 +72,13 @@
   - `git diff --check`
 - Full `python -m unittest script.test_real_zed_collection_pipeline` still fails in this shell because `zarr` is not installed; the failing tests are unrelated DP image preprocess imports.
 
+## 2026-05-20: Semantic vs Baseline EEF Gripper Diagnostics
+- Read `outputs/real_zed_inference/semantic_eef_gripper.csv` and `outputs/real_zed_inference/baseline_eef_gripper.csv`.
+- Found both runs have `command_follow_error_gripper=0`, so the real gripper follows the commanded gripper targets in the diagnostic data.
+- Semantic run: 24 high command-gripper-delta runs at threshold `0.0199`, total 113 steps, average run length 4.7, maximum run length 15.
+- Baseline run: 8 high command-gripper-delta runs at threshold `0.0199`, total 154 steps, average run length 19.25, maximum run length 59.
+- Semantic command-gripper-delta-change is higher (`mean=0.00463`, `p90=0.01981`) than baseline (`mean=0.00213`, `p90=0.00691`), indicating more fragmented/chattery gripper command phases.
+
 ## Session: 2026-04-16 (`pour_kettle_mug`)
 
 ### Phase 1: Planning & Test Scope
@@ -1606,3 +1613,15 @@
   - Verified full `script.test_real_zed_inference_actions`.
   - Verified Python syntax checks for touched files.
   - Verified `git diff --check`.
+
+### Phase 72: Real-ZED DP EEF Image Policy
+- **Status:** complete with hardware run pending
+- Actions taken:
+  - Read `policy/DP/process_data_real_zed.py`, DP train/infer wrappers, DP image datasets/configs, and DP3 EEF utilities.
+  - Confirmed DP image baseline zarr currently stores joint `state`/`action`, while DP3 EEF utilities already provide EEF14 state and 20D absolute-6D action conversion from `joint_action` plus optional measured `/eef_action/base_pose6`.
+  - Added DP real-ZED preprocessing support for `--action_mode eef_absolute6d`, producing EEF14 `state` and 20D absolute-6D EEF `action`.
+  - Added `robot_dp_20.yaml`, `default_task_20.yaml`, and `default_task_20_multicam.yaml`.
+  - Added single-camera and multicam DP EEF training wrappers with `*-eef-absolute6d-global` zarr/checkpoint naming.
+  - Added DP EEF real inference support in `real_dp_inference.py`, converting policy EEF actions through Dobot IK before existing ServoJ smoothing/async control.
+  - Added wrapper interface coverage for DP EEF training and inference.
+  - Verified shell syntax, wrapper interface tests, Python compile, DP20 YAML shape checks, real inference help exposure, a RoboTwin-conda synthetic EEF zarr smoke, and `git diff --check`.

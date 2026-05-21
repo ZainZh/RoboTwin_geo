@@ -134,6 +134,7 @@
 - Real-ZED collection now treats xtrainer's `ee_pos_quat` field as the measured Dobot TCP pose, despite the misleading name. In the current Dobot driver it is produced by `GetPose()` and is `[x,y,z,rx,ry,rz]` in meters/radians for each arm, concatenated to 12D.
 - Raw robot frame NPZs can contain `eef_pose_base`, and postprocessed HDF5 stores it as `/eef_action/base_pose6`.
 - DP3 EEF preprocessing prefers `/eef_action/base_pose6` when present. It transforms the measured left/right base-frame poses into the requested EEF frame and appends grippers from the joint/control vectors; old HDF5 files without this dataset still use offline FK.
+- Comparing `semantic_eef_gripper.csv` and `baseline_eef_gripper.csv` on 2026-05-20 showed the gripper issue is not hardware follow error: `command_follow_error_gripper` is 0 in both runs. Semantic gripper commands are fragmented into many short high-delta runs, while baseline has fewer long continuous gripper phases.
 - `include/xtrainer_clover` is a symlink to `/home/zheng/github/xtrainer_clover`; the new Dobot FK/IK/ZMQ methods are therefore edits in that sibling repository, not normal RoboTwin_geo tracked files.
 - The EEF reference frame is now expected to be `right_base` by default. Point clouds, EEF `agent_pos`, and EEF actions must all use the same frame.
 - `load_world_from_base_transforms(..., frame_mode="right_base")` computes `T_right_base_from_left_base` and identity for the right arm by composing the workspace camera calibration with left/right robot-camera calibration files.
@@ -832,6 +833,10 @@
   - `eef_policy_action_to_joint_action(...)` decodes action20 to world-frame EEF pose, transforms it to left/right robot-base poses, then calls `env.get_ik(eef_base)`.
   - xtrainer's ZMQ robot server previously allowed method exceptions to terminate the request without replying, so a failed Dobot `InverseSolution` could leave the inference client blocked at `env.get_ik`.
   - The likely underlying causes for the original run are an unreachable predicted EEF target, stale/wrong robot-camera calibration for `reference_camera`, or a mismatch between the EEF training frame and inference frame. The next run will now report the actual `eef_world/eef_base` target and remote IK error.
+- Real-ZED DP EEF image-policy finding:
+  - DP image zarr preprocessing uses raw RGB frames plus HDF5 `/joint_action/vector` for both `state` and `action`; there is no point-cloud/SAM dependency in this DP path.
+  - Existing DP3 EEF helpers can be reused for DP image training: observation low-dim stays EEF14, while the action becomes 20D absolute EEF pose with 6D rotations.
+  - Real DP inference already imports DP3 robot execution primitives, so the EEF inference path should convert raw 20D policy actions to joint14 actions through the same `policy_actions_to_joint_actions(...)` / Dobot IK path before submitting to `AsyncActionController`.
 - LZ xtrainer EEF-control finding:
   - `include/lz_xtrainer/experiments/run_control.py` defaults `act_eef=True`. During data collection it still servo-follows leader joint commands, but it records the action as an EEF target by calling `agent.act_eef({})`.
   - `DobotAgent.act_eef(...)` converts leader joints to an EEF pose with `dobot_robot.get_fk(joint_actions[:6])`, then appends the leader gripper value. The recorded `control` is therefore `[x,y,z,rx,ry,rz,gripper]` per arm, not a 7D joint action.

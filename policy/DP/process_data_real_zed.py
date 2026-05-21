@@ -2,12 +2,20 @@ import argparse
 import json
 import os
 import shutil
+import sys
 from pathlib import Path
 
 import cv2
 import h5py
 import numpy as np
 import zarr
+
+
+DP3_SCRIPTS_ROOT = Path(__file__).resolve().parents[1] / "DP3" / "scripts"
+if str(DP3_SCRIPTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(DP3_SCRIPTS_ROOT))
+
+from eef_action_utils import add_eef_preprocess_args, eef_arrays_for_episode  # noqa: E402
 
 
 RAW_TO_ZARR_CAMERA_KEYS = {
@@ -39,9 +47,12 @@ def load_rgb(raw_episode_dir, rel_path, resize_hw=None):
     return image
 
 
-def load_joint_vector(hdf5_path):
+def load_robot_episode_vectors(hdf5_path):
     with h5py.File(hdf5_path, "r") as root:
-        return np.asarray(root["/joint_action/vector"][()], dtype=np.float32)
+        vector = np.asarray(root["/joint_action/vector"][()], dtype=np.float32)
+        control = np.asarray(root["/joint_action/control"][()], dtype=np.float32) if "/joint_action/control" in root else None
+        eef_pose_base = np.asarray(root["/eef_action/base_pose6"][()], dtype=np.float32) if "/eef_action/base_pose6" in root else None
+    return vector, control, eef_pose_base
 
 
 def parse_resize(value):
@@ -106,6 +117,7 @@ def build_dp_real_zed_zarr(
     meta_path,
     output_zarr,
     resize_hw=None,
+    action_args=None,
 ):
     if camera_labels is None:
         camera_labels = [camera_label or "global"]
@@ -130,10 +142,18 @@ def build_dp_real_zed_zarr(
         frames = manifest.get("frames", [])
         if not frames:
             raise ValueError(f"No frames in raw manifest: {raw_episode_dir / 'manifest.json'}")
-        joint_vector = load_joint_vector(hdf5_path)
+        joint_vector, control_vector, eef_pose_base = load_robot_episode_vectors(hdf5_path)
         frame_count = min(len(frames), joint_vector.shape[0])
         if frame_count < 2:
             raise ValueError(f"Episode {episode_idx} has fewer than 2 aligned frames.")
+        eef_arrays = None
+        if action_args is not None and str(getattr(action_args, "action_mode", "joint")) == "eef_absolute6d":
+            episode = {"vector": joint_vector[:frame_count]}
+            if control_vector is not None:
+                episode["control"] = control_vector[:frame_count]
+            if eef_pose_base is not None:
+                episode["eef_pose_base"] = eef_pose_base[:frame_count]
+            eef_arrays = eef_arrays_for_episode(action_args, episode)
 
         print(f"processing real-zed episode: {episode_idx + 1} / {expert_data_num}", end="\r")
         for frame_idx in range(frame_count):
@@ -146,9 +166,9 @@ def build_dp_real_zed_zarr(
                 for camera_label_i, zarr_key in camera_key_map.items():
                     rgb = load_rgb(raw_episode_dir, str(cameras[str(camera_label_i)]), resize_hw=resize_hw)
                     camera_arrays[zarr_key].append(np.moveaxis(rgb, -1, 0))
-                state_arrays.append(joint_vector[frame_idx])
+                state_arrays.append(eef_arrays[0][frame_idx] if eef_arrays is not None else joint_vector[frame_idx])
             if frame_idx != 0:
-                action_arrays.append(joint_vector[frame_idx])
+                action_arrays.append(eef_arrays[1][frame_idx - 1] if eef_arrays is not None else joint_vector[frame_idx])
 
         total_count += frame_count - 1
         episode_ends_arrays.append(total_count)
@@ -183,6 +203,8 @@ def build_dp_real_zed_zarr(
         "meta_path": str(Path(meta_path).expanduser().name),
         "portable": True,
         "expert_data_num": int(expert_data_num),
+        "action_mode": str(getattr(action_args, "action_mode", "joint")) if action_args is not None else "joint",
+        "eef_frame_mode": str(getattr(action_args, "eef_frame_mode", "")) if action_args is not None else "",
     }
 
     compressor = zarr.Blosc(cname="zstd", clevel=3, shuffle=1)
@@ -230,6 +252,7 @@ def main():
     parser.add_argument("--meta_path", default="")
     parser.add_argument("--output_zarr", default="")
     parser.add_argument("--resize_hw", default="")
+    add_eef_preprocess_args(parser)
     args = parser.parse_args()
 
     camera_labels = parse_camera_labels(args.camera_labels if args.camera_labels else args.camera_label)
@@ -248,6 +271,7 @@ def main():
         meta_path=meta_path,
         output_zarr=output_zarr,
         resize_hw=parse_resize(args.resize_hw),
+        action_args=args,
     )
 
 

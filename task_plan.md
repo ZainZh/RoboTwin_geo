@@ -6,7 +6,7 @@ Design a real-robot data collection pipeline that keeps the robot-control behavi
 
 ## Current Phase
 
-Real DP3 EEF IK failure diagnostics
+Real-ZED DP EEF image policy training/inference
 
 ## Phases
 
@@ -217,6 +217,14 @@ Real DP3 EEF IK failure diagnostics
 - [x] Add config flags to enable/disable preview and tune the wait timeout/window name.
 - [x] Verify preview rendering and collection pipeline tests without hardware.
 - **Status:** complete with hardware UI check pending
+
+### Phase 26: Real-ZED DP EEF Image Policy
+- [x] Add DP zarr preprocessing support for EEF14 state and 20D absolute-6D EEF action.
+- [x] Add DP Hydra config/task variants for 20D actions.
+- [x] Add single-camera and multicam EEF training wrappers with `*-eef-absolute6d-global` naming.
+- [x] Add real DP EEF inference support that converts policy EEF actions through Dobot IK before ServoJ execution.
+- [x] Add shell/interface tests and syntax checks without requiring hardware.
+- **Status:** complete with hardware run pending
 
 ### Phase 26: DP3 Main Point-Cloud Count Training Interface
 - [x] Add failing tests that lock the desired shell-wrapper behavior.
