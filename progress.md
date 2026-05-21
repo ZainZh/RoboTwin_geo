@@ -1625,3 +1625,16 @@
   - Added DP EEF real inference support in `real_dp_inference.py`, converting policy EEF actions through Dobot IK before existing ServoJ smoothing/async control.
   - Added wrapper interface coverage for DP EEF training and inference.
   - Verified shell syntax, wrapper interface tests, Python compile, DP20 YAML shape checks, real inference help exposure, a RoboTwin-conda synthetic EEF zarr smoke, and `git diff --check`.
+
+### Phase 73: Real DP3 Snapshot And SAM2 Reselect Hotkeys
+- **Status:** complete with hardware run pending
+- Actions taken:
+  - Read the current `KeyboardCommandListener`, async/sync real DP3 inference loops, live ZED observation construction, and EEF real-infer wrappers.
+  - Design choice: use `s` for low-cost snapshot saving of current RGB/depth/calibration plus an already-built fused scene point cloud, and use `b` for robot reset plus clearing SAM2 tracking/prompts so the next semantic update reopens bbox selection.
+  - Added keyboard listener support for `s` save snapshot and `b` reset/reselect commands.
+  - Added `save_live_inference_snapshot(...)`, which writes per-camera `rgb.png`, `camera_data.npz`, `manifest.json`, `scene_pointcloud.npy`, and `scene_pointcloud.ply` under `outputs/real_zed_inference/snapshots`.
+  - Wired snapshot saving into both async and sync DP3 real inference loops immediately after live observation construction.
+  - Updated reset handling so `b` clears SAM2 tracking state and prompt cache without restoring loaded prompts.
+  - Added parser flags: `--keyboard_save_snapshot_key`, `--keyboard_reselect_key`, `--snapshot_output_dir`, and `--snapshot_scene_point_num`.
+  - Verified targeted RED/GREEN tests, full `script.test_real_zed_inference_actions`, Python syntax, EEF wrapper shell syntax, help output for new flags, and whitespace.
+  - `policy/DP3/scripts/test_real_infer_script_interfaces.sh` still fails on an existing semantic wrapper `ckpt_setting` mismatch (`unit_real_zed_cfg_global-...` vs the test's old `unit_real_zed_cfg-...` expectation), unrelated to the new hotkeys.

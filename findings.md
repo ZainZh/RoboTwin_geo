@@ -837,6 +837,10 @@
   - DP image zarr preprocessing uses raw RGB frames plus HDF5 `/joint_action/vector` for both `state` and `action`; there is no point-cloud/SAM dependency in this DP path.
   - Existing DP3 EEF helpers can be reused for DP image training: observation low-dim stays EEF14, while the action becomes 20D absolute EEF pose with 6D rotations.
   - Real DP inference already imports DP3 robot execution primitives, so the EEF inference path should convert raw 20D policy actions to joint14 actions through the same `policy_actions_to_joint_actions(...)` / Dobot IK path before submitting to `AsyncActionController`.
+- Real DP3 snapshot/reselect hotkey finding:
+  - The existing real DP3 keyboard listener only knows `r` reset and `q` quit. Reset can optionally clear SAM2 state through `--reset_sam2_on_keyboard_reset`, but it restores loaded bbox prompts and therefore does not force fresh manual selection.
+  - The live DP3 observation already contains per-camera aligned `rgb`, `depth`, `intrinsic_cv`, `cam2world_gl`, and workspace transforms; the main loop also already computes `dense_scene`. Saving those is sufficient for offline reconstruction/debugging without adding heavy real-time point-cloud work.
+  - A separate reselect key should clear both `sam2_tracking_state_by_camera` and `sam2_bbox_prompts_by_camera` without restoring loaded prompts, so the next semantic object-point-cloud update triggers interactive bbox selection again.
 - LZ xtrainer EEF-control finding:
   - `include/lz_xtrainer/experiments/run_control.py` defaults `act_eef=True`. During data collection it still servo-follows leader joint commands, but it records the action as an EEF target by calling `agent.act_eef({})`.
   - `DobotAgent.act_eef(...)` converts leader joints to an EEF pose with `dobot_robot.get_fk(joint_actions[:6])`, then appends the leader gripper value. The recorded `control` is therefore `[x,y,z,rx,ry,rz,gripper]` per arm, not a 7D joint action.

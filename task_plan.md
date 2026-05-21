@@ -6,7 +6,7 @@ Design a real-robot data collection pipeline that keeps the robot-control behavi
 
 ## Current Phase
 
-Real-ZED DP EEF image policy training/inference
+Real DP3 snapshot and SAM2 reselect hotkeys
 
 ## Phases
 
@@ -224,6 +224,14 @@ Real-ZED DP EEF image policy training/inference
 - [x] Add single-camera and multicam EEF training wrappers with `*-eef-absolute6d-global` naming.
 - [x] Add real DP EEF inference support that converts policy EEF actions through Dobot IK before ServoJ execution.
 - [x] Add shell/interface tests and syntax checks without requiring hardware.
+- **Status:** complete with hardware run pending
+
+### Phase 38: Real DP3 Snapshot And SAM2 Reselect Hotkeys
+- [x] Add a keyboard `s` command that saves current live camera frames and fused colored point cloud snapshot.
+- [x] Add a keyboard command that resets the robot and forces SAM2 bbox re-selection for swapped objects.
+- [x] Wire the new commands into both async and sync DP3 real inference loops.
+- [x] Keep baseline/semantic EEF wrappers compatible without changing their positional arguments.
+- [x] Verify behavior with unit tests, shell syntax, Python syntax, and wrapper checks.
 - **Status:** complete with hardware run pending
 
 ### Phase 26: DP3 Main Point-Cloud Count Training Interface

@@ -1,6 +1,9 @@
 import argparse
+import json
 import time
 import unittest
+from pathlib import Path
+import tempfile
 
 import numpy as np
 
@@ -268,7 +271,7 @@ class RealZedInferenceActionTest(unittest.TestCase):
     def test_keyboard_command_listener_records_reset_and_quit(self):
         from script.real_zed_inference.real_dp3_inference import KeyboardCommandListener
 
-        listener = KeyboardCommandListener(enabled=False, reset_key="r", quit_key="q")
+        listener = KeyboardCommandListener(enabled=False, reset_key="r", quit_key="q", save_snapshot_key="s", reselect_key="b")
 
         listener.handle_key("r")
         self.assertTrue(listener.reset_requested())
@@ -279,6 +282,13 @@ class RealZedInferenceActionTest(unittest.TestCase):
         listener.handle_key("q")
         self.assertTrue(listener.quit_requested())
         self.assertEqual(listener.pop_commands(), ["quit"])
+
+        listener.handle_key("s")
+        self.assertEqual(listener.pop_commands(), ["save_snapshot"])
+
+        listener.handle_key("b")
+        self.assertTrue(listener.reset_requested())
+        self.assertEqual(listener.pop_commands(), ["reset_reselect"])
 
     def test_async_action_controller_stops_on_external_reset_event(self):
         from script.real_zed_inference.real_dp3_inference import AsyncActionController
@@ -420,7 +430,108 @@ class RealZedInferencePointcloudTest(unittest.TestCase):
         self.assertTrue(args.keyboard_control)
         self.assertEqual(args.keyboard_reset_key, "r")
         self.assertEqual(args.keyboard_quit_key, "q")
+        self.assertEqual(args.keyboard_save_snapshot_key, "s")
+        self.assertEqual(args.keyboard_reselect_key, "b")
         self.assertFalse(args.reset_sam2_on_keyboard_reset)
+
+    def test_reselect_reset_clears_sam2_prompts_without_restoring_loaded_prompts(self):
+        from script.real_zed_inference.real_dp3_inference import KeyboardCommandListener, handle_requested_episode_reset
+
+        class FakeModel:
+            class Runner:
+                def __init__(self):
+                    self.reset_count = 0
+
+                def reset_obs(self):
+                    self.reset_count += 1
+
+            def __init__(self):
+                self.env_runner = self.Runner()
+
+        listener = KeyboardCommandListener(enabled=False, reselect_key="b")
+        listener.handle_key("b")
+        tracking = {"global": object()}
+        prompts = {"global": {"{A}": {"bbox_xyxy": [1, 2, 3, 4]}}}
+        loaded_prompts = {"global": {"{A}": {"bbox_xyxy": [5, 6, 7, 8]}}}
+
+        action = handle_requested_episode_reset(
+            env=None,
+            model=FakeModel(),
+            args=argparse.Namespace(
+                execute=False,
+                initial_left_gripper=1.0,
+                initial_right_gripper=1.0,
+                reset_sam2_on_keyboard_reset=False,
+            ),
+            keyboard_listener=listener,
+            sam2_tracking_state_by_camera=tracking,
+            sam2_bbox_prompts_by_camera=prompts,
+            sam2_loaded_prompts_by_camera=loaded_prompts,
+            fallback_action=np.zeros(14, dtype=np.float32),
+        )
+
+        self.assertFalse(listener.reset_requested())
+        self.assertEqual(tracking, {})
+        self.assertEqual(prompts, {})
+        self.assertEqual(action.shape, (14,))
+
+    def test_save_live_inference_snapshot_writes_camera_npz_manifest_and_ply(self):
+        from script.real_zed_inference.real_dp3_inference import save_live_inference_snapshot
+
+        with tempfile.TemporaryDirectory() as tmp:
+            observation = {
+                "observation": {
+                    "global": {
+                        "rgb": np.full((2, 3, 3), 128, dtype=np.uint8),
+                        "depth": np.ones((2, 3), dtype=np.float32),
+                        "intrinsic_cv": np.eye(3, dtype=np.float32),
+                        "extrinsic_cv": np.eye(4, dtype=np.float32),
+                        "cam2world_gl": np.eye(4, dtype=np.float32),
+                        "t_workspace_from_cam": np.eye(4, dtype=np.float32),
+                        "workspace_bounds_m": np.asarray([-1, 1, -1, 1, 0, 1], dtype=np.float32),
+                    },
+                    "back": {
+                        "rgb": np.full((2, 3, 3), 64, dtype=np.uint8),
+                        "depth": np.ones((2, 3), dtype=np.float32) * 2.0,
+                        "intrinsic_cv": np.eye(3, dtype=np.float32) * 2.0,
+                        "extrinsic_cv": np.eye(4, dtype=np.float32),
+                        "cam2world_gl": np.eye(4, dtype=np.float32),
+                        "t_workspace_from_cam": np.eye(4, dtype=np.float32),
+                        "workspace_bounds_m": None,
+                    },
+                },
+                "pointcloud": np.zeros((4, 6), dtype=np.float32),
+            }
+            dense_scene = np.asarray(
+                [
+                    [0.0, 0.0, 0.1, 1.0, 0.0, 0.0],
+                    [0.1, 0.0, 0.1, 0.0, 1.0, 0.0],
+                    [0.0, 0.1, 0.1, 0.0, 0.0, 1.0],
+                ],
+                dtype=np.float32,
+            )
+            args = argparse.Namespace(
+                snapshot_output_dir=tmp,
+                snapshot_scene_point_num=2,
+                output_frame="source",
+            )
+
+            snapshot_dir = save_live_inference_snapshot(
+                observation=observation,
+                dense_scene=dense_scene,
+                args=args,
+                step=12,
+            )
+
+            snapshot_path = Path(snapshot_dir)
+            self.assertTrue((snapshot_path / "manifest.json").is_file())
+            manifest = json.loads((snapshot_path / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["step"], 12)
+            self.assertEqual(manifest["camera_labels"], ["global", "back"])
+            self.assertTrue((snapshot_path / "global" / "rgb.png").is_file())
+            self.assertTrue((snapshot_path / "global" / "camera_data.npz").is_file())
+            self.assertTrue((snapshot_path / "scene_pointcloud.npy").is_file())
+            self.assertTrue((snapshot_path / "scene_pointcloud.ply").is_file())
 
     def test_real_inference_parser_supports_eef_absolute6d_action_mode(self):
         from script.real_zed_inference.real_dp3_inference import build_arg_parser

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import copy
 import csv
+import json
 import os
 import re
 import select
@@ -91,16 +92,21 @@ class KeyboardCommandListener:
         enabled: bool = True,
         reset_key: str = "r",
         quit_key: str = "q",
+        save_snapshot_key: str = "s",
+        reselect_key: str = "b",
         stream=None,
     ):
         self.enabled = bool(enabled)
         self.reset_key = str(reset_key or "r")[:1].lower()
         self.quit_key = str(quit_key or "q")[:1].lower()
+        self.save_snapshot_key = str(save_snapshot_key or "s")[:1].lower()
+        self.reselect_key = str(reselect_key or "b")[:1].lower()
         self.stream = sys.stdin if stream is None else stream
         self._commands: deque[str] = deque()
         self._condition = threading.Condition()
         self._reset_event = threading.Event()
         self._quit_event = threading.Event()
+        self._save_snapshot_event = threading.Event()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._old_termios = None
@@ -115,13 +121,23 @@ class KeyboardCommandListener:
     def quit_requested(self) -> bool:
         return self._quit_event.is_set()
 
+    def save_snapshot_requested(self) -> bool:
+        return self._save_snapshot_event.is_set()
+
     def clear_reset_request(self) -> None:
         self._reset_event.clear()
+
+    def clear_save_snapshot_request(self) -> None:
+        self._save_snapshot_event.clear()
+        with self._condition:
+            self._commands = deque(command for command in self._commands if command != "save_snapshot")
 
     def pop_commands(self) -> list[str]:
         with self._condition:
             commands = list(self._commands)
             self._commands.clear()
+            if "save_snapshot" in commands:
+                self._save_snapshot_event.clear()
             return commands
 
     def handle_key(self, key: str) -> None:
@@ -136,6 +152,14 @@ class KeyboardCommandListener:
             elif normalized == self.quit_key:
                 self._commands.append("quit")
                 self._quit_event.set()
+                self._condition.notify_all()
+            elif normalized == self.save_snapshot_key:
+                self._commands.append("save_snapshot")
+                self._save_snapshot_event.set()
+                self._condition.notify_all()
+            elif normalized == self.reselect_key:
+                self._commands.append("reset_reselect")
+                self._reset_event.set()
                 self._condition.notify_all()
 
     def start(self) -> None:
@@ -159,6 +183,8 @@ class KeyboardCommandListener:
         self._thread.start()
         print_info(
             f"[INFO] Keyboard commands enabled: press '{self.reset_key}' to reset episode, "
+            f"'{self.save_snapshot_key}' to save a live frame snapshot, "
+            f"'{self.reselect_key}' to reset and reselect SAM2 boxes, "
             f"'{self.quit_key}' to quit."
         )
 
@@ -586,6 +612,121 @@ def build_robotwin_observation(
         "observation": camera_obs,
     }
     return observation, dense_scene.astype(np.float32)
+
+
+def _write_colored_ply(path: Path, point_cloud: np.ndarray) -> None:
+    pc = np.asarray(point_cloud, dtype=np.float32)
+    if pc.ndim != 2 or pc.shape[1] < 3:
+        pc = np.zeros((0, 6), dtype=np.float32)
+    xyz = pc[:, :3] if pc.size else np.zeros((0, 3), dtype=np.float32)
+    if pc.shape[1] >= 6:
+        rgb = pc[:, 3:6]
+        if rgb.size and float(np.nanmax(rgb)) <= 1.0:
+            rgb = rgb * 255.0
+        rgb_u8 = np.clip(rgb, 0, 255).astype(np.uint8)
+    else:
+        rgb_u8 = np.full((xyz.shape[0], 3), 255, dtype=np.uint8)
+    with Path(path).open("w", encoding="utf-8") as f:
+        f.write("ply\n")
+        f.write("format ascii 1.0\n")
+        f.write(f"element vertex {xyz.shape[0]}\n")
+        f.write("property float x\n")
+        f.write("property float y\n")
+        f.write("property float z\n")
+        f.write("property uchar red\n")
+        f.write("property uchar green\n")
+        f.write("property uchar blue\n")
+        f.write("end_header\n")
+        for point, color in zip(xyz, rgb_u8):
+            f.write(
+                f"{float(point[0]):.7f} {float(point[1]):.7f} {float(point[2]):.7f} "
+                f"{int(color[0])} {int(color[1])} {int(color[2])}\n"
+            )
+
+
+def save_live_inference_snapshot(
+    *,
+    observation: Mapping[str, Any],
+    dense_scene: np.ndarray,
+    args: argparse.Namespace,
+    step: int,
+) -> Path:
+    root = resolve_path(getattr(args, "snapshot_output_dir", "outputs/real_zed_inference/snapshots"))
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    snapshot_dir = root / f"snapshot_{timestamp}_step{int(step):06d}_{int((time.time() % 1.0) * 1000):03d}"
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+
+    camera_obs = dict(observation.get("observation", {}))
+    camera_manifest: dict[str, dict[str, str | bool]] = {}
+    for label, info in camera_obs.items():
+        camera_dir = snapshot_dir / str(label)
+        camera_dir.mkdir(parents=True, exist_ok=True)
+        rgb = np.asarray(info.get("rgb"), dtype=np.uint8)
+        if rgb.ndim == 3 and rgb.shape[2] >= 3:
+            cv2.imwrite(str(camera_dir / "rgb.png"), cv2.cvtColor(rgb[:, :, :3], cv2.COLOR_RGB2BGR))
+        workspace_bounds = info.get("workspace_bounds_m")
+        np.savez_compressed(
+            camera_dir / "camera_data.npz",
+            rgb=rgb,
+            depth=np.asarray(info.get("depth"), dtype=np.float32),
+            intrinsic_cv=np.asarray(info.get("intrinsic_cv"), dtype=np.float32),
+            extrinsic_cv=np.asarray(info.get("extrinsic_cv"), dtype=np.float32),
+            cam2world_gl=np.asarray(info.get("cam2world_gl"), dtype=np.float32),
+            t_workspace_from_cam=np.asarray(info.get("t_workspace_from_cam"), dtype=np.float32),
+            workspace_bounds_m=(
+                np.asarray(workspace_bounds, dtype=np.float32)
+                if workspace_bounds is not None
+                else np.zeros((0,), dtype=np.float32)
+            ),
+        )
+        camera_manifest[str(label)] = {
+            "rgb_png": f"{label}/rgb.png",
+            "camera_npz": f"{label}/camera_data.npz",
+            "has_workspace_bounds": bool(workspace_bounds is not None),
+        }
+
+    scene = np.asarray(dense_scene, dtype=np.float32)
+    if scene.size == 0:
+        scene = np.asarray(observation.get("pointcloud", np.zeros((0, 6), dtype=np.float32)), dtype=np.float32)
+    max_points = int(getattr(args, "snapshot_scene_point_num", 20000))
+    if max_points > 0:
+        scene = deterministic_resample(scene, max_points)
+    np.save(snapshot_dir / "scene_pointcloud.npy", scene.astype(np.float32))
+    _write_colored_ply(snapshot_dir / "scene_pointcloud.ply", scene)
+
+    manifest = {
+        "created_unix_sec": time.time(),
+        "step": int(step),
+        "output_frame": str(getattr(args, "output_frame", "")),
+        "camera_labels": [str(label) for label in camera_obs.keys()],
+        "scene_pointcloud_npy": "scene_pointcloud.npy",
+        "scene_pointcloud_ply": "scene_pointcloud.ply",
+        "scene_point_count": int(scene.shape[0]) if scene.ndim == 2 else 0,
+        "cameras": camera_manifest,
+    }
+    with (snapshot_dir / "manifest.json").open("w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2)
+    print_info(f"[INFO] Saved live inference snapshot: {snapshot_dir}")
+    return snapshot_dir
+
+
+def maybe_save_live_snapshot_if_requested(
+    *,
+    keyboard_listener: KeyboardCommandListener,
+    observation: Mapping[str, Any],
+    dense_scene: np.ndarray,
+    args: argparse.Namespace,
+    step: int,
+) -> None:
+    if not keyboard_listener.save_snapshot_requested():
+        return
+    save_live_inference_snapshot(
+        observation=observation,
+        dense_scene=dense_scene,
+        args=args,
+        step=step,
+    )
+    keyboard_listener.clear_save_snapshot_request()
 
 
 def maybe_show_cameras(live_observation: dict[str, Any], labels: Sequence[str]) -> None:
@@ -1125,13 +1266,21 @@ def handle_requested_episode_reset(
     sam2_loaded_prompts_by_camera: Mapping[str, dict[str, object]],
     fallback_action: np.ndarray,
 ) -> np.ndarray:
-    for command in keyboard_listener.pop_commands():
+    commands = keyboard_listener.pop_commands()
+    force_sam2_reselect = "reset_reselect" in commands
+    for command in commands:
         if command == "reset":
             print_info("[INFO] Keyboard reset requested.")
+        elif command == "reset_reselect":
+            print_info("[INFO] Keyboard reset and SAM2 bbox reselect requested.")
         elif command == "quit":
             print_info("[INFO] Keyboard quit requested.")
     keyboard_listener.clear_reset_request()
-    if bool(getattr(args, "reset_sam2_on_keyboard_reset", False)):
+    if force_sam2_reselect:
+        sam2_tracking_state_by_camera.clear()
+        sam2_bbox_prompts_by_camera.clear()
+        print_info("[INFO] Cleared SAM2 tracking state and prompts; next object update will request new boxes.")
+    elif bool(getattr(args, "reset_sam2_on_keyboard_reset", False)):
         sam2_tracking_state_by_camera.clear()
         restore_sam2_prompt_records(sam2_bbox_prompts_by_camera, sam2_loaded_prompts_by_camera)
         print_info("[INFO] Cleared SAM2 tracking state for keyboard reset.")
@@ -1142,7 +1291,7 @@ def handle_requested_episode_reset(
         allow_robot_reset=True,
         fallback_action=fallback_action,
     )
-    print_info(f"[INFO] Episode reset complete. Restarting up to {int(args.max_steps)} steps.")
+    print_info(f"[INFO] Episode reset complete. Restarting up to {int(getattr(args, 'max_steps', 0))} steps.")
     return last_action
 
 
@@ -1622,6 +1771,8 @@ def run_real_inference(args: argparse.Namespace) -> None:
         enabled=bool(args.keyboard_control),
         reset_key=str(args.keyboard_reset_key),
         quit_key=str(args.keyboard_quit_key),
+        save_snapshot_key=str(args.keyboard_save_snapshot_key),
+        reselect_key=str(args.keyboard_reselect_key),
     )
     action_diagnostic_file = None
     action_diagnostic_writer = None
@@ -1683,6 +1834,13 @@ def run_real_inference(args: argparse.Namespace) -> None:
                     print("[TRACE] Building live point-cloud observation ...", flush=True)
                     with profile_section(chunk_timings, "build_obs_pre", bool(args.profile_timing)):
                         observation, dense_scene = build_robotwin_observation(args=args, live=live, agent_vector=agent_vector)
+                    maybe_save_live_snapshot_if_requested(
+                        keyboard_listener=keyboard_listener,
+                        observation=observation,
+                        dense_scene=dense_scene,
+                        args=args,
+                        step=(controller.step_count + 1 if controller is not None else 1),
+                    )
                     if keyboard_listener.reset_requested() or keyboard_listener.quit_requested():
                         continue
                     if needs_sam2_objpc:
@@ -1788,6 +1946,13 @@ def run_real_inference(args: argparse.Namespace) -> None:
                     t_world_from_right_base,
                 )
                 observation, dense_scene = build_robotwin_observation(args=args, live=live, agent_vector=agent_vector)
+            maybe_save_live_snapshot_if_requested(
+                keyboard_listener=keyboard_listener,
+                observation=observation,
+                dense_scene=dense_scene,
+                args=args,
+                step=action_step + 1,
+            )
             if keyboard_listener.reset_requested() or keyboard_listener.quit_requested():
                 continue
             if needs_sam2_objpc:
@@ -2080,6 +2245,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--keyboard_control", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--keyboard_reset_key", default="r")
     parser.add_argument("--keyboard_quit_key", default="q")
+    parser.add_argument("--keyboard_save_snapshot_key", default="s")
+    parser.add_argument("--keyboard_reselect_key", default="b")
+    parser.add_argument("--snapshot_output_dir", default="outputs/real_zed_inference/snapshots")
+    parser.add_argument("--snapshot_scene_point_num", type=int, default=20000)
     parser.add_argument("--control_hz", type=float, default=10.0)
     parser.add_argument("--async_control", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument(
