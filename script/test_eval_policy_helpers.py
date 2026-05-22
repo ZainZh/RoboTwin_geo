@@ -112,6 +112,39 @@ class TestEvalPolicyHelpers(unittest.TestCase):
             {"info": {"{A}": "partnext_mug_eval/base3", "{B}": "040_rack/base0"}},
         )
 
+    def test_resolve_episode_instruction_falls_back_for_dp3_when_template_missing(self):
+        resolve_episode_instruction, = load_helpers("resolve_episode_instruction")
+
+        def missing_template_generator(*_args, **_kwargs):
+            raise FileNotFoundError("missing task instruction template")
+
+        instruction = resolve_episode_instruction(
+            task_name="open_microwave",
+            episode_info_list=[{"{A}": "044_microwave/base0", "{a}": "left"}],
+            instruction_type="unseen",
+            test_num=100,
+            policy_name="DP3",
+            description_generator=missing_template_generator,
+        )
+
+        self.assertEqual(instruction, "open microwave")
+
+    def test_resolve_episode_instruction_keeps_missing_template_fatal_for_non_dp3(self):
+        resolve_episode_instruction, = load_helpers("resolve_episode_instruction")
+
+        def missing_template_generator(*_args, **_kwargs):
+            raise FileNotFoundError("missing task instruction template")
+
+        with self.assertRaises(FileNotFoundError):
+            resolve_episode_instruction(
+                task_name="open_microwave",
+                episode_info_list=[{"{A}": "044_microwave/base0", "{a}": "left"}],
+                instruction_type="unseen",
+                test_num=100,
+                policy_name="SomeLanguagePolicy",
+                description_generator=missing_template_generator,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -74,6 +74,37 @@ def build_instruction_episode_info(task_name, task_env, episode_info=None):
         return {"info": {"{A}": mug_asset_config["info_asset_path"], "{B}": "040_rack/base0"}}
     raise ValueError(f"cannot build instruction info without expert_check for task {task_name}")
 
+
+def resolve_episode_instruction(
+        task_name,
+        episode_info_list,
+        instruction_type,
+        test_num,
+        policy_name,
+        description_generator=None,
+        random_choice_fn=None):
+    description_generator = description_generator or generate_episode_descriptions
+
+    try:
+        results = description_generator(task_name, episode_info_list, test_num)
+        if len(results) == 0:
+            raise IndexError(f"No valid instructions generated for task {task_name}")
+        instructions = results[0][instruction_type]
+        if len(instructions) == 0:
+            raise IndexError(f"No {instruction_type} instructions generated for task {task_name}")
+        random_choice_fn = random_choice_fn or np.random.choice
+        return random_choice_fn(instructions)
+    except (FileNotFoundError, IndexError, KeyError):
+        if policy_name == "DP3":
+            fallback = task_name.replace("_", " ")
+            print(
+                f"[eval_policy] DP3 instruction fallback: task={task_name}, "
+                f"instruction_type={instruction_type}, instruction='{fallback}'"
+            )
+            return fallback
+        raise
+
+
 def get_camera_config(camera_type):
     camera_config_path = os.path.join(parent_directory, "../task_config/_camera_config.yml")
 
@@ -285,8 +316,13 @@ def eval_policy(task_name,
 
         TASK_ENV.setup_demo(now_ep_num=now_id, seed=now_seed, is_test=True, **args)
         episode_info_list = [episode_info["info"]]
-        results = generate_episode_descriptions(args["task_name"], episode_info_list, test_num)
-        instruction = np.random.choice(results[0][instruction_type])
+        instruction = resolve_episode_instruction(
+            args["task_name"],
+            episode_info_list,
+            instruction_type,
+            test_num,
+            args["policy_name"],
+        )
         TASK_ENV.set_instruction(instruction=instruction)  # set language instruction
 
         if TASK_ENV.eval_video_path is not None:

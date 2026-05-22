@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # 定义你的训练命令
-TRAIN_COMMAND=" bash train_utonia_pointwise_hybrid.sh hanging_mug demo_clean_3d_object_pc 50 0 0"
+TRAIN_COMMAND="bash train_semantic_pointwise_hybrid_eef_absolute6d_global.sh beat_cube demo_real_zed_sam2_objpc_global 80 0 0 /home/zheng/github/3d_semantic_train/bash/outputs/utonia_universal_field/Hammer_new/best.pt"
 
 # 目标空闲内存 (MiB)
-REQUIRED_FREE_MEMORY=13000
+REQUIRED_FREE_MEMORY=21500
 
 # 要监测的 GPU ID
 GPU_ID=0

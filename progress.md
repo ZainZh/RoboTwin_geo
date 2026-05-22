@@ -1638,3 +1638,15 @@
   - Added parser flags: `--keyboard_save_snapshot_key`, `--keyboard_reselect_key`, `--snapshot_output_dir`, and `--snapshot_scene_point_num`.
   - Verified targeted RED/GREEN tests, full `script.test_real_zed_inference_actions`, Python syntax, EEF wrapper shell syntax, help output for new flags, and whitespace.
   - `policy/DP3/scripts/test_real_infer_script_interfaces.sh` still fails on an existing semantic wrapper `ckpt_setting` mismatch (`unit_real_zed_cfg_global-...` vs the test's old `unit_real_zed_cfg-...` expectation), unrelated to the new hotkeys.
+
+### Phase 74: Sim DP3 Eval Instruction Fallback
+- **Status:** complete
+- Actions taken:
+  - Traced the `open_microwave` sim eval crash to `eval_policy.py` unconditionally generating a language instruction before DP3 policy execution.
+  - Confirmed DP3 deployment does not consume `TASK_ENV.get_instruction()`, so missing `description/task_instruction/open_microwave.json` should not block DP3 sim evaluation.
+  - Added `resolve_episode_instruction(...)` with DP3-only fallback to a simple task-name instruction when the task instruction template is missing or no valid instruction is generated.
+  - Kept missing instruction templates fatal for non-DP3 policies so language-conditioned eval remains strict.
+  - Added regression coverage in `script/test_eval_policy_helpers.py`.
+  - Verified `python -m unittest script.test_eval_policy_helpers`.
+  - Verified `python -m py_compile script/eval_policy.py script/test_eval_policy_helpers.py`.
+  - Verified `git diff --check -- script/eval_policy.py script/test_eval_policy_helpers.py`.
