@@ -39,6 +39,12 @@ def main():
     parser.add_argument("--semantic_model", action="append", default=[], help="Repeated PLACEHOLDER=CHECKPOINT mapping.")
     parser.add_argument("--semantic_device", type=str, default="cuda:0")
     parser.add_argument("--semantic_num_points", type=int, default=128)
+    parser.add_argument(
+        "--semantic_input_color_mode",
+        choices=["debug_placeholder", "stored_scaled", "stored"],
+        default="debug_placeholder",
+    )
+    parser.add_argument("--semantic_forward_mode", choices=["reference", "dp3"], default="reference")
     parser.add_argument("--output_suffix", type=str, default="-objpc-actorseg-semantic-pointwise-hybrid")
     parser.add_argument("--target_num_points", type=int, default=1024)
     parser.add_argument("--save_placeholder_point_clouds", action="store_true")
@@ -117,6 +123,8 @@ def main():
             "semantic_num_points": int(args.semantic_num_points),
             "semantic_feat_dim": semantic_feat_dim,
             "semantic_feat_dims": semantic_feat_dims,
+            "semantic_input_color_mode": str(args.semantic_input_color_mode),
+            "semantic_forward_mode": str(args.semantic_forward_mode),
             "keep_feature_placeholders_in_context": True,
             "save_placeholder_point_clouds": bool(args.save_placeholder_point_clouds),
         }
@@ -176,6 +184,9 @@ def main():
                             artifacts=model_by_placeholder[placeholder],
                             object_point_cloud=per_placeholder_point_clouds[placeholder],
                             target_num_points=int(args.semantic_num_points),
+                            placeholder=placeholder,
+                            semantic_input_color_mode=str(args.semantic_input_color_mode),
+                            semantic_forward_mode=str(args.semantic_forward_mode),
                         ).astype(np.float32)
                     )
             if frame_idx != 0:

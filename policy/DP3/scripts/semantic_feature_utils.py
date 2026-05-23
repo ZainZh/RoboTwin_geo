@@ -20,6 +20,67 @@ from my_datasets.partnext_canonical_field import UTONIA  # noqa: E402
 from models.universal_field.utonia_universal_field import UtoniaUniversalFieldNet  # noqa: E402
 
 
+DEBUG_PLACEHOLDER_COLORS_RGB = {
+    "{A}": np.asarray([255.0, 48.0, 48.0], dtype=np.float32),
+    "A": np.asarray([255.0, 48.0, 48.0], dtype=np.float32),
+    "{B}": np.asarray([48.0, 96.0, 255.0], dtype=np.float32),
+    "B": np.asarray([48.0, 96.0, 255.0], dtype=np.float32),
+}
+DEFAULT_DEBUG_PLACEHOLDER_COLOR_RGB = np.asarray([180.0, 180.0, 180.0], dtype=np.float32)
+SEMANTIC_INPUT_COLOR_MODES = {"debug_placeholder", "stored_scaled", "stored"}
+SEMANTIC_FORWARD_MODES = {"reference", "dp3"}
+
+
+def ensure_point_cloud_channels(point_cloud: np.ndarray, *, channels: int = 6) -> np.ndarray:
+    cloud = np.asarray(point_cloud, dtype=np.float32)
+    if cloud.ndim != 2:
+        raise ValueError(f"Expected point cloud with shape [N,C], got {cloud.shape!r}")
+    if cloud.shape[1] >= int(channels):
+        return cloud[:, : int(channels)].astype(np.float32, copy=False)
+    padded = np.zeros((cloud.shape[0], int(channels)), dtype=np.float32)
+    padded[:, : cloud.shape[1]] = cloud
+    return padded
+
+
+def prepare_semantic_input_point_cloud(
+    object_point_cloud: np.ndarray,
+    *,
+    placeholder: str = "",
+    color_mode: str = "debug_placeholder",
+) -> np.ndarray:
+    cloud = ensure_point_cloud_channels(object_point_cloud, channels=6).astype(np.float32, copy=True)
+    mode = str(color_mode)
+    if mode == "stored":
+        return cloud
+    if mode == "stored_scaled":
+        if cloud.shape[0] > 0 and float(np.nanmax(cloud[:, 3:6])) <= 1.0:
+            cloud[:, 3:6] *= 255.0
+        return cloud
+    if mode == "debug_placeholder":
+        color = DEBUG_PLACEHOLDER_COLORS_RGB.get(str(placeholder), DEFAULT_DEBUG_PLACEHOLDER_COLOR_RGB)
+        cloud[:, 3:6] = color[None, :]
+        return cloud
+    raise ValueError(f"Unsupported semantic input color mode: {color_mode}")
+
+
+def semantic_forward_options(
+    *,
+    semantic_forward_mode: str = "reference",
+    normal_mode: str | None = None,
+    query_sample_mode: str | None = None,
+) -> tuple[str, str]:
+    mode = str(semantic_forward_mode)
+    if mode not in SEMANTIC_FORWARD_MODES:
+        raise ValueError(f"Unsupported semantic_forward_mode: {semantic_forward_mode}")
+    default_normal_mode, default_query_sample_mode = (
+        ("fallback", "random") if mode == "reference" else ("estimated", "fps")
+    )
+    return (
+        default_normal_mode if normal_mode is None else str(normal_mode),
+        default_query_sample_mode if query_sample_mode is None else str(query_sample_mode),
+    )
+
+
 def _load_checkpoint(path: str | Path) -> dict:
     checkpoint_path = str(path)
     try:
@@ -106,6 +167,26 @@ def _estimate_normals(points: np.ndarray, k: int = 16) -> np.ndarray:
     return normals.astype(np.float32)
 
 
+def _fallback_normals(points: np.ndarray) -> np.ndarray:
+    centered = np.asarray(points, dtype=np.float32) - np.asarray(points, dtype=np.float32).mean(axis=0, keepdims=True)
+    norms = np.linalg.norm(centered, axis=1, keepdims=True)
+    normals = np.zeros_like(centered, dtype=np.float32)
+    valid = norms[:, 0] > 1e-8
+    normals[valid] = centered[valid] / norms[valid]
+    return normals.astype(np.float32)
+
+
+def _sample_rows(point_cloud: np.ndarray, target_num_points: int) -> np.ndarray:
+    point_cloud = strip_zero_points(point_cloud)
+    if int(target_num_points) <= 0:
+        return point_cloud.astype(np.float32)
+    if len(point_cloud) == 0:
+        return np.zeros((int(target_num_points), 6), dtype=np.float32)
+    replace = len(point_cloud) < int(target_num_points)
+    indices = np.random.choice(len(point_cloud), size=int(target_num_points), replace=replace)
+    return point_cloud[indices].astype(np.float32)
+
+
 def _move_to_device(value, device: torch.device):
     if isinstance(value, torch.Tensor):
         return value.to(device)
@@ -169,23 +250,34 @@ def load_semantic_model(
 
 
 @torch.no_grad()
-def compute_semantic_pointwise_cloud(
+def _compute_semantic_query(
     artifacts: Dict[str, object],
     object_point_cloud: np.ndarray,
     *,
     target_num_points: int,
-) -> np.ndarray:
+    normal_mode: str = "fallback",
+    query_sample_mode: str = "random",
+) -> tuple[np.ndarray, dict[str, torch.Tensor]]:
     point_cloud = strip_zero_points(np.asarray(object_point_cloud, dtype=np.float32))
-    sem_dim = int(artifacts["sem_embedding_dim"])
     if len(point_cloud) == 0:
-        return np.zeros((int(target_num_points), 3 + sem_dim), dtype=np.float32)
+        raise ValueError("Cannot query semantic field from an empty object point cloud.")
 
     support_pc = point_cloud.astype(np.float32)
-    query_pc = resample_point_cloud(point_cloud, int(target_num_points))
+    if str(query_sample_mode) == "random":
+        query_pc = _sample_rows(point_cloud, int(target_num_points))
+    elif str(query_sample_mode) == "fps":
+        query_pc = resample_point_cloud(point_cloud, int(target_num_points))
+    else:
+        raise ValueError(f"Unsupported semantic query_sample_mode: {query_sample_mode}")
 
     support_xyz = support_pc[:, :3].astype(np.float32)
     support_rgb = support_pc[:, 3:6].astype(np.float32) if support_pc.shape[1] >= 6 else np.zeros((len(support_pc), 3), dtype=np.float32)
-    support_normals = _estimate_normals(support_xyz)
+    if str(normal_mode) == "fallback":
+        support_normals = _fallback_normals(support_xyz)
+    elif str(normal_mode) == "estimated":
+        support_normals = _estimate_normals(support_xyz)
+    else:
+        raise ValueError(f"Unsupported semantic normal_mode: {normal_mode}")
     query_world_xyz = query_pc[:, :3].astype(np.float32)
 
     checkpoint_args = artifacts["checkpoint_args"]
@@ -218,5 +310,95 @@ def compute_semantic_pointwise_cloud(
         cache=cache,
         query_points=query_t,
     )
+    return query_world_xyz.astype(np.float32), semantic_output
+
+
+@torch.no_grad()
+def compute_semantic_pointwise_cloud(
+    artifacts: Dict[str, object],
+    object_point_cloud: np.ndarray,
+    *,
+    target_num_points: int,
+    placeholder: str = "",
+    semantic_input_color_mode: str = "debug_placeholder",
+    semantic_forward_mode: str = "reference",
+    normal_mode: str | None = None,
+    query_sample_mode: str | None = None,
+) -> np.ndarray:
+    point_cloud = prepare_semantic_input_point_cloud(
+        object_point_cloud,
+        placeholder=str(placeholder),
+        color_mode=str(semantic_input_color_mode),
+    )
+    point_cloud = strip_zero_points(point_cloud)
+    sem_dim = int(artifacts["sem_embedding_dim"])
+    if len(point_cloud) == 0:
+        return np.zeros((int(target_num_points), 3 + sem_dim), dtype=np.float32)
+    resolved_normal_mode, resolved_query_sample_mode = semantic_forward_options(
+        semantic_forward_mode=str(semantic_forward_mode),
+        normal_mode=normal_mode,
+        query_sample_mode=query_sample_mode,
+    )
+
+    query_world_xyz, semantic_output = _compute_semantic_query(
+        artifacts,
+        point_cloud,
+        target_num_points=int(target_num_points),
+        normal_mode=resolved_normal_mode,
+        query_sample_mode=resolved_query_sample_mode,
+    )
     embeddings = semantic_output["embedding"].squeeze(0).detach().cpu().numpy().astype(np.float32)
-    return np.concatenate([query_world_xyz.astype(np.float32), embeddings], axis=1)
+    return np.concatenate([query_world_xyz, embeddings], axis=1)
+
+
+@torch.no_grad()
+def compute_semantic_pointwise_prediction(
+    artifacts: Dict[str, object],
+    object_point_cloud: np.ndarray,
+    *,
+    target_num_points: int,
+    placeholder: str = "",
+    semantic_input_color_mode: str = "debug_placeholder",
+    semantic_forward_mode: str = "reference",
+    normal_mode: str | None = None,
+    query_sample_mode: str | None = None,
+) -> dict[str, np.ndarray | list[str]]:
+    point_cloud = prepare_semantic_input_point_cloud(
+        object_point_cloud,
+        placeholder=str(placeholder),
+        color_mode=str(semantic_input_color_mode),
+    )
+    point_cloud = strip_zero_points(point_cloud)
+    sem_dim = int(artifacts["sem_embedding_dim"])
+    if len(point_cloud) == 0:
+        return {
+            "point_cloud": np.zeros((int(target_num_points), 3 + sem_dim), dtype=np.float32),
+            "pred_labels": np.full((int(target_num_points),), -1, dtype=np.int64),
+            "confidence": np.zeros((int(target_num_points),), dtype=np.float32),
+            "label_names": list(artifacts.get("canonical_label_names", [])),
+        }
+    resolved_normal_mode, resolved_query_sample_mode = semantic_forward_options(
+        semantic_forward_mode=str(semantic_forward_mode),
+        normal_mode=normal_mode,
+        query_sample_mode=query_sample_mode,
+    )
+
+    query_world_xyz, semantic_output = _compute_semantic_query(
+        artifacts,
+        point_cloud,
+        target_num_points=int(target_num_points),
+        normal_mode=resolved_normal_mode,
+        query_sample_mode=resolved_query_sample_mode,
+    )
+    embeddings = semantic_output["embedding"].squeeze(0).detach().cpu().numpy().astype(np.float32)
+    logits = semantic_output.get("logits")
+    if logits is None:
+        raise RuntimeError("Semantic model output does not include logits; predicted-label visualization is unavailable.")
+    probabilities = torch.softmax(logits.squeeze(0), dim=-1)
+    confidence, pred_labels = torch.max(probabilities, dim=-1)
+    return {
+        "point_cloud": np.concatenate([query_world_xyz, embeddings], axis=1),
+        "pred_labels": pred_labels.detach().cpu().numpy().astype(np.int64),
+        "confidence": confidence.detach().cpu().numpy().astype(np.float32),
+        "label_names": list(artifacts.get("canonical_label_names", [])),
+    }

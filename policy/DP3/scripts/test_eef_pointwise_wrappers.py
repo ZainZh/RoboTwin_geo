@@ -29,7 +29,7 @@ class TestEefPointwiseWrappers(unittest.TestCase):
 
         forwarded = process_data_semantic_pointwise_eef_absolute6d.build_eef_argv(argv, hybrid=True)
 
-        self.assertIn("--output_suffix=-objpc-semantic-pointwise-hybrid-eef-absolute6d-rightbase", forwarded)
+        self.assertIn("--output_suffix=-objpc-semantic-pointwise-hybrid-semdebugref-eef-absolute6d-rightbase", forwarded)
         self.assertIn("--keep_feature_placeholders_in_context", forwarded)
         self.assertIn("--action_mode=eef_absolute6d", forwarded)
 
@@ -59,7 +59,7 @@ class TestEefPointwiseWrappers(unittest.TestCase):
             hybrid=True,
         )
 
-        self.assertIn("--output_suffix=-objpc-semantic-pointwise-hybrid-eef-absolute6d-global", forwarded)
+        self.assertIn("--output_suffix=-objpc-semantic-pointwise-hybrid-semdebugref-eef-absolute6d-global", forwarded)
         self.assertIn("--action_mode=eef_absolute6d", forwarded)
         self.assertIn("--keep_feature_placeholders_in_context", forwarded)
 
@@ -76,9 +76,9 @@ class TestEefPointwiseWrappers(unittest.TestCase):
 
         self.assertIn("eef_frame_mode=${12:-reference_camera}", semantic_process)
         self.assertIn('process_data_semantic_pointwise_hybrid_eef_absolute6d_global.py', semantic_process)
-        self.assertIn('output_suffix="-objpc-semantic-pointwise-hybrid-eef-absolute6d-global${point_cloud_suffix}"', semantic_train)
+        self.assertIn('output_suffix="-objpc-semantic-pointwise-hybrid${semantic_feature_suffix}-eef-absolute6d-global${point_cloud_suffix}"', semantic_train)
         self.assertIn("task.shape_meta.obs.point_cloud.shape=[${point_cloud_num},6]", semantic_train)
-        self.assertIn("ckpt_setting=\"${task_config}-objpc-semantic-pointwise-hybrid-eef-absolute6d-global\"", semantic_infer)
+        self.assertIn("ckpt_setting=\"${task_config}-objpc-semantic-pointwise-hybrid${semantic_feature_suffix}-eef-absolute6d-global\"", semantic_infer)
         self.assertIn("output_frame=${12:-source}", semantic_infer)
         self.assertIn("eef_frame_mode=${13:-reference_camera}", semantic_infer)
 

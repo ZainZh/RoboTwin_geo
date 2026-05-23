@@ -18,7 +18,7 @@ def build_hybrid_argv(argv):
     semantic_num_points = _extract_semantic_num_points(argv)
     forwarded = list(argv)
     if not has_output_suffix(forwarded):
-        forwarded.append(f"--output_suffix=-objpc-semantic-pointwise-hybrid-feat{semantic_num_points}")
+        forwarded.append(f"--output_suffix=-objpc-semantic-pointwise-hybrid-semdebugref-feat{semantic_num_points}")
     forwarded.append("--keep_feature_placeholders_in_context")
     return forwarded
 

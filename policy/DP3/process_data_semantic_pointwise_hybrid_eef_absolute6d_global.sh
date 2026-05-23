@@ -15,7 +15,9 @@ left_robot_camera_calibration_path=${10:-${repo_root}/script/real_zed_collection
 right_robot_camera_calibration_path=${11:-${repo_root}/script/real_zed_collection/calibration/robot_camera_apriltag_right_global.yaml}
 eef_frame_mode=${12:-reference_camera}
 target_num_points=${13:-1024}
-output_suffix=${14:--objpc-semantic-pointwise-hybrid-eef-absolute6d-global}
+output_suffix=${14:--objpc-semantic-pointwise-hybrid-semdebugref-eef-absolute6d-global}
+semantic_input_color_mode=${15:-debug_placeholder}
+semantic_forward_mode=${16:-reference}
 
 extra_args=()
 if [ "${semantic_ckpt_A}" != "none" ] && [ -n "${semantic_ckpt_A}" ]; then
@@ -32,6 +34,8 @@ python scripts/process_data_semantic_pointwise_hybrid_eef_absolute6d_global.py \
     --object_placeholders "${object_placeholders}" \
     --semantic_device "${semantic_device}" \
     --semantic_num_points "${semantic_point_num}" \
+    --semantic_input_color_mode "${semantic_input_color_mode}" \
+    --semantic_forward_mode "${semantic_forward_mode}" \
     --target_num_points "${target_num_points}" \
     --output_suffix="${output_suffix}" \
     --eef_calibration_path "${eef_calibration_path}" \

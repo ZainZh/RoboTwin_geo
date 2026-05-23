@@ -7,9 +7,9 @@ def has_output_suffix(argv):
 
 def build_eef_argv(argv, *, hybrid: bool = False):
     suffix = (
-        "-objpc-semantic-pointwise-hybrid-eef-absolute6d-global"
+        "-objpc-semantic-pointwise-hybrid-semdebugref-eef-absolute6d-global"
         if hybrid
-        else "-objpc-semantic-pointwise-eef-absolute6d-global"
+        else "-objpc-semantic-pointwise-semdebugref-eef-absolute6d-global"
     )
     forwarded = list(argv)
     if not has_output_suffix(forwarded):

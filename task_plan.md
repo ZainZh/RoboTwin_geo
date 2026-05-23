@@ -6,7 +6,7 @@ Design a real-robot data collection pipeline that keeps the robot-control behavi
 
 ## Current Phase
 
-Real DP3 snapshot and SAM2 reselect hotkeys
+Processed-dataset semantic field visualization
 
 ## Phases
 
@@ -378,6 +378,31 @@ Real DP3 snapshot and SAM2 reselect hotkeys
 - [x] Add regression tests for raw snapshot saving, HDF5 persistence, and real-pose EEF state/action conversion.
 - [x] Verify targeted tests, EEF wrapper tests, Python compilation, and whitespace.
 - **Status:** complete
+
+### Phase 38: Processed-Dataset Semantic Field Visualization
+- [x] Use processed HDF5 `/pointcloud` as the scene cloud source.
+- [x] Use processed HDF5 `/object_pointcloud/{placeholder}` as the segmented object point-cloud source.
+- [x] Compute semantic pointwise embeddings through the same DP3 semantic feature utility used by training.
+- [x] Fit shared PCA by semantic checkpoint by default so same-class objects share colors.
+- [x] Prefer raw full-scene RGB/depth reconstruction for scene overlay when real-ZED metadata is available, without workspace cropping.
+- [x] Default to removing matching full-scene object points and inserting semantic-colored object points, avoiding nearest-neighbor recoloring of nearby table/background points.
+- [x] Add a z-min deletion gate for `cut_replace` so nearby tabletop points can be preserved while semantic-colored object points are inserted.
+- [x] Add predicted-label coloring through semantic logits, with PCA retained as an optional continuous-embedding visualization mode.
+- [x] Align PCA coloring with `visualize_utonia_universal_field.py` `surface_sem_embedding_joint_pca.ply` by using the same `torch.pca_lowrank` projection.
+- [x] Align visualization semantic forward mode with `visualize_utonia_universal_field.py` direct point-cloud mode by using fallback normals and random query sampling by default.
+- [x] Align visualization semantic input colors with the debug PLY placeholder colors used by `visualize_utonia_universal_field.py`.
+- [x] Export per-object semantic PCA PLY files, scene overlay PLY files, and a JSON summary.
+- [x] Add unit and synthetic-HDF5 regression coverage.
+- **Status:** complete
+
+### Phase 39: Real Semantic Feature-Input Consistency
+- [x] Audit offline semantic preprocessing feature inputs.
+- [x] Audit sim/real semantic deployment feature inputs.
+- [x] Compare current training/inference behavior against the validated debug-placeholder visualization path.
+- [x] Add an explicit semantic feature-input mode to preprocessing, eval, and real inference wrappers.
+- [x] Put corrected semantic features under a non-conflicting `-semdebugref` suffix.
+- [ ] Regenerate semantic zarrs and retrain checkpoints with the corrected distribution.
+- **Status:** implementation complete; retraining pending
 
 ## Decisions Made
 

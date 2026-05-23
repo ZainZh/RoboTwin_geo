@@ -22,17 +22,23 @@ pin_memory=${19:-true}
 val_pin_memory=${20:-false}
 max_val_steps=${21:-2}
 point_cloud_num=${22:-1024}
+semantic_input_color_mode=${23:-debug_placeholder}
+semantic_forward_mode=${24:-reference}
 point_cloud_suffix=""
 if [ "${point_cloud_num}" != "1024" ]; then
     point_cloud_suffix="-pc${point_cloud_num}"
 fi
-output_suffix="-objpc-semantic-pointwise-hybrid-eef-absolute6d-global${point_cloud_suffix}"
+semantic_feature_suffix="-sem${semantic_input_color_mode}-${semantic_forward_mode}"
+if [ "${semantic_input_color_mode}" = "debug_placeholder" ] && [ "${semantic_forward_mode}" = "reference" ]; then
+    semantic_feature_suffix="-semdebugref"
+fi
+output_suffix="-objpc-semantic-pointwise-hybrid${semantic_feature_suffix}-eef-absolute6d-global${point_cloud_suffix}"
 zarr_dir="./data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
 meta_path="./data/${task_name}-${task_config}-${expert_data_num}${output_suffix}_meta.json"
 semantic_feature_placeholders=""
 
 if [ ! -d "${zarr_dir}" ]; then
-    bash process_data_semantic_pointwise_hybrid_eef_absolute6d_global.sh "${task_name}" "${task_config}" "${expert_data_num}" "${semantic_ckpt_A}" "${semantic_ckpt_B}" "${semantic_device}" "${object_placeholders}" "${semantic_point_num}" "" "" "" reference_camera "${point_cloud_num}" "${output_suffix}"
+    bash process_data_semantic_pointwise_hybrid_eef_absolute6d_global.sh "${task_name}" "${task_config}" "${expert_data_num}" "${semantic_ckpt_A}" "${semantic_ckpt_B}" "${semantic_device}" "${object_placeholders}" "${semantic_point_num}" "" "" "" reference_camera "${point_cloud_num}" "${output_suffix}" "${semantic_input_color_mode}" "${semantic_forward_mode}"
 fi
 
 if [ -f "${meta_path}" ]; then

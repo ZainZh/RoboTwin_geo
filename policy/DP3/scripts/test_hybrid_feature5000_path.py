@@ -61,8 +61,8 @@ class TestHybridFeature5000Path(unittest.TestCase):
 
         self.assertIn('output_suffix="-objpc-ndf-pointwise-hybrid-feat${ndf_point_num}"', train_ndf)
         self.assertIn('output_suffix="-objpc-ndf-pointwise-hybrid-feat${ndf_point_num}"', eval_ndf)
-        self.assertIn('output_suffix="-objpc-semantic-pointwise-hybrid-feat${semantic_point_num}"', train_sem)
-        self.assertIn('output_suffix="-objpc-semantic-pointwise-hybrid-feat${semantic_point_num}"', eval_sem)
+        self.assertIn('output_suffix="-objpc-semantic-pointwise-hybrid-semdebugref-feat${semantic_point_num}"', train_sem)
+        self.assertIn('output_suffix="-objpc-semantic-pointwise-hybrid${semantic_feature_suffix}-feat${semantic_point_num}"', eval_sem)
 
     def test_wrapper_scripts_build_dynamic_output_suffix_from_point_count(self):
         ndf_spec = importlib.util.spec_from_file_location(
@@ -85,7 +85,7 @@ class TestHybridFeature5000Path(unittest.TestCase):
         sem_argv = sem_module.build_hybrid_argv(["task", "cfg", "50", "--semantic_num_points", "768"])
 
         self.assertIn("--output_suffix=-objpc-ndf-pointwise-hybrid-feat512", ndf_argv)
-        self.assertIn("--output_suffix=-objpc-semantic-pointwise-hybrid-feat768", sem_argv)
+        self.assertIn("--output_suffix=-objpc-semantic-pointwise-hybrid-semdebugref-feat768", sem_argv)
 
 
 if __name__ == "__main__":

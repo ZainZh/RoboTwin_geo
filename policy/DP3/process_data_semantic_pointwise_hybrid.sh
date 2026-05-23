@@ -9,7 +9,9 @@ semantic_device=${6:-cuda:0}
 object_placeholders=${7:-\{A\},\{B\}}
 semantic_point_num=${8:-128}
 target_num_points=${9:-1024}
-output_suffix=${10:--objpc-semantic-pointwise-hybrid}
+output_suffix=${10:--objpc-semantic-pointwise-hybrid-semdebugref}
+semantic_input_color_mode=${11:-debug_placeholder}
+semantic_forward_mode=${12:-reference}
 
 extra_args=()
 if [ "${semantic_ckpt_A}" != "none" ] && [ -n "${semantic_ckpt_A}" ]; then
@@ -26,6 +28,8 @@ python scripts/process_data_semantic_pointwise_hybrid.py \
     --object_placeholders "${object_placeholders}" \
     --semantic_device "${semantic_device}" \
     --semantic_num_points "${semantic_point_num}" \
+    --semantic_input_color_mode "${semantic_input_color_mode}" \
+    --semantic_forward_mode "${semantic_forward_mode}" \
     --target_num_points "${target_num_points}" \
     --output_suffix="${output_suffix}" \
     "${extra_args[@]}"

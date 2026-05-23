@@ -17,7 +17,9 @@ object_placeholders=${7:-${DEFAULT_OBJECT_PLACEHOLDERS}}
 semantic_point_num=${8:-128}
 actorseg_camera_names=${9:-head_camera,front_camera}
 target_num_points=${10:-1024}
-output_suffix=${11:--objpc-actorseg-semantic-pointwise-hybrid}
+output_suffix=${11:--objpc-actorseg-semantic-pointwise-hybrid-semdebugref}
+semantic_input_color_mode=${12:-debug_placeholder}
+semantic_forward_mode=${13:-reference}
 
 extra_args=()
 if [ "${semantic_ckpt_A}" != "none" ] && [ -n "${semantic_ckpt_A}" ]; then
@@ -35,6 +37,8 @@ python scripts/process_data_semantic_pointwise_actorseg_hybrid.py \
     --camera_names "${actorseg_camera_names}" \
     --semantic_device "${semantic_device}" \
     --semantic_num_points "${semantic_point_num}" \
+    --semantic_input_color_mode "${semantic_input_color_mode}" \
+    --semantic_forward_mode "${semantic_forward_mode}" \
     --target_num_points "${target_num_points}" \
     --output_suffix="${output_suffix}" \
     "${extra_args[@]}"

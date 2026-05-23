@@ -10,7 +10,7 @@ def has_output_suffix(argv):
 def build_hybrid_argv(argv):
     forwarded = list(argv)
     if not has_output_suffix(forwarded):
-        forwarded.append("--output_suffix=-objpc-semantic-pointwise-hybrid")
+        forwarded.append("--output_suffix=-objpc-semantic-pointwise-hybrid-semdebugref")
     forwarded.append("--keep_feature_placeholders_in_context")
     return forwarded
 

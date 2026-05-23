@@ -2,7 +2,6 @@
 
 task_name=${1:-grasp_mug_new}
 task_config=${2:-demo_real_zed_sam2_objpc_global}
-ckpt_setting="${task_config}-objpc-semantic-pointwise-hybrid-eef-absolute6d-global"
 expert_data_num=${3:-70}
 seed=${4:-0}
 gpu_id=${5:-0}
@@ -13,6 +12,13 @@ semantic_device=${8:-cuda:0}
 object_placeholders=${9:-\{A\},\{B\}}
 checkpoint_num=${10:-3000}
 semantic_point_num=${11:-256}
+semantic_input_color_mode=${SEMANTIC_INPUT_COLOR_MODE:-debug_placeholder}
+semantic_forward_mode=${SEMANTIC_FORWARD_MODE:-reference}
+semantic_feature_suffix="-sem${semantic_input_color_mode}-${semantic_forward_mode}"
+if [ "${semantic_input_color_mode}" = "debug_placeholder" ] && [ "${semantic_forward_mode}" = "reference" ]; then
+    semantic_feature_suffix="-semdebugref"
+fi
+ckpt_setting="${task_config}-objpc-semantic-pointwise-hybrid${semantic_feature_suffix}-eef-absolute6d-global"
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(cd "${script_dir}/../.." && pwd)
@@ -47,6 +53,8 @@ python script/real_zed_inference/real_dp3_inference.py \
     --semantic_ckpt_B "${semantic_ckpt_B}" \
     --semantic_device "${semantic_device}" \
     --semantic_point_num "${semantic_point_num}" \
+    --semantic_input_color_mode "${semantic_input_color_mode}" \
+    --semantic_forward_mode "${semantic_forward_mode}" \
     --object_placeholders "${object_placeholders}" \
     --enable_sam2_objpc \
     --profile_timing \

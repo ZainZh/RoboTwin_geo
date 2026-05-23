@@ -2147,6 +2147,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--semantic_ckpt_B", default="none")
     parser.add_argument("--semantic_device", default="cuda:0")
     parser.add_argument("--semantic_point_num", type=int, default=128)
+    parser.add_argument(
+        "--semantic_input_color_mode",
+        choices=["debug_placeholder", "stored_scaled", "stored"],
+        default="debug_placeholder",
+    )
+    parser.add_argument("--semantic_forward_mode", choices=["reference", "dp3"], default="reference")
     parser.add_argument("--object_placeholders", default="{A},{B}")
 
     parser.add_argument("--calibration_path", default=str(DEFAULT_WORKSPACE_CALIBRATION))

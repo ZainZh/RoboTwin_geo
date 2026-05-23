@@ -39,6 +39,21 @@ class TestSemanticHybridTrainingResourceOverrides(unittest.TestCase):
         self.assertIn('has_semantic_feature_placeholder "{A}"', train_script)
         self.assertIn('has_semantic_feature_placeholder "{B}"', train_script)
 
+    def test_semantic_hybrid_train_and_eval_use_debug_reference_suffix(self):
+        train_script = (REPO_ROOT / "policy" / "DP3" / "train_semantic_pointwise_hybrid.sh").read_text(
+            encoding="utf-8"
+        )
+        eval_script = (REPO_ROOT / "policy" / "DP3" / "eval_semantic_pointwise_hybrid.sh").read_text(
+            encoding="utf-8"
+        )
+
+        for script in (train_script, eval_script):
+            self.assertIn("semantic_input_color_mode", script)
+            self.assertIn("semantic_forward_mode", script)
+            self.assertIn("semantic_feature_suffix=\"-semdebugref\"", script)
+            self.assertIn("semantic_input_color_mode", script)
+            self.assertIn("semantic_forward_mode", script)
+
     def test_direct_dp3_train_scripts_forward_resource_overrides(self):
         script_names = [
             "train_objpc.sh",

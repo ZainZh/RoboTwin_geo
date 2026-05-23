@@ -1650,3 +1650,131 @@
   - Verified `python -m unittest script.test_eval_policy_helpers`.
   - Verified `python -m py_compile script/eval_policy.py script/test_eval_policy_helpers.py`.
   - Verified `git diff --check -- script/eval_policy.py script/test_eval_policy_helpers.py`.
+
+### Phase 75: Processed-Dataset Semantic Field Visualization
+- **Status:** complete
+- Actions taken:
+  - Read the existing Utonia semantic visualization scripts and DP3 semantic feature utilities.
+  - Confirmed processed HDF5 episodes contain `/pointcloud` and `/object_pointcloud/{placeholder}` arrays, so the first visualization version can use already postprocessed datasets instead of re-running SAM2 from snapshots.
+  - Confirmed `object_pointcloud_utils.extract_placeholder_point_cloud(...)` can reuse the same object cloud extraction path as `train_objpc.sh`.
+  - Confirmed `semantic_feature_utils.compute_semantic_pointwise_cloud(...)` provides the pointwise `[xyz + embedding]` representation needed for shared PCA coloring.
+  - Added `script/visualize_semantic_field_on_dataset.py`, which reads processed HDF5 episode/frame selections, computes semantic embeddings for selected object placeholders, applies shared PCA by semantic checkpoint by default, writes per-object semantic PLYs, writes scene overlay PLYs, and writes `summary.json`.
+  - Updated the scene overlay source to default to raw full-scene reconstruction when processed real-ZED metadata is available, using raw RGB/depth and calibration without workspace bounds. HDF5 `/pointcloud` remains available through `--scene_source hdf5`.
+  - Added CLI controls `--scene_source auto|raw_full|hdf5`, `--scene_point_num`, `--camera_labels`, depth bounds, raw intrinsics source, and serial remap control.
+  - Clarified in CLI help and summary output that `scene_source` only affects the background scene overlay; semantic object clouds always come from processed HDF5 `/object_pointcloud/{placeholder}` to preserve workspace-constrained segmentation.
+  - Compared the provided debug PLY with HDF5 `/object_pointcloud/{A}` frame 0 and confirmed their min/max/centroid match exactly, so table coloring was caused by scene nearest-neighbor overlay rather than inconsistent object segmentation.
+  - Changed the default overlay mode to `cut_replace`, removing full-scene points that match the segmented object region and inserting the semantic-colored object point cloud. Kept `append` and `replace_nearest` as optional modes.
+  - Added `script/test_semantic_field_dataset_visualization.py` for parsing, shared PCA grouping, nearest-neighbor scene overlay, PLY export, and a synthetic processed-HDF5 end-to-end path with a fake semantic backend.
+  - Added coverage that `scene_source=auto` prefers raw full-scene loading when available.
+  - Verified `python -m unittest script.test_semantic_field_dataset_visualization`.
+  - Verified `python -m py_compile script/visualize_semantic_field_on_dataset.py script/test_semantic_field_dataset_visualization.py`.
+  - Verified `python script/visualize_semantic_field_on_dataset.py --help`.
+  - Verified `git diff --check -- script/visualize_semantic_field_on_dataset.py script/test_semantic_field_dataset_visualization.py findings.md progress.md`.
+
+### Phase 76: Semantic Overlay Z-Gated Cut Replace
+- **Status:** complete
+- Actions taken:
+  - Added a regression test showing that `cut_replace` must preserve nearby low-z table points while still replacing high-z object-region scene points.
+  - Added `--overlay_cut_z_min` to `script/visualize_semantic_field_on_dataset.py`; it only gates which original scene points can be deleted in `cut_replace`.
+  - Kept inserted semantic-colored object points unchanged, so the object remains fully visible while the table can be protected by choosing a z threshold.
+  - Recorded `overlay_cut_z_min` in `summary.json`.
+  - Verified `python -m unittest script.test_semantic_field_dataset_visualization`.
+  - Verified `python -m py_compile script/visualize_semantic_field_on_dataset.py script/test_semantic_field_dataset_visualization.py`.
+  - Verified `python script/visualize_semantic_field_on_dataset.py --help | rg "overlay_cut_z_min|overlay_mode|cut_replace"`.
+
+### Phase 77: Semantic Visualization Episode-Frame Parsing
+- **Status:** complete
+- Actions taken:
+  - Diagnosed `--episode_frames` default parsing as a string-vs-list issue with `argparse nargs="*"`.
+  - Added parser coverage for comma-separated values such as `0:10,0:20,1:5` and mixed list entries such as `0:10,0:20 1:5`.
+  - Updated `parse_episode_frame_specs(...)` to accept `None`, a single string, or a sequence of strings, splitting comma-separated selections safely.
+  - Changed the CLI default to a list of valid `episode:frame` strings so running the script without explicit `--episode_frames` no longer iterates over characters.
+  - Verified `python -m unittest script.test_semantic_field_dataset_visualization`.
+  - Verified `python -m py_compile script/visualize_semantic_field_on_dataset.py script/test_semantic_field_dataset_visualization.py`.
+  - Verified `python script/visualize_semantic_field_on_dataset.py --help | rg "episode_frames|0:10"`.
+
+### Phase 78: Semantic Visualization Predicted-Label Coloring
+- **Status:** complete
+- Actions taken:
+  - Confirmed the semantic model exposes `query_semantic(...)[\"logits\"]`, and the existing Utonia visualization path colors predicted labels with `sem_logits.argmax`.
+  - Added a label palette and label-to-color helpers to the processed-dataset visualization script.
+  - Added `compute_semantic_pointwise_prediction(...)` to `policy/DP3/scripts/semantic_feature_utils.py`, returning `[xyz + embedding]`, predicted labels, confidence, and canonical label names.
+  - Added `--color_mode label|pca` to `script/visualize_semantic_field_on_dataset.py`, defaulting to `label`; PCA remains available with `--color_mode pca`.
+  - Label mode now writes per-object `*_semantic_labels.ply`, a `label_palette.json`, per-object predicted-label histograms, and mean confidence in `summary.json`.
+  - Verified targeted label-color tests.
+  - Verified `python -m unittest script.test_semantic_field_dataset_visualization`.
+  - Verified `python -m py_compile script/visualize_semantic_field_on_dataset.py script/test_semantic_field_dataset_visualization.py policy/DP3/scripts/semantic_feature_utils.py`.
+  - Verified `python script/visualize_semantic_field_on_dataset.py --help | rg "color_mode|semantic_labels|label"`.
+
+### Phase 79: Scene Overlay Label-Color Regression
+- **Status:** complete
+- Actions taken:
+  - Checked the scene overlay path and confirmed it already consumes `record["semantic_rgb"]`, so label mode inserts label-colored object points into the full-scene overlay.
+  - Added a regression assertion that `episode*_scene_semantic_overlay.ply` contains the expected label palette colors in label mode.
+  - Verified `python -m unittest script.test_semantic_field_dataset_visualization`.
+  - Verified `python -m py_compile script/visualize_semantic_field_on_dataset.py script/test_semantic_field_dataset_visualization.py policy/DP3/scripts/semantic_feature_utils.py`.
+  - Verified `git diff --check -- script/visualize_semantic_field_on_dataset.py script/test_semantic_field_dataset_visualization.py policy/DP3/scripts/semantic_feature_utils.py`.
+
+### Phase 80: Utonia Joint-PCA Color Alignment
+- **Status:** complete
+- Actions taken:
+  - Compared the dataset visualization PCA path against `include/3d_semantic_train/tools/visualize_utonia_universal_field.py`.
+  - Identified that the reference `surface_sem_embedding_joint_pca.ply` path uses `torch.pca_lowrank`, while the dataset visualization used `np.linalg.svd`, causing different PCA component signs and therefore different RGB mappings.
+  - Added a regression test that computes the reference joint-PCA colors and requires `fit_shared_pca_projection(...)` to match them.
+  - Updated `fit_shared_pca_projection(...)` to use the same `torch.pca_lowrank` implementation and fallback conditions as the reference script.
+  - Confirmed the visualization default `--semantic_point_num` is 5000, matching the reference point-cloud mode default, and added help text documenting that alignment.
+  - Verified `python -m unittest script.test_semantic_field_dataset_visualization`.
+  - Verified `python -m py_compile script/visualize_semantic_field_on_dataset.py script/test_semantic_field_dataset_visualization.py policy/DP3/scripts/semantic_feature_utils.py`.
+  - Verified `python script/visualize_semantic_field_on_dataset.py --help | rg "semantic_point_num|color_mode|pca"`.
+
+### Phase 81: Utonia Direct-PointCloud Forward Alignment
+- **Status:** complete with GPU color smoke pending
+- Actions taken:
+  - Compared `visualize_utonia_universal_field.py` direct point-cloud mode against the DP3 semantic helper path.
+  - Identified that reference direct point-cloud mode uses fallback/radial normals for PLYs without normals and random row sampling for query surface points.
+  - Identified that the DP3 helper path used kNN-estimated normals and FPS/original-order point sampling, which changes Utonia input features before PCA is even applied.
+  - Added optional `normal_mode` and `query_sample_mode` parameters to `policy/DP3/scripts/semantic_feature_utils.py`, preserving the old DP3 defaults.
+  - Added `--semantic_forward_mode reference|dp3` to `script/visualize_semantic_field_on_dataset.py`, defaulting to `reference` so visualization matches `visualize_utonia_universal_field.py` direct point-cloud mode.
+  - Recorded `semantic_forward_mode` in `summary.json`.
+  - Inspected the user's reference `summary_point_clouds.json` and confirmed the correct joint PCA color space was fit across 3 point clouds: episode0 frame0, episode0 frame13, and episode1 frame22.
+  - Updated the script's current default `--episode_frames` example to `0:0 0:13 1:22` so no-argument runs match the reference selection.
+  - Verified `python -m unittest script.test_semantic_field_dataset_visualization`.
+  - Verified `python -m py_compile script/visualize_semantic_field_on_dataset.py script/test_semantic_field_dataset_visualization.py policy/DP3/scripts/semantic_feature_utils.py`.
+  - Verified `python script/visualize_semantic_field_on_dataset.py --help | rg "semantic_forward_mode|color_mode|semantic_point_num"`.
+  - Attempted a real color smoke on the local machine, but both CUDA and CPU runs are blocked here: CUDA is unavailable, and the CPU path still enters spconv CUDA stream initialization.
+
+### Phase 82: Utonia Debug-PLY Input Color Alignment
+- **Status:** complete with GPU color smoke pending
+- Actions taken:
+  - Inspected the reference debug PLYs and confirmed they carry artificial placeholder colors, e.g. `{A}` is `[255,48,48]`, not the stored HDF5 object RGB.
+  - Inspected the HDF5 object clouds and confirmed their RGB is stored as real image color in `0-1` scale, which differs from the reference debug PLY inputs.
+  - Added `prepare_semantic_input_cloud(...)` to select colors fed into Utonia independently of the output visualization colors.
+  - Added `--semantic_input_color_mode debug_placeholder|stored_scaled|stored`, defaulting to `debug_placeholder` so `--semantic_forward_mode reference` matches the debug PLY reference path.
+  - Recorded `semantic_input_color_mode` in `summary.json`.
+  - Added tests for debug placeholder colors and stored RGB scaling.
+  - Verified `python -m unittest script.test_semantic_field_dataset_visualization`.
+  - Verified `python -m py_compile script/visualize_semantic_field_on_dataset.py script/test_semantic_field_dataset_visualization.py policy/DP3/scripts/semantic_feature_utils.py`.
+  - Verified `python script/visualize_semantic_field_on_dataset.py --help | rg "semantic_input_color_mode|semantic_forward_mode|color_mode"`.
+
+### Phase 83: Real Semantic Feature-Input Audit
+- **Status:** investigated
+- Actions taken:
+  - Traced offline semantic zarr generation through `process_data_semantic_pointwise.py` and actorseg semantic hybrid preprocessing.
+  - Traced deployment-time semantic feature generation through `policy/DP3/deploy_policy.py`.
+  - Confirmed both paths still call `compute_semantic_pointwise_cloud(...)` with default DP3 behavior, without the visualization-only `debug_placeholder` color policy or reference forward mode.
+  - Checked online SAM2 object-point-cloud extraction and confirmed live RGB is normalized to `0-1` before object cloud merge, so it is still appearance-dependent rather than using deterministic placeholder colors.
+  - Confirmed Utonia `NormalizeColor` divides input color by `255`, making already-normalized `0-1` real object RGB a scale mismatch against the validated `0-255` debug PLY path.
+  - Recorded the recommendation to use an explicit semantic feature-input mode and avoid mixing old checkpoints with new inference features.
+
+### Phase 84: Semantic Feature-Input Consistency Fix
+- **Status:** complete with GPU semantic-forward smoke pending
+- Actions taken:
+  - Added shared semantic input preparation in `semantic_feature_utils.py` with `debug_placeholder`, `stored_scaled`, and `stored` modes.
+  - Made `compute_semantic_pointwise_cloud(...)` and `compute_semantic_pointwise_prediction(...)` default to `semantic_input_color_mode=debug_placeholder` and `semantic_forward_mode=reference`.
+  - Wired the same semantic mode options through offline preprocessing, actorseg preprocessing, DP3 deployment, real inference argparse, eval wrappers, and real semantic inference wrappers.
+  - Added `-semdebugref` to new semantic zarr/checkpoint suffixes so old feature-distribution checkpoints are not mixed with the corrected distribution.
+  - Verified copied real data at `/home/zheng/Datasets/Training_data/grasp_mug_new`: stored object RGB is `0-1`, while semantic input preparation maps `{A}` to `[255,48,48]` and `{B}` to `[48,96,255]`.
+  - Verified `bash -n` for modified semantic preprocess/train/eval/real-infer wrappers.
+  - Verified Python compilation for modified semantic preprocessing, deploy, real inference, and visualization modules.
+  - Verified `test_semantic_pointwise_hybrid.py`, `test_semantic_field_dataset_visualization.py`, and `test_sam2_pointcloud_utils.py`.
+  - Ran broader wrapper tests; remaining failures are pre-existing missing files referenced by tests (`train_semantic_pointwise.sh`, `train_semantic_pointwise_hybrid_feat5000.sh`, `train_semantic_pointwise_actorseg_hybrid.sh`, `train_objpc_eef_absolute6d.sh`, `real_infer_semantic_pointwise_hybrid_eef_absolute6d.sh`), not semantic feature distribution mismatches.

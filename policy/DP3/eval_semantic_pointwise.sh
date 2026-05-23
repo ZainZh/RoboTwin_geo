@@ -14,18 +14,28 @@ object_placeholders=${10:-\{A\},\{B\}}
 checkpoint_num=${11:-3000}
 semantic_point_num=${12:-128}
 point_cloud_num=${13:-1024}
+semantic_input_color_mode=${14:-debug_placeholder}
+semantic_forward_mode=${15:-reference}
 point_cloud_suffix=""
 if [ "${point_cloud_num}" != "1024" ]; then
     point_cloud_suffix="-pc${point_cloud_num}"
 fi
-ckpt_setting="${ckpt_setting_base}${point_cloud_suffix}"
+semantic_feature_suffix="-sem${semantic_input_color_mode}-${semantic_forward_mode}"
+if [ "${semantic_input_color_mode}" = "debug_placeholder" ] && [ "${semantic_forward_mode}" = "reference" ]; then
+    semantic_feature_suffix="-semdebugref"
+fi
+ckpt_setting="${ckpt_setting_base}${semantic_feature_suffix}${point_cloud_suffix}"
 
-meta_path="./data/${task_name}-${task_config}-${expert_data_num}-objpc-semantic-pointwise${point_cloud_suffix}_meta.json"
+meta_path="./data/${task_name}-${task_config}-${expert_data_num}-objpc-semantic-pointwise${semantic_feature_suffix}${point_cloud_suffix}_meta.json"
 
 if [ -f "${meta_path}" ]; then
-    mapfile -t semantic_meta < <(python -c 'import json,sys; m=json.load(open(sys.argv[1], "r", encoding="utf-8")); print(int(m["semantic_num_points"]))' "${meta_path}")
+    mapfile -t semantic_meta < <(python -c 'import json,sys; m=json.load(open(sys.argv[1], "r", encoding="utf-8")); print(int(m["semantic_num_points"])); print(str(m.get("semantic_input_color_mode", "debug_placeholder"))); print(str(m.get("semantic_forward_mode", "reference")))' "${meta_path}")
     if [ ${#semantic_meta[@]} -ge 1 ]; then
         semantic_point_num=${semantic_meta[0]}
+    fi
+    if [ ${#semantic_meta[@]} -ge 3 ]; then
+        semantic_input_color_mode=${semantic_meta[1]}
+        semantic_forward_mode=${semantic_meta[2]}
     fi
 fi
 
@@ -59,5 +69,7 @@ python script/eval_policy.py --config policy/${policy_name}/deploy_policy.yml \
     --object_placeholders "${object_placeholders}" \
     --checkpoint_num ${checkpoint_num} \
     --semantic_point_num ${semantic_point_num} \
+    --semantic_input_color_mode "${semantic_input_color_mode}" \
+    --semantic_forward_mode "${semantic_forward_mode}" \
     --point_cloud_num ${point_cloud_num} \
     "${extra_overrides[@]}"

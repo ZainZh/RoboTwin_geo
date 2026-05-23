@@ -16,6 +16,7 @@ if str(POLICY_ROOT) not in sys.path:
 import deploy_policy
 import process_data_semantic_pointwise
 import process_data_semantic_pointwise_hybrid
+import semantic_feature_utils
 
 
 def make_point_cloud(x_value: float) -> np.ndarray:
@@ -102,9 +103,61 @@ class TestSemanticPointwiseHybrid(unittest.TestCase):
         parser = process_data_semantic_pointwise.build_parser()
         args = parser.parse_args(forwarded)
 
-        self.assertIn("--output_suffix=-objpc-semantic-pointwise-hybrid", forwarded)
-        self.assertEqual(args.output_suffix, "-objpc-semantic-pointwise-hybrid")
+        self.assertIn("--output_suffix=-objpc-semantic-pointwise-hybrid-semdebugref", forwarded)
+        self.assertEqual(args.output_suffix, "-objpc-semantic-pointwise-hybrid-semdebugref")
         self.assertTrue(args.keep_feature_placeholders_in_context)
+
+    def test_preprocess_defaults_use_debug_reference_semantic_features(self):
+        parser = process_data_semantic_pointwise.build_parser()
+        args = parser.parse_args(
+            [
+                "hanging_mug",
+                "demo_clean_3d_object_pc",
+                "50",
+                "--semantic_model",
+                "{A}=/tmp/fake.ckpt",
+            ]
+        )
+
+        self.assertEqual(args.semantic_input_color_mode, "debug_placeholder")
+        self.assertEqual(args.semantic_forward_mode, "reference")
+
+    def test_deploy_semantic_features_use_debug_reference_defaults(self):
+        captured = []
+
+        def fake_semantic_cloud(**kwargs):
+            captured.append(kwargs)
+            return self.fake_semantic_cloud
+
+        with patch.object(deploy_policy, "get_semantic_utils", return_value=(fake_semantic_cloud, None)):
+            deploy_policy.encode_obs(make_observation(), make_model(hybrid=True))
+
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0]["placeholder"], "{A}")
+        self.assertEqual(captured[0]["semantic_input_color_mode"], "debug_placeholder")
+        self.assertEqual(captured[0]["semantic_forward_mode"], "reference")
+
+    def test_semantic_input_debug_color_is_255_scale_for_utonia(self):
+        cloud = make_point_cloud(1.0)
+        prepared = semantic_feature_utils.prepare_semantic_input_point_cloud(
+            cloud,
+            placeholder="{A}",
+            color_mode="debug_placeholder",
+        )
+
+        self.assertTrue(np.allclose(prepared[:, 3:6], np.asarray([255.0, 48.0, 48.0], dtype=np.float32)))
+
+    def test_semantic_input_stored_scaled_converts_real_rgb_to_255_scale(self):
+        cloud = make_point_cloud(1.0)
+        cloud[:, 3:6] = np.asarray([0.5, 0.25, 0.0], dtype=np.float32)
+
+        prepared = semantic_feature_utils.prepare_semantic_input_point_cloud(
+            cloud,
+            placeholder="{A}",
+            color_mode="stored_scaled",
+        )
+
+        self.assertTrue(np.allclose(prepared[:, 3:6], np.asarray([127.5, 63.75, 0.0], dtype=np.float32)))
 
 
 if __name__ == "__main__":
