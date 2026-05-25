@@ -6,7 +6,7 @@ Design a real-robot data collection pipeline that keeps the robot-control behavi
 
 ## Current Phase
 
-Processed-dataset semantic field visualization
+Multi-feature semantic field comparison
 
 ## Phases
 
@@ -403,6 +403,37 @@ Processed-dataset semantic field visualization
 - [x] Put corrected semantic features under a non-conflicting `-semdebugref` suffix.
 - [ ] Regenerate semantic zarrs and retrain checkpoints with the corrected distribution.
 - **Status:** implementation complete; retraining pending
+
+### Phase 40: Open3D PLY Viewer Stable Global View
+- [x] Inspect the current viewer implementation.
+- [x] Add a deterministic global-frame view preset.
+- [x] Add CLI overrides for manual camera tuning.
+- [x] Verify helper behavior and syntax.
+- **Status:** complete
+
+### Phase 41: Open3D PLY Viewer View-Status Capture
+- [x] Inspect Open3D ViewControl getter/export API.
+- [x] Add key callback to print current view status.
+- [x] Add CLI and constant-based view-status restore path.
+- [x] Verify tests, syntax, and help output.
+- **Status:** complete
+
+### Phase 42: Semantic Field Original Scene Export
+- [x] Save an original-color scene PLY beside each semantic overlay PLY.
+- [x] Keep original scene RGB independent of the overlay background mode.
+- [x] Record the original-color scene PLY path in `summary.json`.
+- [x] Add regression coverage for file creation and preserved scene RGB.
+- **Status:** complete
+
+### Phase 43: Multi-Feature Semantic Field Comparison
+- [x] Add feature-method selection for semantic, Utonia object features, and DINOv2 image features.
+- [x] Keep PCA fitting independent per feature method so color spaces are not mixed.
+- [x] Add per-method object PLY and scene overlay outputs.
+- [x] Add lazy Utonia and DINOv2 loaders so missing optional dependencies only fail when requested.
+- [x] Add tests for per-method output naming, summary metadata, and independent PCA grouping.
+- [x] Add independent `--run_semantic`, `--run_utonia`, and `--run_dinov2` switches for selective runs.
+- [x] Add `--utonia_grid_size` to control Utonia GridSample density.
+- **Status:** complete with real DINOv2 dependency smoke pending
 
 ## Decisions Made
 

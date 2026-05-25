@@ -24,8 +24,8 @@ from script.real_zed_collection.sam2_tracking_utils import (
 from script.real_zed_collection.select_camera_workspace_masks import _load_rgb, _resolve_raw_episode
 
 
-DEFAULT_RAW_ROOT = "/media/zheng/Extreme SSD/geo_mani_data/stirring_coffee/real_zed_raw"
-DEFAULT_OUTPUT_ROOT = "/media/zheng/Extreme SSD/geo_mani_data/stirring_coffee/sam2_bbox_prompts"
+DEFAULT_RAW_ROOT = "/media/zheng/Extreme SSD/geo_mani_data/view_pour_water/real_zed_raw"
+DEFAULT_OUTPUT_ROOT = "/media/zheng/Extreme SSD/geo_mani_data/view_stirring_coffee/sam2_bbox_prompts"
 DISPLAY_HEADER_HEIGHT = 104
 DEFAULT_DISPLAY_SCALE = 1.8
 

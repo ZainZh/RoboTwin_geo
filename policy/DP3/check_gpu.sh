@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 定义你的训练命令
-TRAIN_COMMAND="bash train_semantic_pointwise_hybrid_eef_absolute6d_global.sh stirring_coffee demo_real_zed_sam2_objpc_global 80 0 0 /home/zheng/model/semantic/spoon.pt"
+TRAIN_COMMAND="bash train_semantic_pointwise_hybrid_eef_absolute6d_global.sh stirring_coffee demo_real_zed_sam2_objpc_global 80 0 0 /home/zheng/model/semantic/mug.pt /home/zheng/model/semantic/spoon.pt"
 
 # 目标空闲内存 (MiB)
 REQUIRED_FREE_MEMORY=21500

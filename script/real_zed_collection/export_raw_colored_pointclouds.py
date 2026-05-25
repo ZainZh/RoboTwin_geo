@@ -324,7 +324,7 @@ def export_raw_colored_pointclouds(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Export colored point clouds from one raw real-ZED task episode.")
-    parser.add_argument("--task_name", default="pour_water", help="Task/project name, e.g. grasp_mug.")
+    parser.add_argument("--task_name", default="beat_cube", help="Task/project name, e.g. grasp_mug.")
     parser.add_argument("--episode", default="0", help="Episode index, episode directory name, timestamp, or full path.")
     parser.add_argument("--raw_root", default="", help="Raw root. Defaults to /media/$USER/Extreme SSD/geo_mani_data/<task>/real_zed_raw.")
     parser.add_argument("--output_dir", default="", help="Output directory. Defaults under outputs/real_zed_collection/raw_colored_pointclouds/.")
@@ -356,7 +356,7 @@ def main() -> None:
     output_dir = (
         Path(args.output_dir).expanduser()
         if args.output_dir
-        else Path("outputs") / "real_zed_collection" / "raw_colored_pointclouds" / args.task_name / raw_episode_dir.name
+        else Path("outputs") / "real_zed_collection" / "raw_colored_pointclouds" / args.task_name / args.episode
     )
     summary = export_raw_colored_pointclouds(
         raw_episode_dir=raw_episode_dir,

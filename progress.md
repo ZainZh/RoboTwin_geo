@@ -1778,3 +1778,73 @@
   - Verified Python compilation for modified semantic preprocessing, deploy, real inference, and visualization modules.
   - Verified `test_semantic_pointwise_hybrid.py`, `test_semantic_field_dataset_visualization.py`, and `test_sam2_pointcloud_utils.py`.
   - Ran broader wrapper tests; remaining failures are pre-existing missing files referenced by tests (`train_semantic_pointwise.sh`, `train_semantic_pointwise_hybrid_feat5000.sh`, `train_semantic_pointwise_actorseg_hybrid.sh`, `train_objpc_eef_absolute6d.sh`, `real_infer_semantic_pointwise_hybrid_eef_absolute6d.sh`), not semantic feature distribution mismatches.
+
+### Phase 85: Open3D PLY Viewer Stable Global View
+- **Status:** complete
+- Actions taken:
+  - Added a default `global` Open3D view preset to `script/view_ply_open3d.py`.
+  - The preset looks from global `-Y` with global `Z` as up, and automatically uses the combined point-cloud bounding-box center as `lookat`.
+  - Added CLI overrides for `--view_preset`, `--front`, `--up`, `--lookat`, and `--zoom`.
+  - Added `script/test_view_ply_open3d.py` coverage for scene-center computation and global view application.
+  - Verified `PYTHONPATH=script /home/zheng/miniforge3/envs/RoboTwin/bin/python script/test_view_ply_open3d.py`.
+  - Verified `/home/zheng/miniforge3/envs/RoboTwin/bin/python -m py_compile script/view_ply_open3d.py script/test_view_ply_open3d.py`.
+  - Verified `/home/zheng/miniforge3/envs/RoboTwin/bin/python script/view_ply_open3d.py --help | rg "view_preset|front|lookat|zoom"`.
+
+### Phase 86: Open3D PLY Viewer View-Status Capture
+- **Status:** complete
+- Actions taken:
+  - Confirmed this Open3D version exposes `get_view_status` / `set_view_status`, not `get_front` / `get_up` / `get_lookat` / `get_zoom`.
+  - Switched the viewer to `VisualizerWithKeyCallback`.
+  - Added default `P` key handling that prints the current Open3D view-status JSON and a copy-pasteable `DEFAULT_VIEW_STATUS = r'''...'''` assignment.
+  - Added `--view_status`, `--view_status_file`, `--print_view_key`, and `--view_status_output`.
+  - Added tests for view-status reporting, applying explicit view status, and key registration.
+  - Verified `PYTHONPATH=script /home/zheng/miniforge3/envs/RoboTwin/bin/python script/test_view_ply_open3d.py`.
+  - Verified `/home/zheng/miniforge3/envs/RoboTwin/bin/python -m py_compile script/view_ply_open3d.py script/test_view_ply_open3d.py`.
+  - Verified `/home/zheng/miniforge3/envs/RoboTwin/bin/python script/view_ply_open3d.py --help | rg "view_status|print_view_key|view_preset"`.
+
+### Phase 87: Semantic Field Original Scene Export
+- **Status:** complete
+- Actions taken:
+  - Added `episode<idx>_frame<idx>_scene_original_color.ply` output for every scene semantic overlay frame.
+  - The original-color scene output uses the same loaded scene source but forces original RGB preservation instead of semantic overlay background recoloring.
+  - Added `scene_original_color_ply` to each `summary.json` scene entry.
+  - Added regression coverage that checks the file exists and preserves original scene RGB values.
+  - Verified `PYTHONPATH=. /home/zheng/miniforge3/envs/RoboTwin/bin/python script/test_semantic_field_dataset_visualization.py`.
+  - Verified `/home/zheng/miniforge3/envs/RoboTwin/bin/python -m py_compile script/visualize_semantic_field_on_dataset.py script/test_semantic_field_dataset_visualization.py`.
+
+### Phase 88: Multi-Feature Semantic Field Comparison
+- **Status:** complete with real DINOv2 dependency smoke pending
+- Actions taken:
+  - Added `--feature_methods` with `semantic`, `utonia`, and `dinov2` backends.
+  - Kept PCA color spaces isolated by feature method, so semantic, Utonia, and DINOv2 embeddings are never fit in one mixed projection.
+  - Added per-method object PLY outputs such as `*_semantic_pca.ply`, `*_utonia_pca.ply`, and `*_dinov2_pca.ply`.
+  - Added per-method scene overlays such as `*_scene_semantic_overlay.ply`, `*_scene_utonia_overlay.ply`, and `*_scene_dinov2_overlay.ply`.
+  - Added a lazy Utonia backend that follows `/home/zheng/github/Utonia/demo/6_pca_object_obj_1.py`: Utonia model loading, default transform, parent-feature upcasting, demo-style 6-PC PCA color mixing, and fixed seed.
+  - Restored Utonia's `CenterShift(apply_z=True)` before writing visualization coordinates so colored points remain in the original scene frame.
+  - Added a lazy DINOv2 backend that projects object points into selected raw RGB cameras, samples DINOv2 patch tokens at projected pixels, and averages valid multi-camera features per 3D point.
+  - Added tests for feature-method parsing, method-isolated PCA grouping, Utonia demo PCA output shape, Utonia center-shift restoration, and multi-method output files/summary entries.
+  - Verified `PYTHONPATH=. /home/zheng/miniforge3/envs/RoboTwin/bin/python script/test_semantic_field_dataset_visualization.py`.
+  - Verified `/home/zheng/miniforge3/envs/RoboTwin/bin/python -m py_compile script/visualize_semantic_field_on_dataset.py script/test_semantic_field_dataset_visualization.py`.
+  - Verified `git diff --check -- script/visualize_semantic_field_on_dataset.py script/test_semantic_field_dataset_visualization.py task_plan.md findings.md progress.md`.
+
+### Phase 89: Multi-Feature Selective Run Switches
+- **Status:** complete
+- Actions taken:
+  - Added `--run_semantic`, `--run_utonia`, and `--run_dinov2` convenience switches.
+  - Added `resolve_feature_methods(...)` so any active `--run_*` switch overrides the default `--feature_methods` list.
+  - Preserved existing `--feature_methods semantic,utonia,dinov2` behavior when no individual switches are used.
+  - Added regression coverage that `--run_utonia` alone resolves to only `["utonia"]`.
+  - Verified `PYTHONPATH=. /home/zheng/miniforge3/envs/RoboTwin/bin/python script/test_semantic_field_dataset_visualization.py`.
+  - Verified `/home/zheng/miniforge3/envs/RoboTwin/bin/python -m py_compile script/visualize_semantic_field_on_dataset.py script/test_semantic_field_dataset_visualization.py`.
+  - Verified `git diff --check -- script/visualize_semantic_field_on_dataset.py script/test_semantic_field_dataset_visualization.py task_plan.md progress.md`.
+
+### Phase 90: Utonia Visualization Grid Density
+- **Status:** complete
+- Actions taken:
+  - Added `--utonia_grid_size` to control the Utonia `GridSample` voxel size.
+  - Replaced the hard-coded `utonia.transform.default(...)` call with an equivalent transform config builder that exposes `GridSample.grid_size`.
+  - Kept the default at `0.01` to match Utonia's original transform, while allowing denser visualization with values like `0.003`.
+  - Added regression coverage for the generated Utonia transform config.
+  - Verified `PYTHONPATH=. /home/zheng/miniforge3/envs/RoboTwin/bin/python script/test_semantic_field_dataset_visualization.py`.
+  - Verified `/home/zheng/miniforge3/envs/RoboTwin/bin/python -m py_compile script/visualize_semantic_field_on_dataset.py script/test_semantic_field_dataset_visualization.py`.
+  - Verified `python script/visualize_semantic_field_on_dataset.py --help` exposes `--utonia_grid_size`.

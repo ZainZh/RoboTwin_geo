@@ -11,15 +11,20 @@ import torch
 import script.visualize_semantic_field_on_dataset as viz
 from script.visualize_semantic_field_on_dataset import (
     apply_shared_pca_to_rgb,
+    apply_utonia_demo_pca_to_rgb,
     build_label_palette,
     compose_scene_semantic_overlay,
     fit_shared_pca_projection,
+    fit_utonia_demo_pca_projection,
+    group_feature_records_for_pca,
     group_records_for_pca,
     labels_to_rgb,
     load_scene_cloud_for_frame,
     overlay_semantic_colors_on_scene,
     parse_episode_frame_specs,
+    parse_feature_methods,
     prepare_semantic_input_cloud,
+    resolve_feature_methods,
     run_visualization,
     write_colored_ply,
 )
@@ -71,6 +76,31 @@ class SemanticFieldDatasetVisualizationTest(unittest.TestCase):
                 frame=0,
                 episode_frames=["bad"],
             )
+
+    def test_parse_feature_methods_accepts_comma_separated_values(self):
+        self.assertEqual(parse_feature_methods("semantic,utonia,dinov2"), ["semantic", "utonia", "dinov2"])
+        self.assertEqual(parse_feature_methods(["semantic,dinov2", "utonia"]), ["semantic", "dinov2", "utonia"])
+
+    def test_resolve_feature_methods_prefers_individual_switches(self):
+        args = Namespace(
+            feature_methods=["semantic"],
+            run_semantic=False,
+            run_utonia=True,
+            run_dinov2=False,
+        )
+
+        self.assertEqual(resolve_feature_methods(args), ["utonia"])
+
+    def test_group_feature_records_for_pca_keeps_methods_separate(self):
+        records = [
+            {"feature_method": "semantic", "placeholder": "{A}", "semantic_checkpoint": "same.pt"},
+            {"feature_method": "utonia", "placeholder": "{A}", "semantic_checkpoint": "same.pt"},
+            {"feature_method": "dinov2", "placeholder": "{A}", "semantic_checkpoint": "same.pt"},
+        ]
+
+        grouped = group_feature_records_for_pca(records, shared_pca_scope="all")
+
+        self.assertEqual(sorted(grouped.keys()), ["dinov2:all", "semantic:all", "utonia:all"])
 
     def test_shared_pca_colors_multiple_sets_in_one_space(self):
         embeddings_a = np.asarray(
@@ -142,6 +172,40 @@ class SemanticFieldDatasetVisualizationTest(unittest.TestCase):
         actual = apply_shared_pca_to_rgb(embeddings, fit_shared_pca_projection([embeddings]))
 
         np.testing.assert_array_equal(actual, expected)
+
+    def test_utonia_demo_pca_uses_six_component_mixing_shape(self):
+        embeddings = np.asarray(
+            [
+                [0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+                [0.0, 1.0, 0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 1.0, 1.0, 0.0],
+                [1.0, 1.0, 0.0, 0.0, 1.0, 1.0],
+                [1.0, 0.0, 1.0, 1.0, 0.0, 1.0],
+            ],
+            dtype=np.float32,
+        )
+
+        projection = fit_utonia_demo_pca_projection([embeddings], brightness=1.2)
+        colors = apply_utonia_demo_pca_to_rgb(embeddings, projection)
+
+        self.assertEqual(colors.shape, (6, 3))
+        self.assertEqual(colors.dtype, np.uint8)
+        self.assertEqual(projection["projection_mode"], "utonia_demo_6pc_mix")
+
+    def test_utonia_center_shift_matches_reference_transform(self):
+        xyz = np.asarray([[0.0, 1.0, 0.2], [2.0, 5.0, 0.5], [4.0, 3.0, -0.1]], dtype=np.float32)
+
+        shift = viz._utonia_center_shift(xyz)
+
+        np.testing.assert_allclose(shift, np.asarray([2.0, 3.0, -0.1], dtype=np.float32))
+
+    def test_build_utonia_transform_config_exposes_grid_size(self):
+        config = viz._build_utonia_transform_config(grid_size=0.003)
+
+        grid_entries = [item for item in config if item.get("type") == "GridSample"]
+        self.assertEqual(len(grid_entries), 1)
+        self.assertEqual(grid_entries[0]["grid_size"], 0.003)
 
     def test_group_records_for_pca_defaults_to_checkpoint_identity(self):
         records = [
@@ -459,7 +523,112 @@ class SemanticFieldDatasetVisualizationTest(unittest.TestCase):
             self.assertEqual(summary["object_source"], "processed_hdf5_object_pointcloud")
             self.assertTrue((root / "out" / "episode0_frame0_A_semantic_pca.ply").is_file())
             self.assertTrue((root / "out" / "episode0_frame0_scene_semantic_overlay.ply").is_file())
+            original_scene_ply = root / "out" / "episode0_frame0_scene_original_color.ply"
+            self.assertTrue(original_scene_ply.is_file())
+            self.assertEqual(summary["scenes"][0]["scene_original_color_ply"], str(original_scene_ply))
+            original_colors = _read_ascii_ply_colors(original_scene_ply)
+            self.assertTrue(np.any(np.all(original_colors == [10, 10, 10], axis=1)))
             self.assertTrue((root / "out" / "summary.json").is_file())
+
+    def test_run_visualization_writes_independent_feature_method_outputs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dataset_dir = root / "data" / "task" / "config"
+            data_dir = dataset_dir / "data"
+            data_dir.mkdir(parents=True)
+            with h5py.File(data_dir / "episode0.hdf5", "w") as f:
+                f.create_dataset("joint_action/vector", data=np.zeros((1, 14), dtype=np.float32))
+                f.create_dataset(
+                    "pointcloud",
+                    data=np.asarray(
+                        [[[0.0, 0.0, 0.0, 10.0, 10.0, 10.0], [1.0, 0.0, 0.0, 20.0, 20.0, 20.0]]],
+                        dtype=np.float32,
+                    ),
+                )
+                f.create_dataset(
+                    "object_pointcloud/{A}",
+                    data=np.asarray(
+                        [[[0.0, 0.0, 0.0, 255.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0, 255.0, 0.0]]],
+                        dtype=np.float32,
+                    ),
+                )
+
+            def fake_load(_checkpoint, *, device):
+                return {"device": device}
+
+            def make_feature_cloud(object_cloud, base):
+                points = np.asarray(object_cloud[:2, :3], dtype=np.float32)
+                features = np.asarray(
+                    [
+                        [base, 0.0, 0.0, 1.0],
+                        [0.0, base, 1.0, 0.0],
+                    ],
+                    dtype=np.float32,
+                )
+                return np.concatenate([points, features], axis=1).astype(np.float32)
+
+            args = Namespace(
+                dataset_dir=str(dataset_dir),
+                task_name="",
+                task_config="",
+                data_root="data",
+                episode=0,
+                frame=0,
+                episode_frames=None,
+                object_placeholders="{A}",
+                feature_methods="semantic,utonia,dinov2",
+                semantic_ckpt="",
+                semantic_ckpt_A="fake_mug.pt",
+                semantic_ckpt_B="",
+                semantic_ckpts="",
+                semantic_point_num=2,
+                object_point_num=2,
+                color_mode="pca",
+                semantic_forward_mode="reference",
+                semantic_input_color_mode="stored",
+                utonia_point_num=2,
+                utonia_device="cpu",
+                utonia_root="",
+                utonia_repo_id="Pointcept/Utonia",
+                utonia_input_color_mode="stored",
+                dinov2_point_num=2,
+                dinov2_device="cpu",
+                dinov2_model_name="dinov2_vits14",
+                dinov2_camera_labels="global,back",
+                dinov2_image_size=224,
+                overlay_mode="cut_replace",
+                overlay_distance=0.05,
+                overlay_min_neighbors=1,
+                overlay_cut_z_min=None,
+                scene_source="hdf5",
+                scene_point_num=0,
+                camera_labels="",
+                min_depth_m=0.05,
+                max_depth_m=3.0,
+                raw_intrinsics_source="frame",
+                disable_serial_remap=False,
+                background_mode="original",
+                shared_pca_scope="all",
+                device="cpu",
+                output_dir=str(root / "out"),
+            )
+
+            with mock.patch.object(viz, "_load_semantic_backend", return_value=("cpu", fake_load, lambda _m, cloud, **_kw: make_feature_cloud(cloud, 1.0))), \
+                mock.patch.object(viz, "_load_utonia_backend", return_value=(lambda cloud, **_kw: make_feature_cloud(cloud, 2.0))), \
+                mock.patch.object(viz, "_load_dinov2_backend", return_value=(lambda cloud, **_kw: make_feature_cloud(cloud, 3.0))):
+                summary = run_visualization(args)
+
+            self.assertEqual(summary["feature_methods"], ["semantic", "utonia", "dinov2"])
+            self.assertTrue((root / "out" / "episode0_frame0_A_semantic_pca.ply").is_file())
+            self.assertTrue((root / "out" / "episode0_frame0_A_utonia_pca.ply").is_file())
+            self.assertTrue((root / "out" / "episode0_frame0_A_dinov2_pca.ply").is_file())
+            self.assertTrue((root / "out" / "episode0_frame0_scene_semantic_overlay.ply").is_file())
+            self.assertTrue((root / "out" / "episode0_frame0_scene_utonia_overlay.ply").is_file())
+            self.assertTrue((root / "out" / "episode0_frame0_scene_dinov2_overlay.ply").is_file())
+            self.assertEqual(
+                sorted(item["feature_method"] for item in summary["objects"]),
+                ["dinov2", "semantic", "utonia"],
+            )
 
     def test_run_visualization_label_mode_uses_predicted_labels(self):
         with tempfile.TemporaryDirectory() as tmp:
