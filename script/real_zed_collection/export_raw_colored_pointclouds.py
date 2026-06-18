@@ -324,8 +324,8 @@ def export_raw_colored_pointclouds(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Export colored point clouds from one raw real-ZED task episode.")
-    parser.add_argument("--task_name", default="beat_cube", help="Task/project name, e.g. grasp_mug.")
-    parser.add_argument("--episode", default="0", help="Episode index, episode directory name, timestamp, or full path.")
+    parser.add_argument("--task_name", default="view_pour_water_new", help="Task/project name, e.g. grasp_mug.")
+    parser.add_argument("--episode", default="4", help="Episode index, episode directory name, timestamp, or full path.")
     parser.add_argument("--raw_root", default="", help="Raw root. Defaults to /media/$USER/Extreme SSD/geo_mani_data/<task>/real_zed_raw.")
     parser.add_argument("--output_dir", default="", help="Output directory. Defaults under outputs/real_zed_collection/raw_colored_pointclouds/.")
     parser.add_argument("--camera_labels", default="", help="Comma-separated camera labels. Empty means manifest camera_labels.")

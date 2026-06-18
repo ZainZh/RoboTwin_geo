@@ -1,35 +1,62 @@
 import argparse
-from pathlib import Path
-
 import numpy as np
 import open3d as o3d
+from pathlib import Path
 
 # DEFAULT_PLY = ["/home/zheng/github/3d_semantic_train/tools/outputs/visualizations_universal_field_query_count_stability/mug/direct_mesh_01af543e10c8478c9632394e176a3a50/surface_sem_embedding_joint_pca_q5000.ply"]
-# DEFAULT_PLY = ["/home/zheng/github/RoboTwin_geo/script/real_zed_collection/outputs/real_zed_collection/raw_colored_pointclouds/beat_cube/0/fused/frame_000035.ply"]
+# DEFAULT_PLY = ["/home/zheng/github/RoboTwin_geo/script/real_zed_collection/outputs/real_zed_collection/raw_colored_pointclouds/view_pour_water_new/4/fused/frame_000039.ply"]
 # DEFAULT_PLY = ["/home/zheng/github/RoboTwin_geo/outputs/semantic_field_dataset_viz/view_pour_water/episode1_frame0_scene_semantic_overlay.ply"]
-DEFAULT_PLY = ["/home/zheng/github/RoboTwin_geo/outputs/semantic_field_dataset_viz/view_grasp_mug/episode7_frame0_scene_dinov2_overlay.ply"]
+# DEFAULT_PLY = ["/home/zheng/github/RoboTwin_geo/outputs/semantic_field_dataset_viz/pour_water_new/episode0_frame0_scene_dinov2_overlay.ply"]
 # DEFAULT_PLY = ["/home/zheng/github/RoboTwin_geo/outputs/semantic_field_dataset_viz/view_grasp_mug/episode0_frame0_scene_utonia_overlay.ply"]
-# DEFAULT_PLY = ["/home/zheng/github/RoboTwin_geo/outputs/semantic_field_dataset_viz/view_pour_water/episode1_frame0_scene_original_color.ply"]
+DEFAULT_PLY = [
+    "/home/zheng/github/3d_semantic_train/tools/outputs/visualizations_universal_field_query_count_stability/spoon/"
+    "dataset_indices/idx000000_surface_sem_embedding_joint_pca_q5000.ply"]
+# DEFAULT_PLY = [
+#     "/home/zheng/github/3d_semantic_train/tools/outputs/visualizations_universal_field_query_count_stability/mug/"
+#     "dataset_indices/idx000002_surface_utonia_feature_joint_pca_q5000.ply"]
+# #
+# DEFAULT_PLY = [
+#     "/home/zheng/github/3d_semantic_train/tools/outputs/visualizations_universal_field_query_count_stability/mug/"
+#     "dataset_indices/idx000000_surface_dinov2_feature_joint_pca_q1000.ply"]
 
 DEFAULT_VIEW_STATUS = r'''{
 	"class_name" : "ViewTrajectory",
 	"interval" : 29,
 	"is_loop" : false,
-	"trajectory" :
+	"trajectory" : 
 	[
 		{
 			"boundingbox_max" : [ 2.281740665435791, 0.84336256980895996, 2.9999933242797852 ],
 			"boundingbox_min" : [ -2.0944585800170898, -1.5530669689178467, -0.2132609486579895 ],
 			"field_of_view" : 60.0,
-			"front" : [ 0.82536791582361468, 0.062230351785553022, 0.56115522526804384 ],
-			"lookat" : [ 0.0045460694301429167, -0.13615938517039466, 0.035368909388652794 ],
-			"up" : [ -0.56303842285749539, 0.016963397975656894, 0.82625660512655741 ],
-			"zoom" : 0.12000000000000001
+			"front" : [ 0.057551898615084786, 0.99361141283464882, -0.097078006008221016 ],
+			"lookat" : [ -0.76210640207722591, 0.52457007256553179, -0.11171282910517621 ],
+			"up" : [ 0.0069429246075365754, -0.097635172077399329, -0.99519805514847681 ],
+			"zoom" : 0.59999999999999987
 		}
 	],
 	"version_major" : 1,
 	"version_minor" : 0
 }'''
+# DEFAULT_VIEW_STATUS = r'''{
+# 	"class_name" : "ViewTrajectory",
+# 	"interval" : 29,
+# 	"is_loop" : false,
+# 	"trajectory" :
+# 	[
+# 		{
+# 			"boundingbox_max" : [ 2.281740665435791, 0.84336256980895996, 2.9999933242797852 ],
+# 			"boundingbox_min" : [ -2.0944585800170898, -1.5530669689178467, -0.2132609486579895 ],
+# 			"field_of_view" : 60.0,
+# 			"front" : [ 0.82536791582361468, 0.062230351785553022, 0.56115522526804384 ],
+# 			"lookat" : [ 0.0045460694301429167, -0.13615938517039466, 0.035368909388652794 ],xz
+# 			"up" : [ -0.56303842285749539, 0.016963397975656894, 0.82625660512655741 ],
+# 			"zoom" : 0.12000000000000001
+# 		}
+# 	],
+# 	"version_major" : 1,
+# 	"version_minor" : 0
+# }'''
 
 # DEFAULT_VIEW_STATUS = r'''{
 # 	"class_name" : "ViewTrajectory",
@@ -50,7 +77,7 @@ DEFAULT_VIEW_STATUS = r'''{
 # 	"version_major" : 1,
 # 	"version_minor" : 0
 # }'''
-#
+
 DEFAULT_VIEW_STATUS_FILE = ""
 
 VIEW_PRESETS = {
@@ -108,6 +135,32 @@ def normalize_vec3(value, *, name):
     if norm < 1e-8:
         raise ValueError(f"{name} cannot be a zero vector.")
     return (vector / norm).astype(np.float64).tolist()
+
+
+def compute_crop_mask(points, *, crop_min=None, crop_max=None):
+    points = np.asarray(points, dtype=np.float32).reshape(-1, 3)
+    mask = np.ones(points.shape[0], dtype=bool)
+    if crop_min is not None:
+        mask &= np.all(points >= np.asarray(crop_min, dtype=np.float32).reshape(1, 3), axis=1)
+    if crop_max is not None:
+        mask &= np.all(points <= np.asarray(crop_max, dtype=np.float32).reshape(1, 3), axis=1)
+    return mask
+
+
+def crop_point_cloud(point_cloud, *, crop_min=None, crop_max=None, source_name="point cloud"):
+    if crop_min is None and crop_max is None:
+        return point_cloud
+
+    points = np.asarray(point_cloud.points)
+    mask = compute_crop_mask(points, crop_min=crop_min, crop_max=crop_max)
+    indices = np.flatnonzero(mask).astype(np.int64)
+    if indices.size == 0:
+        raise ValueError(
+            f"Crop removed all points from {source_name}; "
+            f"crop_min={crop_min}, crop_max={crop_max}"
+        )
+    print(f"[crop] {source_name}: kept {indices.size}/{len(points)} points")
+    return point_cloud.select_by_index(indices.tolist())
 
 
 def compute_scene_center_from_arrays(point_arrays):
@@ -213,7 +266,7 @@ def main():
     parser.add_argument(
         "--point_size",
         type=float,
-        default=3.0,
+        default=5.0,
         help="render point size in the Open3D viewer",
     )
     parser.add_argument(
@@ -226,6 +279,18 @@ def main():
     parser.add_argument("--up", type=lambda value: parse_vec3(value, name="up"), default=None)
     parser.add_argument("--lookat", type=lambda value: parse_vec3(value, name="lookat"), default=None)
     parser.add_argument("--zoom", type=float, default=None)
+    parser.add_argument(
+        "--crop_min",
+        type=lambda value: parse_vec3(value, name="crop_min"),
+        default=None,
+        help="optional XYZ lower bound; example: --crop_min '-0.5 -0.5 -0.1'",
+    )
+    parser.add_argument(
+        "--crop_max",
+        type=lambda value: parse_vec3(value, name="crop_max"),
+        default=None,
+        help="optional XYZ upper bound; example: --crop_max '0.5 0.5 0.4'",
+    )
     parser.add_argument(
         "--view_status",
         default=DEFAULT_VIEW_STATUS,
@@ -248,7 +313,16 @@ def main():
     )
     args = parser.parse_args()
 
-    point_clouds = [load_point_cloud(path) for path in collect_ply_paths(args)]
+    paths = collect_ply_paths(args)
+    point_clouds = [
+        crop_point_cloud(
+            load_point_cloud(path),
+            crop_min=args.crop_min,
+            crop_max=args.crop_max,
+            source_name=str(path),
+        )
+        for path in paths
+    ]
 
     visualizer = o3d.visualization.VisualizerWithKeyCallback()
     visualizer.create_window(window_name="Open3D PLY Viewer")
@@ -265,13 +339,14 @@ def main():
         output_path=args.view_status_output,
     )
 
-    lookat = np.asarray(args.lookat, dtype=np.float32) if args.lookat is not None else compute_scene_center(point_clouds)
+    lookat = np.asarray(args.lookat, dtype=np.float32) if args.lookat is not None else compute_scene_center(
+        point_clouds)
     visualizer.poll_events()
     visualizer.update_renderer()
     if not apply_view_status(
-        visualizer,
-        view_status=args.view_status,
-        view_status_file=args.view_status_file,
+            visualizer,
+            view_status=args.view_status,
+            view_status_file=args.view_status_file,
     ):
         apply_view_preset(
             visualizer.get_view_control(),

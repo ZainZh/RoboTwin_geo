@@ -108,6 +108,31 @@ class TestEefPointwiseWrappers(unittest.TestCase):
                 )
                 self.assertIn('"${zarr_path}"', wrapper)
 
+    def test_objpc_eef_global_wrapper_separates_non_default_placeholder_sets(self):
+        wrapper = (SCRIPT_ROOT.parent / "train_objpc_eef_absolute6d_global.sh").read_text(encoding="utf-8")
+
+        self.assertIn('object_placeholder_token="${object_placeholders//\\{/}"', wrapper)
+        self.assertIn('if [ "${object_placeholder_token}" != "AB" ]; then', wrapper)
+        self.assertIn('placeholder_suffix="-objs${object_placeholder_token}"', wrapper)
+        self.assertIn('output_suffix="-objpc-eef-absolute6d-global${placeholder_suffix}${point_cloud_suffix}"', wrapper)
+
+    def test_real_baseline_eef_global_wrapper_matches_objpc_placeholder_and_point_suffixes(self):
+        wrapper = (SCRIPT_ROOT.parent / "real_infer_baseline_eef_absolute6d_global.sh").read_text(encoding="utf-8")
+
+        self.assertIn('point_cloud_num=${11:-1024}', wrapper)
+        self.assertIn('if [ "${object_placeholder_token}" != "AB" ]; then', wrapper)
+        self.assertIn('ckpt_setting="${task_config}-eef-absolute6d-global${placeholder_suffix}${point_cloud_suffix}"', wrapper)
+        self.assertIn('--point_cloud_num "${point_cloud_num}"', wrapper)
+        self.assertIn('--object_point_num "${point_cloud_num}"', wrapper)
+
+    def test_real_dp3_inference_exposes_point_cloud_num_override(self):
+        inference = (SCRIPT_ROOT.parents[2] / "script" / "real_zed_inference" / "real_dp3_inference.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('parser.add_argument("--point_cloud_num", type=int, default=1024)', inference)
+        self.assertIn('"point_cloud_num": str(args.point_cloud_num)', inference)
+
 
 if __name__ == "__main__":
     unittest.main()

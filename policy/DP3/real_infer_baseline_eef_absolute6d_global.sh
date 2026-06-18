@@ -2,7 +2,6 @@
 
 task_name=${1:-grasp_mug_new}
 task_config=${2:-demo_real_zed_sam2_objpc_global-objpc}
-ckpt_setting="${task_config}-eef-absolute6d-global"
 expert_data_num=${3:-70}
 seed=${4:-0}
 gpu_id=${5:-0}
@@ -11,7 +10,24 @@ semantic_ckpt_B=${7:-${SEMANTIC_CKPT_B:-none}}
 semantic_device=${8:-cuda:0}
 object_placeholders=${9:-\{A\},\{B\}}
 checkpoint_num=${10:-3000}
-semantic_point_num=${11:-0}
+point_cloud_num=${11:-1024}
+semantic_point_num=0
+
+point_cloud_suffix=""
+if [ "${point_cloud_num}" != "1024" ]; then
+    point_cloud_suffix="-pc${point_cloud_num}"
+fi
+
+placeholder_suffix=""
+object_placeholder_token="${object_placeholders//\{/}"
+object_placeholder_token="${object_placeholder_token//\}/}"
+object_placeholder_token="${object_placeholder_token//,/}"
+object_placeholder_token="${object_placeholder_token// /}"
+if [ "${object_placeholder_token}" != "AB" ]; then
+    placeholder_suffix="-objs${object_placeholder_token}"
+fi
+
+ckpt_setting="${task_config}-eef-absolute6d-global${placeholder_suffix}${point_cloud_suffix}"
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(cd "${script_dir}/../.." && pwd)
@@ -47,6 +63,8 @@ python script/real_zed_inference/real_dp3_inference.py \
     --semantic_device "${semantic_device}" \
     --semantic_point_num "${semantic_point_num}" \
     --object_placeholders "${object_placeholders}" \
+    --point_cloud_num "${point_cloud_num}" \
+    --object_point_num "${point_cloud_num}" \
     --enable_sam2_objpc \
     --profile_timing \
     --execute \

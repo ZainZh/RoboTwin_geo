@@ -1408,7 +1408,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Visualize semantic-field embeddings on processed RoboTwin object point clouds.",
     )
-    parser.add_argument("--task_name", default="view_grasp_mug")
+    parser.add_argument("--task_name", default="view_pour_water_new")
     parser.add_argument("--task_config", default="demo_real_zed_sam2_objpc_global")
     parser.add_argument("--data_root", default="data")
     parser.add_argument("--dataset_dir", default="")
@@ -1417,7 +1417,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--episode_frames",
         nargs="*",
-        default=["0:0", "1:0", "2:0", "3:0", "4:0", "5:0", "6:0", "7:0"],
+        default=["0:0", "1:0", "2:0", "3:0", "4:0", "5:0"],
         help="Optional explicit selections such as 0:10 0:20 1:5. Overrides --episode/--frame.",
     )
     parser.add_argument("--object_placeholders", default="{A}")

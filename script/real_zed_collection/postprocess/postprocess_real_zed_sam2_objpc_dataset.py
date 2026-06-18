@@ -36,9 +36,9 @@ from script.real_zed_collection.select_sam2_bboxes import load_sam2_prompt_recor
 from script.real_zed_collection.workspace_crop_utils import WorkspaceBounds
 
 
-DEFAULT_TASK_NAME = "view_stirring_coffee"
+DEFAULT_TASK_NAME = "press"
 DEFAULT_TASK_CONFIG = "demo_real_zed_sam2_objpc"
-DEFAULT_OBJECT_PROMPTS = "{A}:mug,{B}:spoon"
+DEFAULT_OBJECT_PROMPTS = "{A}:A, {B}:B, {C}:C"
 DEFAULT_CAMERA_LABELS = "global,back"
 REPO_ROOT = Path(__file__).resolve().parents[3]
 AUTO_VALUE_STRINGS = {"", "auto", "manifest"}

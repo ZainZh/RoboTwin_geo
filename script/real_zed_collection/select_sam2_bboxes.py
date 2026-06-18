@@ -24,8 +24,8 @@ from script.real_zed_collection.sam2_tracking_utils import (
 from script.real_zed_collection.select_camera_workspace_masks import _load_rgb, _resolve_raw_episode
 
 
-DEFAULT_RAW_ROOT = "/media/zheng/Extreme SSD/geo_mani_data/view_pour_water/real_zed_raw"
-DEFAULT_OUTPUT_ROOT = "/media/zheng/Extreme SSD/geo_mani_data/view_stirring_coffee/sam2_bbox_prompts"
+DEFAULT_RAW_ROOT = "/media/zheng/Extreme SSD/geo_mani_data/press/real_zed_raw"
+DEFAULT_OUTPUT_ROOT = "/media/zheng/Extreme SSD/geo_mani_data/press/sam2_bbox_prompts"
 DISPLAY_HEADER_HEIGHT = 104
 DEFAULT_DISPLAY_SCALE = 1.8
 
@@ -452,7 +452,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--raw_episode_dir", default="")
     parser.add_argument("--output_bbox_root", default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--camera_labels", default="global,back")
-    parser.add_argument("--object_placeholders", default="{A},{B}")
+    parser.add_argument("--object_placeholders", default="{A},{B},{C}")
     parser.add_argument("--frame_index", type=int, default=0)
     parser.add_argument("--all_episodes", action="store_true", default=True)
     parser.add_argument("--per_episode_subdir", action="store_true", default=False)

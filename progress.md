@@ -1848,3 +1848,15 @@
   - Verified `PYTHONPATH=. /home/zheng/miniforge3/envs/RoboTwin/bin/python script/test_semantic_field_dataset_visualization.py`.
   - Verified `/home/zheng/miniforge3/envs/RoboTwin/bin/python -m py_compile script/visualize_semantic_field_on_dataset.py script/test_semantic_field_dataset_visualization.py`.
   - Verified `python script/visualize_semantic_field_on_dataset.py --help` exposes `--utonia_grid_size`.
+
+### Phase 91: Open3D PLY Viewer Crop Display
+- **Status:** complete
+- Actions taken:
+  - Added a failing regression test for XYZ crop masking in `script/test_view_ply_open3d.py`.
+  - Added `compute_crop_mask(...)` and `crop_point_cloud(...)` to `script/view_ply_open3d.py`.
+  - Added `--crop_min` and `--crop_max` CLI arguments, each taking an XYZ vector.
+  - Applied crop filtering immediately after loading each PLY, before adding geometries and computing the scene center.
+  - Verified the red phase failed with `AttributeError: module 'view_ply_open3d' has no attribute 'compute_crop_mask'`.
+  - Verified `PYTHONPATH=script /home/zheng/miniforge3/envs/RoboTwin/bin/python script/test_view_ply_open3d.py`.
+  - Verified `/home/zheng/miniforge3/envs/RoboTwin/bin/python -m py_compile script/view_ply_open3d.py script/test_view_ply_open3d.py`.
+  - Verified `/home/zheng/miniforge3/envs/RoboTwin/bin/python script/view_ply_open3d.py --help` exposes `--crop_min` and `--crop_max`.

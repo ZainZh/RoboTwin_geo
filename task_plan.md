@@ -6,7 +6,7 @@ Design a real-robot data collection pipeline that keeps the robot-control behavi
 
 ## Current Phase
 
-Multi-feature semantic field comparison
+Open3D PLY viewer crop display
 
 ## Phases
 
@@ -434,6 +434,13 @@ Multi-feature semantic field comparison
 - [x] Add independent `--run_semantic`, `--run_utonia`, and `--run_dinov2` switches for selective runs.
 - [x] Add `--utonia_grid_size` to control Utonia GridSample density.
 - **Status:** complete with real DINOv2 dependency smoke pending
+
+### Phase 44: Open3D PLY Viewer Crop Display
+- [x] Add XYZ crop bounds for displayed point clouds.
+- [x] Apply crop before Open3D scene-center/view setup.
+- [x] Preserve existing multi-PLY and view-status behavior.
+- [x] Verify crop helper behavior, syntax, and CLI visibility.
+- **Status:** complete
 
 ## Decisions Made
 

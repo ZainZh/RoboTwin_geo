@@ -1114,6 +1114,7 @@ def load_dp3_model(args: argparse.Namespace):
         "checkpoint_num": str(args.checkpoint_num),
         "use_rgb": bool(args.use_rgb),
         "object_placeholders": args.object_placeholders,
+        "point_cloud_num": str(args.point_cloud_num),
         "semantic_ckpt_A": args.semantic_ckpt_A,
         "semantic_ckpt_B": args.semantic_ckpt_B,
         "semantic_device": args.semantic_device,
@@ -2154,6 +2155,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--semantic_forward_mode", choices=["reference", "dp3"], default="reference")
     parser.add_argument("--object_placeholders", default="{A},{B}")
+    parser.add_argument("--point_cloud_num", type=int, default=1024)
 
     parser.add_argument("--calibration_path", default=str(DEFAULT_WORKSPACE_CALIBRATION))
     parser.add_argument("--frame_mode", choices=["reference_camera", "workspace"], default="workspace")

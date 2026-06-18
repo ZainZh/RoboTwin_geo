@@ -158,8 +158,8 @@ def export_raw_rgb_images(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Export saved raw real-ZED RGB frames for one task episode.")
-    parser.add_argument("--task_name", default="grasp_mug_new",help="Task/project name, e.g. grasp_mug.")
-    parser.add_argument("--episode",default="0", help="Episode index, episode directory name, timestamp, or full episode path.")
+    parser.add_argument("--task_name", default="view_stirring_coffee",help="Task/project name, e.g. grasp_mug.")
+    parser.add_argument("--episode",default="2", help="Episode index, episode directory name, timestamp, or full episode path.")
     parser.add_argument("--raw_root", default="", help="Raw root. Defaults to /media/$USER/Extreme SSD/geo_mani_data/<task>/real_zed_raw.")
     parser.add_argument("--output_dir", default="", help="Output directory. Defaults under outputs/real_zed_collection/raw_rgb/.")
     parser.add_argument("--camera_labels", default="", help="Comma-separated camera labels. Empty means manifest camera_labels.")

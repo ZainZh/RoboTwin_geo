@@ -6,8 +6,9 @@ task_config=${2}
 expert_data_num=${3}
 seed=${4}
 gpu_id=${5}
-object_placeholders=${6:-\{A\},\{B\}}
-point_cloud_num=${7:-1024}
+object_placeholders=${6:-\{A\},\{B\},\{C\}}
+#point_cloud_num=${7:-1024}
+point_cloud_num=${7:-1536}
 dataloader_num_workers=${8:-4}
 val_dataloader_num_workers=${9:-2}
 pin_memory=${10:-true}
@@ -17,7 +18,17 @@ point_cloud_suffix=""
 if [ "${point_cloud_num}" != "1024" ]; then
     point_cloud_suffix="-pc${point_cloud_num}"
 fi
-output_suffix="-objpc-eef-absolute6d-global${point_cloud_suffix}"
+
+placeholder_suffix=""
+object_placeholder_token="${object_placeholders//\{/}"
+object_placeholder_token="${object_placeholder_token//\}/}"
+object_placeholder_token="${object_placeholder_token//,/}"
+object_placeholder_token="${object_placeholder_token// /}"
+if [ "${object_placeholder_token}" != "AB" ]; then
+    placeholder_suffix="-objs${object_placeholder_token}"
+fi
+
+output_suffix="-objpc-eef-absolute6d-global${placeholder_suffix}${point_cloud_suffix}"
 zarr_path="../../../data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
 
 if [ ! -d "./data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr" ]; then

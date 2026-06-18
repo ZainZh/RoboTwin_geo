@@ -27,7 +27,12 @@ TASK_OBJECT_POINTCLOUD_TARGETS = {
     },
     "open_microwave": {
         "{A}": "microwave",
-    }
+    },
+    "put_object_cabinet": {
+        "{A}": "object",
+        "{B}": "cabinet",
+    },
+
 }
 
 
