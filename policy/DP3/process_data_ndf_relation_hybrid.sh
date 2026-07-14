@@ -10,7 +10,7 @@ ndf_dgcnn_placeholders=${7:-}
 object_placeholders=${8:-\{A\},\{B\}}
 ndf_point_num=${9:-128}
 target_num_points=${10:-1024}
-output_suffix=${11:--objpc-ndf-pointwise-hybrid}
+output_suffix=${11:--objpc-ndf-relation-hybrid}
 ndf_feat_dim=${12:-256}
 
 extra_args=()
@@ -24,7 +24,7 @@ if [ -n "${ndf_dgcnn_placeholders}" ]; then
     extra_args+=(--ndf_dgcnn "${ndf_dgcnn_placeholders}")
 fi
 
-python scripts/process_data_ndf_pointwise_hybrid.py \
+python scripts/process_data_ndf_relation_hybrid.py \
     "${task_name}" \
     "${task_config}" \
     "${expert_data_num}" \

@@ -1860,3 +1860,13 @@
   - Verified `PYTHONPATH=script /home/zheng/miniforge3/envs/RoboTwin/bin/python script/test_view_ply_open3d.py`.
   - Verified `/home/zheng/miniforge3/envs/RoboTwin/bin/python -m py_compile script/view_ply_open3d.py script/test_view_ply_open3d.py`.
   - Verified `/home/zheng/miniforge3/envs/RoboTwin/bin/python script/view_ply_open3d.py --help` exposes `--crop_min` and `--crop_max`.
+
+
+### Phase 92: NDF Relation Hybrid For Geometric Object Fitting
+- Started implementing the approved minimal benchmark: rotating target block plus independent NDF relation hybrid branch.
+- `apply_patch` failed due sandbox `bwrap: loopback: Failed RTM_NEWADDR`; using controlled Python file writes with escalation for this session.
+
+### 2026-07-14 - Phase 92 complete
+- Added `place_shoe_rotating_block` with randomized target-block yaw/pose and matching object-pointcloud target registration.
+- Added independent `ndf_relation_hybrid` branch: preprocessing wrapper, train/eval scripts, Hydra configs, deploy obs-key handling, and relation NDF feature extraction.
+- Verification passed: bash syntax, py_compile, relation unit test, rotating-block static integration test, existing pointwise-hybrid regression test, Hydra compose, and git diff whitespace check.

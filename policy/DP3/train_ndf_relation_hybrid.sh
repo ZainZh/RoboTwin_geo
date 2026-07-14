@@ -23,17 +23,18 @@ val_pin_memory=${20:-false}
 max_val_steps=${21:-2}
 point_cloud_num=${22:-1024}
 ndf_dgcnn_placeholders=${23:-}
+
 point_cloud_suffix=""
 if [ "${point_cloud_num}" != "1024" ]; then
     point_cloud_suffix="-pc${point_cloud_num}"
 fi
-output_suffix="-objpc-ndf-pointwise-hybrid${point_cloud_suffix}"
+output_suffix="-objpc-ndf-relation-hybrid${point_cloud_suffix}"
 zarr_dir="./data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
 meta_path="./data/${task_name}-${task_config}-${expert_data_num}${output_suffix}_meta.json"
 ndf_feature_placeholders=""
 
 if [ ! -d "${zarr_dir}" ]; then
-    bash process_data_ndf_pointwise_hybrid.sh "${task_name}" "${task_config}" "${expert_data_num}" "${ndf_ckpt_A}" "${ndf_ckpt_B}" "${ndf_device}" "${ndf_dgcnn_placeholders}" "${object_placeholders}" "${ndf_point_num}" "${point_cloud_num}" "${output_suffix}" "${ndf_feat_dim}"
+    bash process_data_ndf_relation_hybrid.sh "${task_name}" "${task_config}" "${expert_data_num}" "${ndf_ckpt_A}" "${ndf_ckpt_B}" "${ndf_device}" "${ndf_dgcnn_placeholders}" "${object_placeholders}" "${ndf_point_num}" "${point_cloud_num}" "${output_suffix}" "${ndf_feat_dim}"
 fi
 
 if [ -f "${meta_path}" ]; then
@@ -47,33 +48,60 @@ if [ -f "${meta_path}" ]; then
     fi
 fi
 
+has_placeholder() {
+    local placeholder=$1
+    local placeholder_csv=",${object_placeholders},"
+    [[ "${placeholder_csv}" == *",${placeholder},"* ]]
+}
+
 has_ndf_feature_placeholder() {
     local placeholder=$1
     local placeholder_csv=",${ndf_feature_placeholders},"
     [[ "${placeholder_csv}" == *",${placeholder},"* ]]
 }
 
+add_point_cloud_shape() {
+    local key=$1
+    dataset_extra_keys+=("${key}")
+    shape_overrides+=("+task.shape_meta.obs.${key}.shape=[${ndf_point_num},$((3 + ndf_feat_dim))]")
+    shape_overrides+=("+task.shape_meta.obs.${key}.type=point_cloud")
+}
+
+add_support_branch() {
+    local support_placeholder=$1
+    local support_suffix=$2
+    local support_ckpt=$3
+
+    if ! has_placeholder "${support_placeholder}"; then
+        return
+    fi
+    if { [ "${support_ckpt}" = "none" ] || [ -z "${support_ckpt}" ]; } && ! has_ndf_feature_placeholder "${support_placeholder}"; then
+        return
+    fi
+
+    add_point_cloud_shape "ndf_point_cloud_${support_suffix}"
+
+    if [ "${support_placeholder}" != "{A}" ] && has_placeholder "{A}"; then
+        add_point_cloud_shape "ndf_relation_point_cloud_A_in_${support_suffix}"
+    fi
+    if [ "${support_placeholder}" != "{B}" ] && has_placeholder "{B}"; then
+        add_point_cloud_shape "ndf_relation_point_cloud_B_in_${support_suffix}"
+    fi
+}
+
 DEBUG=False
 save_ckpt=True
 wandb_mode=online
 train_setting="${task_config}${output_suffix}"
-exp_name="${task_name}-robot_dp3_ndf_pointwise_hybrid-train_ndf"
+exp_name="${task_name}-robot_dp3_ndf_relation_hybrid-train_ndf"
 run_dir="data/outputs/${exp_name}_seed${seed}"
 zarr_path="../../../data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
 
 dataset_extra_keys=()
 shape_overrides=()
 shape_overrides+=("task.shape_meta.obs.point_cloud.shape=[${point_cloud_num},6]")
-if { [ "${ndf_ckpt_A}" != "none" ] && [ -n "${ndf_ckpt_A}" ]; } || has_ndf_feature_placeholder "{A}"; then
-    dataset_extra_keys+=(ndf_point_cloud_A)
-    shape_overrides+=("+task.shape_meta.obs.ndf_point_cloud_A.shape=[${ndf_point_num},$((3 + ndf_feat_dim))]")
-    shape_overrides+=("+task.shape_meta.obs.ndf_point_cloud_A.type=point_cloud")
-fi
-if { [ "${ndf_ckpt_B}" != "none" ] && [ -n "${ndf_ckpt_B}" ]; } || has_ndf_feature_placeholder "{B}"; then
-    dataset_extra_keys+=(ndf_point_cloud_B)
-    shape_overrides+=("+task.shape_meta.obs.ndf_point_cloud_B.shape=[${ndf_point_num},$((3 + ndf_feat_dim))]")
-    shape_overrides+=("+task.shape_meta.obs.ndf_point_cloud_B.type=point_cloud")
-fi
+add_support_branch "{A}" "A" "${ndf_ckpt_A}"
+add_support_branch "{B}" "B" "${ndf_ckpt_B}"
 
 dataset_override=()
 if [ ${#dataset_extra_keys[@]} -gt 0 ]; then
@@ -85,7 +113,7 @@ cd 3D-Diffusion-Policy
 
 export HYDRA_FULL_ERROR=1
 export CUDA_VISIBLE_DEVICES=${gpu_id}
-python train_dp3.py --config-name=robot_dp3_ndf_pointwise_hybrid.yaml \
+python train_dp3.py --config-name=robot_dp3_ndf_relation_hybrid.yaml \
     task_name=${task_name} \
     hydra.run.dir=${run_dir} \
     training.debug=${DEBUG} \

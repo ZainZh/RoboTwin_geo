@@ -479,3 +479,11 @@ Open3D PLY viewer crop display
 - Re-read this file before implementation.
 - Log discoveries in `findings.md`.
 - Log commands and verification in `progress.md`.
+
+### Phase 92: NDF Relation Hybrid For Geometric Object Fitting
+- [ ] Add a rotating-target `place_shoe_rotating_block` task so success depends on shoe/block relative geometry rather than a fixed target pose.
+- [ ] Add an independent NDF relation hybrid branch that outputs query points in the support object's normalized frame plus NDF descriptors.
+- [ ] Add matching preprocessing, training, and evaluation wrappers without changing existing `ndf_pointwise_hybrid_interact` experiments.
+- [ ] Add DP3 deployment support for the new relation observation keys.
+- [ ] Verify with targeted unit/static tests and shell syntax checks.
+- **Status:** in_progress

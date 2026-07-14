@@ -11,6 +11,7 @@ from incremental_objpc_zarr import append_episode_to_buffer, open_or_reset_repla
 from ndf_feature_utils import (
     compute_ndf_interact_pointwise_cloud,
     compute_ndf_pointwise_cloud,
+    compute_ndf_relation_pointwise_cloud,
     load_ndf_model,
     summarize_modes,
 )
@@ -51,6 +52,12 @@ def placeholder_pointcloud_key(placeholder: str) -> str:
 def placeholder_interact_pointcloud_key(query_placeholder: str, support_placeholder: str) -> str:
     return (
         f"ndf_interact_point_cloud_{query_placeholder.strip('{}')}_from_{support_placeholder.strip('{}')}"
+    )
+
+
+def placeholder_relation_pointcloud_key(query_placeholder: str, support_placeholder: str) -> str:
+    return (
+        f"ndf_relation_point_cloud_{query_placeholder.strip('{}')}_in_{support_placeholder.strip('{}')}"
     )
 
 
@@ -111,6 +118,7 @@ def build_parser():
     parser.add_argument("--save_placeholder_point_clouds", action="store_true")
     parser.add_argument("--keep_feature_placeholders_in_context", action="store_true")
     parser.add_argument("--save_interact_point_clouds", action="store_true")
+    parser.add_argument("--save_relation_point_clouds", action="store_true")
     return parser
 
 
@@ -173,8 +181,10 @@ def main(argv=None):
             "ndf_models": model_paths,
             "ndf_dgcnn_placeholders": sorted(dgcnn_placeholders),
             "ndf_num_points": int(args.ndf_num_points),
+            "ndf_feat_dim": int(args.ndf_feat_dim),
             "keep_feature_placeholders_in_context": bool(args.keep_feature_placeholders_in_context),
             "save_interact_point_clouds": bool(args.save_interact_point_clouds),
+            "save_relation_point_clouds": bool(args.save_relation_point_clouds),
         }
     )
     episode_stats = reconcile_episode_stats(meta.get("episodes", []), start_episode=start_episode)
@@ -209,6 +219,17 @@ def main(argv=None):
                         support_placeholder,
                     )
                     episode_interact_arrays[interact_key] = []
+        episode_relation_arrays = {}
+        if args.save_relation_point_clouds:
+            for support_placeholder in feature_placeholders:
+                for query_placeholder in placeholders:
+                    if query_placeholder == support_placeholder:
+                        continue
+                    relation_key = placeholder_relation_pointcloud_key(
+                        query_placeholder,
+                        support_placeholder,
+                    )
+                    episode_relation_arrays[relation_key] = []
         episode_placeholder_point_cloud_arrays = {placeholder: [] for placeholder in placeholders}
         episode_state_arrays = []
         episode_joint_action_arrays = []
@@ -281,6 +302,26 @@ def main(argv=None):
                                     target_num_points=int(args.ndf_num_points),
                                 ).astype(np.float32)
                             )
+                if args.save_relation_point_clouds:
+                    for support_placeholder in feature_placeholders:
+                        support_object_pc = per_placeholder_point_clouds[support_placeholder]
+                        for query_placeholder in placeholders:
+                            if query_placeholder == support_placeholder:
+                                continue
+                            query_object_pc = per_placeholder_point_clouds[query_placeholder]
+                            relation_key = placeholder_relation_pointcloud_key(
+                                query_placeholder,
+                                support_placeholder,
+                            )
+                            episode_relation_arrays[relation_key].append(
+                                compute_ndf_relation_pointwise_cloud(
+                                    model=model_by_placeholder[support_placeholder],
+                                    support_object_point_cloud=support_object_pc,
+                                    query_object_point_cloud=query_object_pc,
+                                    device=device,
+                                    target_num_points=int(args.ndf_num_points),
+                                ).astype(np.float32)
+                            )
 
             if frame_idx != 0:
                 episode_joint_action_arrays.append(vector_all[frame_idx])
@@ -295,6 +336,8 @@ def main(argv=None):
             episode_data[point_cloud_key] = np.asarray(episode_pointwise_arrays[placeholder], dtype=np.float32)
         for interact_key, interact_values in episode_interact_arrays.items():
             episode_data[interact_key] = np.asarray(interact_values, dtype=np.float32)
+        for relation_key, relation_values in episode_relation_arrays.items():
+            episode_data[relation_key] = np.asarray(relation_values, dtype=np.float32)
         if args.save_placeholder_point_clouds:
             for placeholder in placeholders:
                 point_cloud_key = f"object_point_cloud_{placeholder.strip('{}')}"

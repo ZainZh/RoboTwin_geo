@@ -59,6 +59,12 @@ def placeholder_interact_pointcloud_key(query_placeholder: str, support_placehol
     )
 
 
+def placeholder_relation_pointcloud_key(query_placeholder: str, support_placeholder: str) -> str:
+    return (
+        f"ndf_relation_point_cloud_{query_placeholder.strip('{}')}_in_{support_placeholder.strip('{}')}"
+    )
+
+
 def placeholder_semantic_pointcloud_key(placeholder: str) -> str:
     return f"semantic_point_cloud_{placeholder.strip('{}')}"
 
@@ -74,18 +80,43 @@ def get_semantic_utils():
     return compute_semantic_pointwise_cloud, load_semantic_model
 
 
+compute_ndf_feature = None
+compute_ndf_interact_pointwise_cloud = None
+compute_ndf_relation_pointwise_cloud = None
+compute_ndf_pointwise_cloud = None
+load_ndf_model = None
+
+
 def get_ndf_utils():
     # Import lazily so baseline / semantic real inference does not require NDF runtime deps.
+    global compute_ndf_feature
+    global compute_ndf_interact_pointwise_cloud
+    global compute_ndf_relation_pointwise_cloud
+    global compute_ndf_pointwise_cloud
+    global load_ndf_model
     from ndf_feature_utils import (
-        compute_ndf_feature,
-        compute_ndf_interact_pointwise_cloud,
-        compute_ndf_pointwise_cloud,
-        load_ndf_model,
+        compute_ndf_feature as imported_compute_ndf_feature,
+        compute_ndf_interact_pointwise_cloud as imported_compute_ndf_interact_pointwise_cloud,
+        compute_ndf_relation_pointwise_cloud as imported_compute_ndf_relation_pointwise_cloud,
+        compute_ndf_pointwise_cloud as imported_compute_ndf_pointwise_cloud,
+        load_ndf_model as imported_load_ndf_model,
     )
+
+    if compute_ndf_feature is None:
+        compute_ndf_feature = imported_compute_ndf_feature
+    if compute_ndf_interact_pointwise_cloud is None:
+        compute_ndf_interact_pointwise_cloud = imported_compute_ndf_interact_pointwise_cloud
+    if compute_ndf_relation_pointwise_cloud is None:
+        compute_ndf_relation_pointwise_cloud = imported_compute_ndf_relation_pointwise_cloud
+    if compute_ndf_pointwise_cloud is None:
+        compute_ndf_pointwise_cloud = imported_compute_ndf_pointwise_cloud
+    if load_ndf_model is None:
+        load_ndf_model = imported_load_ndf_model
 
     return (
         compute_ndf_feature,
         compute_ndf_interact_pointwise_cloud,
+        compute_ndf_relation_pointwise_cloud,
         compute_ndf_pointwise_cloud,
         load_ndf_model,
     )
@@ -304,7 +335,7 @@ def encode_obs(observation, model):  # Post-Process Observation
     obs['point_cloud'] = point_cloud
 
     if use_ndf_pointwise:
-        _, compute_ndf_interact_pointwise_cloud, compute_ndf_pointwise_cloud, _ = get_ndf_utils()
+        _, compute_ndf_interact_pointwise_cloud, compute_ndf_relation_pointwise_cloud, compute_ndf_pointwise_cloud, _ = get_ndf_utils()
         feat_dim = int(getattr(model, "ndf_feat_dim", 256))
         for placeholder, ndf_model in getattr(model, "ndf_models", {}).items():
             pointcloud_key = placeholder_pointcloud_key(placeholder)
@@ -337,6 +368,31 @@ def encode_obs(observation, model):  # Post-Process Observation
                         obs[pointcloud_key] = np.zeros((point_num, 3 + feat_dim), dtype=np.float32)
                         continue
                     obs[pointcloud_key] = compute_ndf_interact_pointwise_cloud(
+                        model=ndf_model,
+                        support_object_point_cloud=support_object_pc,
+                        query_object_point_cloud=query_object_pc,
+                        device=getattr(model, "ndf_device", torch.device("cpu")),
+                        target_num_points=point_num,
+                    ).astype(np.float32)
+
+        if bool(getattr(model, "use_ndf_pointwise_relation", False)):
+            for support_placeholder, ndf_model in getattr(model, "ndf_models", {}).items():
+                support_object_pc = object_pointcloud.get(support_placeholder)
+                for query_placeholder in getattr(model, "object_placeholders", []):
+                    if query_placeholder == support_placeholder:
+                        continue
+                    pointcloud_key = placeholder_relation_pointcloud_key(query_placeholder, support_placeholder)
+                    point_num = int(
+                        getattr(model, "ndf_relation_point_num_by_pair", {}).get(
+                            (query_placeholder, support_placeholder),
+                            int(getattr(model, "ndf_point_num_by_placeholder", {}).get(support_placeholder, 128)),
+                        )
+                    )
+                    query_object_pc = object_pointcloud.get(query_placeholder)
+                    if support_object_pc is None or query_object_pc is None:
+                        obs[pointcloud_key] = np.zeros((point_num, 3 + feat_dim), dtype=np.float32)
+                        continue
+                    obs[pointcloud_key] = compute_ndf_relation_pointwise_cloud(
                         model=ndf_model,
                         support_object_point_cloud=support_object_pc,
                         query_object_point_cloud=query_object_pc,
@@ -387,7 +443,7 @@ def encode_obs(observation, model):  # Post-Process Observation
     ndf_models = getattr(model, "ndf_models", {})
     compute_ndf_feature = None
     if len(ndf_models) > 0:
-        compute_ndf_feature, _, _, _ = get_ndf_utils()
+        compute_ndf_feature, _, _, _, _ = get_ndf_utils()
     for placeholder, ndf_model in ndf_models.items():
         feature_key = placeholder_feature_key(placeholder)
         feat_dim = int(getattr(model, "ndf_feat_dim", 256))
@@ -515,9 +571,10 @@ def get_model(usr_args):
 
     use_actorseg_objpc = "objpc_actorseg" in usr_args["config_name"]
     use_sam2_objpc = "objpc_sam2" in usr_args["config_name"]
-    use_ndf_pointwise = "ndf_pointwise" in usr_args["config_name"]
+    use_ndf_pointwise = "ndf_pointwise" in usr_args["config_name"] or "ndf_relation_hybrid" in usr_args["config_name"]
     use_ndf_pointwise_hybrid = "ndf_pointwise_hybrid" in usr_args["config_name"]
     use_ndf_pointwise_interact = "ndf_pointwise_hybrid_interact" in usr_args["config_name"]
+    use_ndf_pointwise_relation = "ndf_relation_hybrid" in usr_args["config_name"]
     use_semantic_pointwise = "semantic_pointwise" in usr_args["config_name"]
     use_semantic_pointwise_hybrid = "semantic_pointwise_hybrid" in usr_args["config_name"]
     use_utonia_pointwise = "utonia_pointwise" in usr_args["config_name"]
@@ -666,6 +723,22 @@ def get_model(usr_args):
                         "shape": [ndf_point_num, 3 + ndf_feat_dim],
                         "type": "point_cloud",
                     }
+        if use_ndf_pointwise_relation:
+            for support_placeholder in object_placeholders:
+                checkpoint = ndf_model_specs.get(support_placeholder)
+                if checkpoint in {None, "", "none"}:
+                    continue
+                for query_placeholder in object_placeholders:
+                    if query_placeholder == support_placeholder:
+                        continue
+                    pointcloud_key = placeholder_relation_pointcloud_key(
+                        query_placeholder,
+                        support_placeholder,
+                    )
+                    cfg.task.shape_meta.obs[pointcloud_key] = {
+                        "shape": [ndf_point_num, 3 + ndf_feat_dim],
+                        "type": "point_cloud",
+                    }
     elif "ndf" in usr_args["config_name"]:
         for placeholder in object_placeholders:
             checkpoint = ndf_model_specs.get(placeholder)
@@ -705,6 +778,7 @@ def get_model(usr_args):
     DP3_Model.use_ndf_pointwise = use_ndf_pointwise
     DP3_Model.use_ndf_pointwise_hybrid = use_ndf_pointwise_hybrid
     DP3_Model.use_ndf_pointwise_interact = use_ndf_pointwise_interact
+    DP3_Model.use_ndf_pointwise_relation = use_ndf_pointwise_relation
     DP3_Model.use_semantic_pointwise = use_semantic_pointwise
     DP3_Model.use_semantic_pointwise_hybrid = use_semantic_pointwise_hybrid
     DP3_Model.use_utonia_pointwise = use_utonia_pointwise
@@ -739,11 +813,18 @@ def get_model(usr_args):
         for query_placeholder in object_placeholders
         if query_placeholder != support_placeholder
     }
+    DP3_Model.ndf_relation_point_num_by_pair = {
+        (query_placeholder, support_placeholder): ndf_point_num
+        for support_placeholder in object_placeholders
+        if support_placeholder in ndf_model_specs
+        for query_placeholder in object_placeholders
+        if query_placeholder != support_placeholder
+    }
     DP3_Model.ndf_device = ndf_device
     DP3_Model.ndf_models = {}
     load_ndf_model = None
     if len(ndf_model_specs) > 0:
-        _, _, _, load_ndf_model = get_ndf_utils()
+        _, _, _, _, load_ndf_model = get_ndf_utils()
     for placeholder, checkpoint in ndf_model_specs.items():
         DP3_Model.ndf_models[placeholder] = load_ndf_model(
             checkpoint=checkpoint,

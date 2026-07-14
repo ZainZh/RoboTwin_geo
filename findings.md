@@ -882,3 +882,9 @@
 
 ---
 *Update this file after every 2 view/browser/search operations.*
+
+### NDF Relation Hybrid Design Notes (2026-07-14)
+- Goal: test whether NDF can help object-object geometric fitting by making `place_shoe` target pose vary with a rotating block.
+- Current `ndf_pointwise_hybrid_interact` queries query-object points in the support object's NDF field but returns world XYZ, so it mixes relation descriptors with global coordinates.
+- New relation branch should keep the main `point_cloud` for global pose and use relation branch XYZ as normalized query coordinates in support-object frame.
+- The branch must be independent from existing interact scripts/checkpoints.

@@ -6,6 +6,13 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 class TestSemanticHybridTrainingResourceOverrides(unittest.TestCase):
+    def assert_ordered_snippets(self, text: str, snippets):
+        cursor = -1
+        for snippet in snippets:
+            next_cursor = text.find(snippet, cursor + 1)
+            self.assertNotEqual(next_cursor, -1, f"missing or out-of-order snippet: {snippet}")
+            cursor = next_cursor
+
     def assert_resource_overrides(self, train_script: str):
         self.assertIn("dataloader.num_workers=${dataloader_num_workers}", train_script)
         self.assertIn("val_dataloader.num_workers=${val_dataloader_num_workers}", train_script)
@@ -38,6 +45,47 @@ class TestSemanticHybridTrainingResourceOverrides(unittest.TestCase):
         self.assertIn('semantic_feature_placeholders="${semantic_meta[2]:-}"', train_script)
         self.assertIn('has_semantic_feature_placeholder "{A}"', train_script)
         self.assertIn('has_semantic_feature_placeholder "{B}"', train_script)
+
+    def test_ndf_hybrid_train_script_matches_semantic_style_argument_layout(self):
+        train_script = (REPO_ROOT / "policy" / "DP3" / "train_ndf_pointwise_hybrid.sh").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertNotIn("normalize_ndf_train_args", train_script)
+        self.assert_ordered_snippets(
+            train_script,
+            [
+                'task_name=${1}',
+                'task_config=${2:-"demo_real_zed_sam2_objpc"}',
+                'expert_data_num=${3:-50}',
+                'seed=${4:-0}',
+                'gpu_id=${5:-0}',
+                'ndf_ckpt_A=${6:-none}',
+                'ndf_ckpt_B=${7:-none}',
+                'ndf_device=${8:-cuda:0}',
+                r'object_placeholders=${9:-\{A\},\{B\}}',
+                'ndf_point_num=${10:-128}',
+                'ndf_feat_dim=${11:-256}',
+                'batch_size=${12:-256}',
+                'val_batch_size=${13:-${batch_size}}',
+                'use_ema=${14:-true}',
+                'gradient_accumulate_every=${15:-1}',
+                'encoder_output_dim=${16:-128}',
+                'dataloader_num_workers=${17:-4}',
+                'val_dataloader_num_workers=${18:-2}',
+                'pin_memory=${19:-true}',
+                'val_pin_memory=${20:-false}',
+                'max_val_steps=${21:-2}',
+                'point_cloud_num=${22:-1024}',
+                'ndf_dgcnn_placeholders=${23:-}',
+            ],
+        )
+        self.assertIn('print(int(m["ndf_num_points"]))', train_script)
+        self.assertIn('print(int(m.get("ndf_feat_dim", 256)))', train_script)
+        self.assertIn("+task.shape_meta.obs.ndf_point_cloud_A.shape=[${ndf_point_num},$((3 + ndf_feat_dim))]", train_script)
+        self.assertIn("+task.shape_meta.obs.ndf_point_cloud_B.shape=[${ndf_point_num},$((3 + ndf_feat_dim))]", train_script)
+        self.assertIn("training.use_ema=${use_ema}", train_script)
+        self.assertIn("policy.encoder_output_dim=${encoder_output_dim}", train_script)
 
     def test_semantic_hybrid_train_and_eval_use_debug_reference_suffix(self):
         train_script = (REPO_ROOT / "policy" / "DP3" / "train_semantic_pointwise_hybrid.sh").read_text(

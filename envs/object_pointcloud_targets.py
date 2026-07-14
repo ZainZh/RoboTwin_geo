@@ -32,6 +32,14 @@ TASK_OBJECT_POINTCLOUD_TARGETS = {
         "{A}": "object",
         "{B}": "cabinet",
     },
+    "place_shoe": {
+        "{A}": "shoe",
+        "{B}": "target_block",
+    },
+    "place_shoe_rotating_block": {
+        "{A}": "shoe",
+        "{B}": "target_block",
+    },
 
 }
 

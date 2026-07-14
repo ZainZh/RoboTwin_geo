@@ -46,11 +46,12 @@ run_and_assert \
     /tmp/a.pth \
     /tmp/b.pth \
     cuda:1 \
-    "" \
     "{A},{B}" \
     128 \
+    256 \
     64 \
     96 \
+    false \
     3
 
 run_and_assert \
