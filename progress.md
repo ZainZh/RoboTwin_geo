@@ -1870,3 +1870,13 @@
 - Added `place_shoe_rotating_block` with randomized target-block yaw/pose and matching object-pointcloud target registration.
 - Added independent `ndf_relation_hybrid` branch: preprocessing wrapper, train/eval scripts, Hydra configs, deploy obs-key handling, and relation NDF feature extraction.
 - Verification passed: bash syntax, py_compile, relation unit test, rotating-block static integration test, existing pointwise-hybrid regression test, Hydra compose, and git diff whitespace check.
+
+### 2026-07-14 - place_shoe_rotating_block collection fix
+- Root cause: the new task randomized target position and dropped the original center-clearance constraint, causing shoe grasp candidates to be unreachable; after that, success check also compared actor quaternion components instead of functional-point quaternion equivalence.
+- Fix: target block now keeps the original expert-feasible position and randomizes yaw only; shoe spawn avoids both origin and target; success uses functional-point XY and absolute quaternion dot similarity.
+- Verified with static integration test, py_compile, diff check, and seed=0 play_once: plan_success=True, check_success=True.
+
+### 2026-07-14 - place_shoe_rotating_block ramp target
+- Changed the target from a yaw-only flat symmetric block to a yaw-randomized ramp: fixed XY position, 10 degree pitch, and center height lifted to keep the low edge above the table.
+- Added static regression coverage that the target uses `ramp_pitch`, `yaw_mat @ pitch_mat`, and `target_quat`.
+- Verified with static tests, py_compile, diff check, and seed=0 play_once: plan_success=True, check_success=True.
