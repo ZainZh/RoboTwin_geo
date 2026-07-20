@@ -1,3 +1,4 @@
+from data_path_utils import dp3_data_path, raw_task_data_dir
 import pickle, os
 import numpy as np
 import pdb
@@ -57,7 +58,7 @@ def main(argv=None):
     num = args.expert_data_num
     task_config = args.task_config
 
-    load_dir = "../../data/" + str(task_name) + "/" + str(task_config)
+    load_dir = str(raw_task_data_dir(task_name, task_config))
     validate_eef_dataset_frame(
         action_mode=args.action_mode,
         eef_frame_mode=args.eef_frame_mode,
@@ -66,7 +67,7 @@ def main(argv=None):
 
     total_count = 0
 
-    save_dir = f"./data/{task_name}-{task_config}-{num}{args.output_suffix}.zarr"
+    save_dir = str(dp3_data_path(f"{task_name}-{task_config}-{num}{args.output_suffix}.zarr"))
 
     if os.path.exists(save_dir):
         shutil.rmtree(save_dir)

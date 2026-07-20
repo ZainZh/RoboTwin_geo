@@ -1,4 +1,6 @@
 #!/bin/bash
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/data_paths.sh"
 set -euo pipefail
 
 task_name=${1}
@@ -28,7 +30,7 @@ if [ "${point_cloud_num}" != "1024" ]; then
     point_cloud_suffix="-pc${point_cloud_num}"
 fi
 output_suffix="-objpc-se3-relation-${route_suffix}${point_cloud_suffix}"
-zarr_dir="./data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
+zarr_dir="${ROBOTWIN_DP3_DATA_ROOT}/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
 
 if [ ! -d "${zarr_dir}" ]; then
     bash process_data_se3_relation_hybrid.sh \
@@ -42,7 +44,7 @@ wandb_mode=online
 train_setting="${task_config}${output_suffix}"
 exp_name="${task_name}-robot_dp3_se3_relation_${route}-train"
 run_dir="data/outputs/${exp_name}_seed${seed}"
-zarr_path="../../../data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
+zarr_path="${ROBOTWIN_DP3_DATA_ROOT}/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
 
 cd 3D-Diffusion-Policy
 export HYDRA_FULL_ERROR=1

@@ -1,5 +1,7 @@
 #!/bin/bash
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/data_paths.sh"
+
 task_name=${1}
 task_config=${2:-"demo_real_zed_sam2_objpc_global"}
 expert_data_num=${3:-50}
@@ -33,8 +35,8 @@ if [ "${semantic_input_color_mode}" = "debug_placeholder" ] && [ "${semantic_for
     semantic_feature_suffix="-semdebugref"
 fi
 output_suffix="-objpc-semantic-pointwise-hybrid${semantic_feature_suffix}-eef-absolute6d-global${point_cloud_suffix}"
-zarr_dir="./data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
-meta_path="./data/${task_name}-${task_config}-${expert_data_num}${output_suffix}_meta.json"
+zarr_dir="${ROBOTWIN_DP3_DATA_ROOT}/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
+meta_path="${ROBOTWIN_DP3_DATA_ROOT}/${task_name}-${task_config}-${expert_data_num}${output_suffix}_meta.json"
 semantic_feature_placeholders=""
 
 if [ ! -d "${zarr_dir}" ]; then
@@ -64,7 +66,7 @@ wandb_mode=online
 train_setting="${task_config}${output_suffix}"
 exp_name="${task_name}-robot_dp3_semantic_pointwise_hybrid_eef_absolute6d_global-train"
 run_dir="data/outputs/${exp_name}_seed${seed}"
-zarr_path="../../../data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
+zarr_path="${ROBOTWIN_DP3_DATA_ROOT}/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
 
 dataset_extra_keys=()
 shape_overrides=()

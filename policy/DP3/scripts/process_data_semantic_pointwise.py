@@ -1,3 +1,4 @@
+from data_path_utils import dp3_data_path, raw_task_data_dir
 import argparse
 import json
 import os
@@ -116,14 +117,14 @@ def main(argv=None):
     task_name = args.task_name
     task_config = args.task_config
     num = int(args.expert_data_num)
-    load_dir = os.path.join("../../data", str(task_name), str(task_config))
+    load_dir = str(raw_task_data_dir(task_name, task_config))
     validate_eef_dataset_frame(
         action_mode=args.action_mode,
         eef_frame_mode=args.eef_frame_mode,
         load_dir=load_dir,
     )
-    save_dir = f"./data/{task_name}-{task_config}-{num}{args.output_suffix}.zarr"
-    meta_path = f"./data/{task_name}-{task_config}-{num}{args.output_suffix}_meta.json"
+    save_dir = str(dp3_data_path(f"{task_name}-{task_config}-{num}{args.output_suffix}.zarr"))
+    meta_path = str(dp3_data_path(f"{task_name}-{task_config}-{num}{args.output_suffix}_meta.json"))
 
     scene_info = load_scene_info(os.path.join(load_dir, "scene_info.json"))
     first_episode = load_hdf5(os.path.join(load_dir, "data/episode0.hdf5"))

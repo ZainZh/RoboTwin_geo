@@ -1,4 +1,6 @@
 #!/bin/bash
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/data_paths.sh"
 set -euo pipefail
 
 DEFAULT_OBJECT_PLACEHOLDERS="{A},{B}"
@@ -41,8 +43,8 @@ if [ "${point_cloud_num}" != "1024" ]; then
     point_cloud_suffix="-pc${point_cloud_num}"
 fi
 output_suffix="-objpc-ndf-relation-token-v2${point_cloud_suffix}"
-zarr_dir="./data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
-meta_path="./data/${task_name}-${task_config}-${expert_data_num}${output_suffix}_meta.json"
+zarr_dir="${ROBOTWIN_DP3_DATA_ROOT}/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
+meta_path="${ROBOTWIN_DP3_DATA_ROOT}/${task_name}-${task_config}-${expert_data_num}${output_suffix}_meta.json"
 
 export CUDA_VISIBLE_DEVICES=${gpu_id}
 export HYDRA_FULL_ERROR=1
@@ -121,7 +123,7 @@ save_ckpt=True
 train_setting="${task_config}${output_suffix}"
 exp_name="${task_name}-robot_dp3_ndf_relation_token_v2-train"
 run_dir="data/outputs/${exp_name}_seed${seed}"
-zarr_path="../../../data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
+zarr_path="${ROBOTWIN_DP3_DATA_ROOT}/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
 
 cd 3D-Diffusion-Policy
 python train_dp3.py --config-name=robot_dp3_ndf_pointwise_hybrid.yaml \

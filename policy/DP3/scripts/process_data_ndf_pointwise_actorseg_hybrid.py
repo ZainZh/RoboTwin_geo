@@ -1,3 +1,4 @@
+from data_path_utils import dp3_data_path, raw_task_data_dir
 import argparse
 import json
 import os
@@ -53,9 +54,9 @@ def main():
     task_name = args.task_name
     task_config = args.task_config
     num = int(args.expert_data_num)
-    load_dir = os.path.join("../../data", str(task_name), str(task_config))
-    save_dir = f"./data/{task_name}-{task_config}-{num}{args.output_suffix}.zarr"
-    final_meta_path = f"./data/{task_name}-{task_config}-{num}{args.output_suffix}_meta.json"
+    load_dir = str(raw_task_data_dir(task_name, task_config))
+    save_dir = str(dp3_data_path(f"{task_name}-{task_config}-{num}{args.output_suffix}.zarr"))
+    final_meta_path = str(dp3_data_path(f"{task_name}-{task_config}-{num}{args.output_suffix}_meta.json"))
 
     camera_names = parse_camera_list(args.camera_names)
     scene_info = load_scene_info(os.path.join(load_dir, "scene_info.json"))

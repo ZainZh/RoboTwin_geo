@@ -1,5 +1,7 @@
 #!/bin/bash
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/data_paths.sh"
+
 task_name=${1}
 task_config=${2}
 expert_data_num=${3}
@@ -16,8 +18,8 @@ if [ "${point_cloud_num}" != "1024" ]; then
     point_cloud_suffix="-pc${point_cloud_num}"
 fi
 
-if [ ! -d "./data/${task_name}-${task_config}-${expert_data_num}${point_cloud_suffix}.zarr" ]; then
+if [ ! -d "${ROBOTWIN_DP3_DATA_ROOT}/${task_name}-${task_config}-${expert_data_num}${point_cloud_suffix}.zarr" ]; then
     bash process_data.sh "${task_name}" "${task_config}" "${expert_data_num}" "${point_cloud_num}" "${point_cloud_suffix}"
 fi
 
-bash scripts/train_policy.sh robot_dp3 "${task_name}" "${task_config}${point_cloud_suffix}" "${expert_data_num}" train "${seed}" "${gpu_id}" "${dataloader_num_workers}" "${val_dataloader_num_workers}" "${pin_memory}" "${val_pin_memory}" "${max_val_steps}" "${point_cloud_num}"
+bash scripts/train_policy.sh robot_dp3 "${task_name}" "${task_config}${point_cloud_suffix}" "${expert_data_num}" train "${seed}" "${gpu_id}" "${dataloader_num_workers}" "${val_dataloader_num_workers}" "${pin_memory}" "${val_pin_memory}" "${max_val_steps}" "${point_cloud_num}" "${ROBOTWIN_DP3_DATA_ROOT}/${task_name}-${task_config}-${expert_data_num}${point_cloud_suffix}.zarr"

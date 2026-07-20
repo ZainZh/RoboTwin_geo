@@ -1,3 +1,4 @@
+from data_path_utils import resolve_data_paths
 import sys
 
 sys.path.append("./")
@@ -99,7 +100,11 @@ def main(task_name=None, task_config=None):
 
     args["embodiment_name"] = embodiment_name
     args['task_config'] = task_config
-    args["save_path"] = os.path.join(args["save_path"], str(args["task_name"]), args["task_config"])
+    data_paths = resolve_data_paths()
+    args["save_path"] = os.path.join(
+        str(data_paths.raw_data_root), str(args["task_name"]), args["task_config"]
+    )
+    print(f"Data storage mode: {data_paths.mode}, raw root: {data_paths.raw_data_root}")
     run(task, args)
 
 

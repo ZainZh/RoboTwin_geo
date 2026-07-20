@@ -1,5 +1,7 @@
 #!/bin/bash
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/data_paths.sh"
+
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,7 +26,7 @@ if [ "${point_cloud_num}" != "1024" ]; then
 fi
 
 output_suffix="-objpc-actorseg${point_cloud_suffix}"
-zarr_dir="./data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
+zarr_dir="${ROBOTWIN_DP3_DATA_ROOT}/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
 
 zarr_complete() {
     local root="$1"
@@ -55,7 +57,7 @@ wandb_mode=online
 train_setting="${task_config}${output_suffix}"
 exp_name="${task_name}-robot_dp3_objpc-train_objpc_actorseg"
 run_dir="data/outputs/${exp_name}_seed${seed}"
-zarr_path="../../../data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
+zarr_path="${ROBOTWIN_DP3_DATA_ROOT}/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
 
 cd 3D-Diffusion-Policy
 

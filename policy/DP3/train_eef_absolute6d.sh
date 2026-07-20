@@ -1,4 +1,6 @@
 #!/bin/bash
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/data_paths.sh"
 set -euo pipefail
 
 task_name=${1}
@@ -17,9 +19,9 @@ if [ "${point_cloud_num}" != "1024" ]; then
     point_cloud_suffix="-pc${point_cloud_num}"
 fi
 output_suffix="-eef-absolute6d-rightbase${point_cloud_suffix}"
-zarr_path="../../../data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
+zarr_path="${ROBOTWIN_DP3_DATA_ROOT}/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
 
-if [ ! -d "./data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr" ]; then
+if [ ! -d "${ROBOTWIN_DP3_DATA_ROOT}/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr" ]; then
     bash process_data_eef_absolute6d.sh "${task_name}" "${task_config}" "${expert_data_num}" "" "" "" right_base "${point_cloud_num}" "${output_suffix}"
 fi
 

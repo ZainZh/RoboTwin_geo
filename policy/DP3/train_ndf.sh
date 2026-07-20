@@ -1,5 +1,7 @@
 #!/bin/bash
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/data_paths.sh"
+
 task_name=${1}
 task_config=${2}
 expert_data_num=${3}
@@ -22,7 +24,7 @@ if [ "${point_cloud_num}" != "1024" ]; then
 fi
 output_suffix="-objpc-ndf${point_cloud_suffix}"
 
-if [ ! -d "./data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr" ]; then
+if [ ! -d "${ROBOTWIN_DP3_DATA_ROOT}/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr" ]; then
     bash process_data_ndf.sh "${task_name}" "${task_config}" "${expert_data_num}" "${ndf_ckpt_A}" "${ndf_ckpt_B}" "${ndf_device}" "${ndf_dgcnn_placeholders}" "${object_placeholders}" "${point_cloud_num}" "${output_suffix}"
 fi
 
@@ -32,7 +34,7 @@ wandb_mode=online
 train_setting="${task_config}${output_suffix}"
 exp_name="${task_name}-robot_dp3_ndf-train_ndf"
 run_dir="data/outputs/${exp_name}_seed${seed}"
-zarr_path="../../../data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
+zarr_path="${ROBOTWIN_DP3_DATA_ROOT}/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
 
 dataset_extra_keys=()
 shape_overrides=()

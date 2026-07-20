@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from data_path_utils import dp3_data_path, raw_task_data_dir
+
 import argparse
 import json
 import os
@@ -65,9 +67,9 @@ def main(argv=None) -> None:
     args = build_parser().parse_args(argv)
     route = str(args.route)
     output_suffix = args.output_suffix or default_output_suffix(route)
-    load_dir = os.path.join("../../data", args.task_name, args.task_config)
-    save_dir = f"./data/{args.task_name}-{args.task_config}-{args.expert_data_num}{output_suffix}.zarr"
-    meta_path = f"./data/{args.task_name}-{args.task_config}-{args.expert_data_num}{output_suffix}_meta.json"
+    load_dir = str(raw_task_data_dir(args.task_name, args.task_config))
+    save_dir = str(dp3_data_path(f"{args.task_name}-{args.task_config}-{args.expert_data_num}{output_suffix}.zarr"))
+    meta_path = str(dp3_data_path(f"{args.task_name}-{args.task_config}-{args.expert_data_num}{output_suffix}_meta.json"))
 
     scene_info = load_scene_info(os.path.join(load_dir, "scene_info.json"))
     first_episode = load_hdf5(os.path.join(load_dir, "data/episode0.hdf5"))

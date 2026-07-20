@@ -1,4 +1,6 @@
 #!/bin/bash
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/data_paths.sh"
 set -euo pipefail
 
 task_name=${1}
@@ -29,9 +31,9 @@ if [ "${object_placeholder_token}" != "AB" ]; then
 fi
 
 output_suffix="-objpc-eef-absolute6d-global${placeholder_suffix}${point_cloud_suffix}"
-zarr_path="../../../data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
+zarr_path="${ROBOTWIN_DP3_DATA_ROOT}/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr"
 
-if [ ! -d "./data/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr" ]; then
+if [ ! -d "${ROBOTWIN_DP3_DATA_ROOT}/${task_name}-${task_config}-${expert_data_num}${output_suffix}.zarr" ]; then
     bash process_data_objpc_eef_absolute6d_global.sh "${task_name}" "${task_config}" "${expert_data_num}" "${object_placeholders}" "${point_cloud_num}" "" "" "" reference_camera "${output_suffix}"
 fi
 
