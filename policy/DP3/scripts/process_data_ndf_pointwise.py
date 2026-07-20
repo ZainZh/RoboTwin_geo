@@ -8,10 +8,12 @@ import numpy as np
 import torch
 
 from incremental_objpc_zarr import append_episode_to_buffer, open_or_reset_replay_buffer
+from ndf_relation_schema import relation_v2_metadata
 from ndf_feature_utils import (
     compute_ndf_interact_pointwise_cloud,
     compute_ndf_pointwise_cloud,
     compute_ndf_relation_pointwise_cloud,
+    compute_ndf_relation_token,
     load_ndf_model,
     summarize_modes,
 )
@@ -59,6 +61,10 @@ def placeholder_relation_pointcloud_key(query_placeholder: str, support_placehol
     return (
         f"ndf_relation_point_cloud_{query_placeholder.strip('{}')}_in_{support_placeholder.strip('{}')}"
     )
+
+
+def placeholder_relation_token_key(query_placeholder: str, support_placeholder: str) -> str:
+    return f"ndf_relation_token_{query_placeholder.strip('{}')}_in_{support_placeholder.strip('{}')}"
 
 
 def infer_placeholder_order(scene_info: dict, first_episode: dict) -> list[str]:
@@ -119,6 +125,17 @@ def build_parser():
     parser.add_argument("--keep_feature_placeholders_in_context", action="store_true")
     parser.add_argument("--save_interact_point_clouds", action="store_true")
     parser.add_argument("--save_relation_point_clouds", action="store_true")
+    parser.add_argument("--relation_schema_version", type=int, default=0)
+    parser.add_argument("--save_relation_tokens", action="store_true")
+    parser.add_argument("--relation_token_gate_near_ratio", type=float, default=0.35)
+    parser.add_argument("--relation_token_gate_far_ratio", type=float, default=0.75)
+    parser.add_argument("--relation_token_valid_query_radius", type=float, default=0.75)
+    parser.add_argument("--relation_token_valid_fraction_min", type=float, default=0.25)
+    parser.add_argument("--relation_token_valid_fraction_max", type=float, default=0.65)
+    parser.add_argument("--relation_token_schema_version", type=int, default=1)
+    parser.add_argument("--relation_token_projection_dim", type=int, default=0)
+    parser.add_argument("--relation_token_projection_seed", type=int, default=0)
+    parser.add_argument("--relation_token_gate_geometry", action="store_true")
     return parser
 
 
@@ -185,8 +202,41 @@ def main(argv=None):
             "keep_feature_placeholders_in_context": bool(args.keep_feature_placeholders_in_context),
             "save_interact_point_clouds": bool(args.save_interact_point_clouds),
             "save_relation_point_clouds": bool(args.save_relation_point_clouds),
+            "save_relation_tokens": bool(args.save_relation_tokens),
         }
     )
+    if args.relation_schema_version:
+        if not args.save_relation_point_clouds:
+            raise ValueError("--relation_schema_version requires --save_relation_point_clouds.")
+        if int(args.relation_schema_version) != 2:
+            raise ValueError(f"Unsupported NDF relation schema version: {args.relation_schema_version}")
+        meta.update(relation_v2_metadata())
+    if args.save_relation_tokens:
+        descriptor_dim = (
+            int(args.relation_token_projection_dim)
+            if int(args.relation_token_projection_dim) > 0
+            else int(args.ndf_feat_dim)
+        )
+        meta.update(
+            {
+                "relation_token_schema_version": int(args.relation_token_schema_version),
+                "relation_token_dim": 9 + descriptor_dim,
+                "relation_token_geometry_dim": 9,
+                "relation_token_descriptor_pool": (
+                    "valid_query_mean_fixed_random_projection"
+                    if int(args.relation_token_projection_dim) > 0
+                    else "valid_query_mean"
+                ),
+                "relation_token_projection_dim": int(args.relation_token_projection_dim),
+                "relation_token_projection_seed": int(args.relation_token_projection_seed),
+                "relation_token_gate_geometry": bool(args.relation_token_gate_geometry),
+                "relation_token_gate_near_ratio": float(args.relation_token_gate_near_ratio),
+                "relation_token_gate_far_ratio": float(args.relation_token_gate_far_ratio),
+                "relation_token_valid_query_radius": float(args.relation_token_valid_query_radius),
+                "relation_token_valid_fraction_min": float(args.relation_token_valid_fraction_min),
+                "relation_token_valid_fraction_max": float(args.relation_token_valid_fraction_max),
+            }
+        )
     episode_stats = reconcile_episode_stats(meta.get("episodes", []), start_episode=start_episode)
 
     print(f"Resuming NDF pointwise preprocessing from episode {start_episode + 1} / {num}")
@@ -230,6 +280,16 @@ def main(argv=None):
                         support_placeholder,
                     )
                     episode_relation_arrays[relation_key] = []
+        episode_relation_token_arrays = {}
+        episode_relation_token_gates = {}
+        if args.save_relation_tokens:
+            for support_placeholder in feature_placeholders:
+                for query_placeholder in placeholders:
+                    if query_placeholder == support_placeholder:
+                        continue
+                    token_key = placeholder_relation_token_key(query_placeholder, support_placeholder)
+                    episode_relation_token_arrays[token_key] = []
+                    episode_relation_token_gates[token_key] = []
         episode_placeholder_point_cloud_arrays = {placeholder: [] for placeholder in placeholders}
         episode_state_arrays = []
         episode_joint_action_arrays = []
@@ -322,6 +382,31 @@ def main(argv=None):
                                     target_num_points=int(args.ndf_num_points),
                                 ).astype(np.float32)
                             )
+                if args.save_relation_tokens:
+                    for support_placeholder in feature_placeholders:
+                        support_object_pc = per_placeholder_point_clouds[support_placeholder]
+                        for query_placeholder in placeholders:
+                            if query_placeholder == support_placeholder:
+                                continue
+                            query_object_pc = per_placeholder_point_clouds[query_placeholder]
+                            token_key = placeholder_relation_token_key(query_placeholder, support_placeholder)
+                            token = compute_ndf_relation_token(
+                                model=model_by_placeholder[support_placeholder],
+                                support_object_point_cloud=support_object_pc,
+                                query_object_point_cloud=query_object_pc,
+                                device=device,
+                                target_num_points=int(args.ndf_num_points),
+                                gate_near_ratio=float(args.relation_token_gate_near_ratio),
+                                gate_far_ratio=float(args.relation_token_gate_far_ratio),
+                                valid_query_radius=float(args.relation_token_valid_query_radius),
+                                valid_fraction_min=float(args.relation_token_valid_fraction_min),
+                                valid_fraction_max=float(args.relation_token_valid_fraction_max),
+                                projection_dim=int(args.relation_token_projection_dim),
+                                projection_seed=int(args.relation_token_projection_seed),
+                                gate_geometry=bool(args.relation_token_gate_geometry),
+                            ).astype(np.float32)
+                            episode_relation_token_arrays[token_key].append(token)
+                            episode_relation_token_gates[token_key].append(float(token[8]))
 
             if frame_idx != 0:
                 episode_joint_action_arrays.append(vector_all[frame_idx])
@@ -338,6 +423,8 @@ def main(argv=None):
             episode_data[interact_key] = np.asarray(interact_values, dtype=np.float32)
         for relation_key, relation_values in episode_relation_arrays.items():
             episode_data[relation_key] = np.asarray(relation_values, dtype=np.float32)
+        for token_key, token_values in episode_relation_token_arrays.items():
+            episode_data[token_key] = np.asarray(token_values, dtype=np.float32)
         if args.save_placeholder_point_clouds:
             for placeholder in placeholders:
                 point_cloud_key = f"object_point_cloud_{placeholder.strip('{}')}"
@@ -368,6 +455,15 @@ def main(argv=None):
                 for placeholder in placeholders
             },
         }
+        if episode_relation_token_gates:
+            episode_record["relation_token_gate_stats"] = {
+                token_key: {
+                    "mean": float(np.mean(gates)) if gates else 0.0,
+                    "max": float(np.max(gates)) if gates else 0.0,
+                    "active_fraction": float(np.mean(np.asarray(gates) > 0.05)) if gates else 0.0,
+                }
+                for token_key, gates in episode_relation_token_gates.items()
+            }
         if len(episode_stats) == current_ep:
             episode_stats.append(episode_record)
         else:

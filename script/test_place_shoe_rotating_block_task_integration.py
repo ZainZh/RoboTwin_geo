@@ -55,6 +55,27 @@ class TestPlaceShoeRotatingBlockTaskIntegration(unittest.TestCase):
         self.assertIn('"{A}": "shoe"', source)
         self.assertIn('"{B}": "target_block"', source)
 
+
+    def test_episode_info_uses_plain_language_names_not_asset_paths(self):
+        source = TASK_PATH.read_text(encoding="utf-8")
+        self.assertIn('"{A}": "shoe"', source)
+        self.assertIn('"{B}": "target block"', source)
+        self.assertNotIn('"{A}": f"041_shoe/base{self.shoe_id}"', source)
+
+    def test_task_records_pose_and_phase_state_for_se3_relation_comparison(self):
+        source = TASK_PATH.read_text(encoding="utf-8")
+        self.assertIn('pkl_dic["task_state"]', source)
+        self.assertIn('"object_pose_A"', source)
+        self.assertIn('"object_pose_B"', source)
+        self.assertIn('"goal_T_A_from_B_oracle"', source)
+        self.assertIn('"shoe_id"', source)
+        self.assertIn('"relation_phase"', source)
+
+    def test_task_exposes_expert_grasp_lift_prefix_for_placement_only_eval(self):
+        source = TASK_PATH.read_text(encoding="utf-8")
+        self.assertIn("def prepare_policy_placement_phase", source)
+        self.assertIn("self._grasp_and_lift()", source)
+
     def test_task_instruction_json_exists(self):
         data = json.loads(INSTRUCTION_PATH.read_text(encoding="utf-8"))
         self.assertTrue(data)

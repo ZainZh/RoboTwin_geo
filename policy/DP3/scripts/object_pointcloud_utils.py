@@ -35,6 +35,13 @@ def load_hdf5(dataset_path: str) -> dict:
             object_group = root["/object_pointcloud"]
             for key in object_group.keys():
                 data["object_pointcloud"][str(key)] = object_group[key][()]
+        if "task_state" in root:
+            task_state_group = root["/task_state"]
+            data["task_state"] = {
+                str(key): task_state_group[key][()]
+                for key in task_state_group.keys()
+                if isinstance(task_state_group[key], h5py.Dataset)
+            }
     return data
 
 

@@ -1,0 +1,52 @@
+#!/bin/bash
+set -euo pipefail
+
+policy_name=DP3
+task_name=${1}
+task_config=${2}
+ckpt_setting_base=${3}
+expert_data_num=${4}
+seed=${5}
+gpu_id=${6}
+route=${7:-oracle}
+goal_table=${8:-}
+object_placeholders=${9:-\{A\},\{B\}}
+checkpoint_num=${10:-3000}
+point_cloud_num=${11:-1024}
+test_num=${12:-100}
+
+route_suffix=${route//_/-}
+point_cloud_suffix=""
+if [ "${point_cloud_num}" != "1024" ]; then
+    point_cloud_suffix="-pc${point_cloud_num}"
+fi
+ckpt_setting="${ckpt_setting_base}-objpc-se3-relation-${route_suffix}${point_cloud_suffix}"
+
+extra_overrides=()
+if [ -n "${goal_table}" ]; then
+    goal_table=$(realpath "${goal_table}")
+    extra_overrides+=(--se3_relation_goal_table "${goal_table}")
+fi
+
+export CUDA_VISIBLE_DEVICES=${gpu_id}
+export HYDRA_FULL_ERROR=1
+echo -e "\033[33mgpu id (to use): ${gpu_id}\033[0m"
+
+cd ../..
+PYTHONWARNINGS=ignore::UserWarning \
+python script/eval_policy.py --config policy/${policy_name}/deploy_policy.yml \
+    --overrides \
+    --policy_name "${policy_name}" \
+    --task_name "${task_name}" \
+    --task_config "${task_config}" \
+    --ckpt_setting "${ckpt_setting}" \
+    --expert_data_num "${expert_data_num}" \
+    --seed "${seed}" \
+    --config_name robot_dp3_objpc \
+    --object_placeholders "${object_placeholders}" \
+    --checkpoint_num "${checkpoint_num}" \
+    --point_cloud_num "${point_cloud_num}" \
+    --use_se3_relation_token true \
+    --se3_relation_route "${route}" \
+    --test_num "${test_num}" \
+    "${extra_overrides[@]}"

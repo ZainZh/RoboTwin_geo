@@ -144,6 +144,7 @@ def main(usr_args):
     args['task_name'] = task_name
     args["task_config"] = task_config
     args["ckpt_setting"] = ckpt_setting
+    args["policy_start_phase"] = str(usr_args.get("policy_start_phase", "full_task"))
 
     embodiment_type = args.get("embodiment")
     embodiment_config_path = os.path.join(CONFIGS_PATH, "_embodiment_config.yml")
@@ -222,7 +223,7 @@ def main(usr_args):
 
     st_seed = 100000 * (1 + seed)
     suc_nums = []
-    test_num = 100
+    test_num = int(usr_args.get("test_num", 100))
     topk = 1
 
     model = get_model(usr_args)
@@ -315,6 +316,14 @@ def eval_policy(task_name,
         args["render_freq"] = render_freq
 
         TASK_ENV.setup_demo(now_ep_num=now_id, seed=now_seed, is_test=True, **args)
+        if args["policy_start_phase"] == "placement":
+            prepare_placement = getattr(TASK_ENV, "prepare_policy_placement_phase", None)
+            if prepare_placement is None:
+                raise RuntimeError(
+                    f"task {task_name} does not implement prepare_policy_placement_phase()"
+                )
+            prepare_placement()
+
         episode_info_list = [episode_info["info"]]
         instruction = resolve_episode_instruction(
             args["task_name"],

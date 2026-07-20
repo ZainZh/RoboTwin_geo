@@ -1,6 +1,7 @@
 # import packages and module here
 import sys
 
+import json
 import torch
 import traceback
 import os
@@ -43,6 +44,12 @@ sys.path.append(os.path.join(parent_directory, 'scripts'))
 from dp3_policy import *
 from object_pointcloud_utils import merge_object_point_clouds, parse_placeholder_list
 from pointwise_context_utils import build_context_point_cloud
+from se3_relation_token_utils import (
+    RELATION_TOKEN_DIM,
+    RELATION_TOKEN_KEY,
+    SUPPORTED_RELATION_ROUTES,
+    build_relation_token_from_task_state,
+)
 
 
 def placeholder_feature_key(placeholder: str) -> str:
@@ -65,6 +72,10 @@ def placeholder_relation_pointcloud_key(query_placeholder: str, support_placehol
     )
 
 
+def placeholder_relation_token_key(query_placeholder: str, support_placeholder: str) -> str:
+    return f"ndf_relation_token_{query_placeholder.strip('{}')}_in_{support_placeholder.strip('{}')}"
+
+
 def placeholder_semantic_pointcloud_key(placeholder: str) -> str:
     return f"semantic_point_cloud_{placeholder.strip('{}')}"
 
@@ -83,6 +94,7 @@ def get_semantic_utils():
 compute_ndf_feature = None
 compute_ndf_interact_pointwise_cloud = None
 compute_ndf_relation_pointwise_cloud = None
+compute_ndf_relation_token = None
 compute_ndf_pointwise_cloud = None
 load_ndf_model = None
 
@@ -92,12 +104,14 @@ def get_ndf_utils():
     global compute_ndf_feature
     global compute_ndf_interact_pointwise_cloud
     global compute_ndf_relation_pointwise_cloud
+    global compute_ndf_relation_token
     global compute_ndf_pointwise_cloud
     global load_ndf_model
     from ndf_feature_utils import (
         compute_ndf_feature as imported_compute_ndf_feature,
         compute_ndf_interact_pointwise_cloud as imported_compute_ndf_interact_pointwise_cloud,
         compute_ndf_relation_pointwise_cloud as imported_compute_ndf_relation_pointwise_cloud,
+        compute_ndf_relation_token as imported_compute_ndf_relation_token,
         compute_ndf_pointwise_cloud as imported_compute_ndf_pointwise_cloud,
         load_ndf_model as imported_load_ndf_model,
     )
@@ -108,6 +122,8 @@ def get_ndf_utils():
         compute_ndf_interact_pointwise_cloud = imported_compute_ndf_interact_pointwise_cloud
     if compute_ndf_relation_pointwise_cloud is None:
         compute_ndf_relation_pointwise_cloud = imported_compute_ndf_relation_pointwise_cloud
+    if compute_ndf_relation_token is None:
+        compute_ndf_relation_token = imported_compute_ndf_relation_token
     if compute_ndf_pointwise_cloud is None:
         compute_ndf_pointwise_cloud = imported_compute_ndf_pointwise_cloud
     if load_ndf_model is None:
@@ -259,8 +275,10 @@ def encode_obs(observation, model):  # Post-Process Observation
     use_ndf_pointwise = bool(getattr(model, "use_ndf_pointwise", False))
     use_ndf_pointwise_hybrid = bool(getattr(model, "use_ndf_pointwise_hybrid", False))
     use_ndf_pointwise_interact = bool(getattr(model, "use_ndf_pointwise_interact", False))
+    use_ndf_relation_token = bool(getattr(model, "use_ndf_relation_token", False))
     use_semantic_pointwise = bool(getattr(model, "use_semantic_pointwise", False))
     use_semantic_pointwise_hybrid = bool(getattr(model, "use_semantic_pointwise_hybrid", False))
+    use_se3_relation_token = bool(getattr(model, "use_se3_relation_token", False))
     use_utonia_pointwise = bool(getattr(model, "use_utonia_pointwise", False))
     use_utonia_pointwise_hybrid = bool(getattr(model, "use_utonia_pointwise_hybrid", False))
 
@@ -334,6 +352,19 @@ def encode_obs(observation, model):  # Post-Process Observation
 
     obs['point_cloud'] = point_cloud
 
+    if use_se3_relation_token:
+        task_state = observation.get("task_state")
+        if not isinstance(task_state, dict):
+            raise RuntimeError(
+                "SE(3) relation eval requires task_state pose metadata from "
+                "place_shoe_rotating_block.get_obs()."
+            )
+        obs[RELATION_TOKEN_KEY] = build_relation_token_from_task_state(
+            route=str(getattr(model, "se3_relation_route", "oracle")),
+            task_state=task_state,
+            goal_table=getattr(model, "se3_relation_goal_table", None),
+        ).astype(np.float32)
+
     if use_ndf_pointwise:
         _, compute_ndf_interact_pointwise_cloud, compute_ndf_relation_pointwise_cloud, compute_ndf_pointwise_cloud, _ = get_ndf_utils()
         feat_dim = int(getattr(model, "ndf_feat_dim", 256))
@@ -398,6 +429,40 @@ def encode_obs(observation, model):  # Post-Process Observation
                         query_object_point_cloud=query_object_pc,
                         device=getattr(model, "ndf_device", torch.device("cpu")),
                         target_num_points=point_num,
+                    ).astype(np.float32)
+
+        if use_ndf_relation_token:
+            for support_placeholder, ndf_model in getattr(model, "ndf_models", {}).items():
+                support_object_pc = object_pointcloud.get(support_placeholder)
+                for query_placeholder in getattr(model, "object_placeholders", []):
+                    if query_placeholder == support_placeholder:
+                        continue
+                    token_key = placeholder_relation_token_key(query_placeholder, support_placeholder)
+                    token_dim = int(getattr(model, "ndf_relation_token_dim", 9 + feat_dim))
+                    query_object_pc = object_pointcloud.get(query_placeholder)
+                    if support_object_pc is None or query_object_pc is None:
+                        obs[token_key] = np.zeros((token_dim,), dtype=np.float32)
+                        continue
+                    point_num = int(
+                        getattr(model, "ndf_relation_token_point_num_by_pair", {}).get(
+                            (query_placeholder, support_placeholder),
+                            int(getattr(model, "ndf_point_num_by_placeholder", {}).get(support_placeholder, 128)),
+                        )
+                    )
+                    obs[token_key] = compute_ndf_relation_token(
+                        model=ndf_model,
+                        support_object_point_cloud=support_object_pc,
+                        query_object_point_cloud=query_object_pc,
+                        device=getattr(model, "ndf_device", torch.device("cpu")),
+                        target_num_points=point_num,
+                        gate_near_ratio=float(getattr(model, "ndf_relation_token_gate_near_ratio", 0.35)),
+                        gate_far_ratio=float(getattr(model, "ndf_relation_token_gate_far_ratio", 0.75)),
+                        valid_query_radius=float(getattr(model, "ndf_relation_token_valid_query_radius", 0.75)),
+                        valid_fraction_min=float(getattr(model, "ndf_relation_token_valid_fraction_min", 0.25)),
+                        valid_fraction_max=float(getattr(model, "ndf_relation_token_valid_fraction_max", 0.65)),
+                        projection_dim=int(getattr(model, "ndf_relation_token_projection_dim", 0)),
+                        projection_seed=int(getattr(model, "ndf_relation_token_projection_seed", 0)),
+                        gate_geometry=bool(getattr(model, "ndf_relation_token_gate_geometry", False)),
                     ).astype(np.float32)
 
     if use_semantic_pointwise:
@@ -575,6 +640,8 @@ def get_model(usr_args):
     use_ndf_pointwise_hybrid = "ndf_pointwise_hybrid" in usr_args["config_name"]
     use_ndf_pointwise_interact = "ndf_pointwise_hybrid_interact" in usr_args["config_name"]
     use_ndf_pointwise_relation = "ndf_relation_hybrid" in usr_args["config_name"]
+    use_ndf_relation_token = parse_bool_arg(usr_args.get("use_ndf_relation_token", False), default=False)
+    use_se3_relation_token = parse_bool_arg(usr_args.get("use_se3_relation_token", False), default=False)
     use_semantic_pointwise = "semantic_pointwise" in usr_args["config_name"]
     use_semantic_pointwise_hybrid = "semantic_pointwise_hybrid" in usr_args["config_name"]
     use_utonia_pointwise = "utonia_pointwise" in usr_args["config_name"]
@@ -593,9 +660,28 @@ def get_model(usr_args):
     target_num_points = point_cloud_num
     ndf_feat_dim = 256
     ndf_point_num = int(usr_args.get("ndf_point_num", 128))
+    ndf_relation_token_projection_dim = int(usr_args.get("ndf_relation_token_projection_dim", 0))
+    ndf_relation_token_dim = 9 + (
+        ndf_relation_token_projection_dim if ndf_relation_token_projection_dim > 0 else ndf_feat_dim
+    )
     ndf_device = torch.device(usr_args.get("ndf_device", "cuda:0") if torch.cuda.is_available() else "cpu")
     ndf_model_specs = resolve_ndf_models(usr_args)
     dgcnn_placeholders = set(parse_placeholder_list(usr_args.get("ndf_dgcnn_placeholders", "")))
+    se3_relation_route = str(usr_args.get("se3_relation_route", "oracle"))
+    if se3_relation_route not in SUPPORTED_RELATION_ROUTES:
+        raise ValueError(
+            f"Unsupported SE(3) relation route {se3_relation_route!r}; "
+            f"expected one of {SUPPORTED_RELATION_ROUTES}"
+        )
+    se3_relation_goal_table_path = str(usr_args.get("se3_relation_goal_table", "") or "")
+    se3_relation_goal_table = None
+    if use_se3_relation_token and se3_relation_route != "oracle":
+        if not se3_relation_goal_table_path:
+            raise ValueError(
+                f"se3_relation_goal_table is required for route={se3_relation_route}"
+            )
+        with open(se3_relation_goal_table_path, "r", encoding="utf-8") as handle:
+            se3_relation_goal_table = json.load(handle)
     semantic_point_num = int(usr_args.get("semantic_point_num", 128))
     semantic_input_color_mode = str(usr_args.get("semantic_input_color_mode", "debug_placeholder"))
     semantic_forward_mode = str(usr_args.get("semantic_forward_mode", "reference"))
@@ -739,6 +825,19 @@ def get_model(usr_args):
                         "shape": [ndf_point_num, 3 + ndf_feat_dim],
                         "type": "point_cloud",
                     }
+        if use_ndf_relation_token:
+            for support_placeholder in object_placeholders:
+                checkpoint = ndf_model_specs.get(support_placeholder)
+                if checkpoint in {None, "", "none"}:
+                    continue
+                for query_placeholder in object_placeholders:
+                    if query_placeholder == support_placeholder:
+                        continue
+                    token_key = placeholder_relation_token_key(query_placeholder, support_placeholder)
+                    cfg.task.shape_meta.obs[token_key] = {
+                        "shape": [ndf_relation_token_dim],
+                        "type": "low_dim",
+                    }
     elif "ndf" in usr_args["config_name"]:
         for placeholder in object_placeholders:
             checkpoint = ndf_model_specs.get(placeholder)
@@ -749,6 +848,11 @@ def get_model(usr_args):
                 "shape": [ndf_feat_dim],
                 "type": "low_dim",
             }
+    if use_se3_relation_token:
+        cfg.task.shape_meta.obs[RELATION_TOKEN_KEY] = {
+            "shape": [RELATION_TOKEN_DIM],
+            "type": "low_dim",
+        }
     if use_semantic_pointwise:
         for placeholder in object_placeholders:
             artifacts = semantic_models.get(placeholder)
@@ -779,6 +883,10 @@ def get_model(usr_args):
     DP3_Model.use_ndf_pointwise_hybrid = use_ndf_pointwise_hybrid
     DP3_Model.use_ndf_pointwise_interact = use_ndf_pointwise_interact
     DP3_Model.use_ndf_pointwise_relation = use_ndf_pointwise_relation
+    DP3_Model.use_ndf_relation_token = use_ndf_relation_token
+    DP3_Model.use_se3_relation_token = use_se3_relation_token
+    DP3_Model.se3_relation_route = se3_relation_route
+    DP3_Model.se3_relation_goal_table = se3_relation_goal_table
     DP3_Model.use_semantic_pointwise = use_semantic_pointwise
     DP3_Model.use_semantic_pointwise_hybrid = use_semantic_pointwise_hybrid
     DP3_Model.use_utonia_pointwise = use_utonia_pointwise
@@ -820,6 +928,37 @@ def get_model(usr_args):
         for query_placeholder in object_placeholders
         if query_placeholder != support_placeholder
     }
+    DP3_Model.ndf_relation_token_dim = ndf_relation_token_dim
+    DP3_Model.ndf_relation_token_point_num_by_pair = {
+        (query_placeholder, support_placeholder): ndf_point_num
+        for support_placeholder in object_placeholders
+        if support_placeholder in ndf_model_specs
+        for query_placeholder in object_placeholders
+        if query_placeholder != support_placeholder
+    }
+    DP3_Model.ndf_relation_token_gate_near_ratio = float(
+        usr_args.get("ndf_relation_token_gate_near_ratio", 0.35)
+    )
+    DP3_Model.ndf_relation_token_gate_far_ratio = float(
+        usr_args.get("ndf_relation_token_gate_far_ratio", 0.75)
+    )
+    DP3_Model.ndf_relation_token_valid_query_radius = float(
+        usr_args.get("ndf_relation_token_valid_query_radius", 0.75)
+    )
+    DP3_Model.ndf_relation_token_valid_fraction_min = float(
+        usr_args.get("ndf_relation_token_valid_fraction_min", 0.25)
+    )
+    DP3_Model.ndf_relation_token_valid_fraction_max = float(
+        usr_args.get("ndf_relation_token_valid_fraction_max", 0.65)
+    )
+    DP3_Model.ndf_relation_token_projection_dim = ndf_relation_token_projection_dim
+    DP3_Model.ndf_relation_token_projection_seed = int(
+        usr_args.get("ndf_relation_token_projection_seed", 0)
+    )
+    DP3_Model.ndf_relation_token_gate_geometry = parse_bool_arg(
+        usr_args.get("ndf_relation_token_gate_geometry", False),
+        default=False,
+    )
     DP3_Model.ndf_device = ndf_device
     DP3_Model.ndf_models = {}
     load_ndf_model = None

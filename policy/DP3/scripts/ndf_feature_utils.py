@@ -3,6 +3,7 @@ import os
 import sys
 import warnings
 from collections import Counter
+from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -167,6 +168,30 @@ def farthest_point_sample(points: np.ndarray, target_num: int) -> np.ndarray:
             farthest = int(np.argmax(distances))
         points = points[selected]
     return points.astype(np.float32)
+
+
+def deterministic_farthest_point_sample(points: np.ndarray, target_num: int) -> np.ndarray:
+    points = np.asarray(points, dtype=np.float32)
+    if len(points) == 0:
+        return np.zeros((target_num, 3), dtype=np.float32)
+    if len(points) < target_num:
+        repeats = int(np.ceil(float(target_num) / float(len(points))))
+        return np.tile(points, (repeats, 1))[:target_num].astype(np.float32)
+    if len(points) == target_num:
+        return points.astype(np.float32)
+
+    xyz = points[:, :3]
+    selected = np.zeros((target_num,), dtype=np.int64)
+    distances = np.full((len(points),), np.inf, dtype=np.float32)
+    center = xyz.mean(axis=0)
+    farthest = int(np.argmax(np.sum((xyz - center) ** 2, axis=1)))
+    for idx in range(target_num):
+        selected[idx] = farthest
+        centroid = xyz[farthest]
+        dist = np.sum((xyz - centroid) ** 2, axis=1)
+        distances = np.minimum(distances, dist)
+        farthest = int(np.argmax(distances))
+    return points[selected].astype(np.float32)
 
 
 def _project_points_with_matrix(
@@ -529,10 +554,11 @@ def compute_ndf_relation_pointwise_cloud(
 ) -> np.ndarray:
     """Query one object's points in another object's normalized NDF frame.
 
-    The returned XYZ channels are relation coordinates: sampled query points
-    expressed in the support object's centered/scaled frame. The main context
-    point cloud already carries world XYZ, so this branch focuses on relative
-    geometry.
+    The NDF descriptor is evaluated at sampled query points expressed in the
+    support object's centered/scaled frame, but the returned XYZ channels stay
+    in the task/world frame. DP3 treats every type=point_cloud key as a
+    spatial point cloud, so feeding normalized support-frame coordinates here
+    creates a synthetic coordinate system that can corrupt localization.
     """
     support_point_cloud = np.asarray(support_object_point_cloud, dtype=np.float32)
     query_point_cloud = np.asarray(query_object_point_cloud, dtype=np.float32)
@@ -566,7 +592,124 @@ def compute_ndf_relation_pointwise_cloud(
             f"Expected local NDF features with shape [B, N, F], got {tuple(local_features.shape)}"
         )
     local_features = local_features.squeeze(0).detach().cpu().numpy().astype(np.float32)
-    return np.concatenate([normalized_query_xyz.astype(np.float32), local_features], axis=1)
+    return np.concatenate([sampled_query_world_xyz.astype(np.float32), local_features], axis=1)
+
+
+def _smoothstep01(value: float) -> float:
+    value = float(np.clip(value, 0.0, 1.0))
+    return value * value * (3.0 - 2.0 * value)
+
+
+@lru_cache(maxsize=32)
+def _fixed_projection_matrix(input_dim: int, output_dim: int, seed: int) -> np.ndarray:
+    rng = np.random.RandomState(int(seed))
+    matrix = rng.normal(size=(int(input_dim), int(output_dim))).astype(np.float32)
+    matrix /= np.sqrt(max(int(output_dim), 1))
+    matrix.setflags(write=False)
+    return matrix
+
+
+@torch.no_grad()
+def compute_ndf_relation_token(
+    model: torch.nn.Module,
+    support_object_point_cloud: np.ndarray,
+    query_object_point_cloud: np.ndarray,
+    device: torch.device,
+    target_num_points: int,
+    gate_near_ratio: float = 0.35,
+    gate_far_ratio: float = 0.75,
+    valid_query_radius: float = 0.75,
+    valid_fraction_min: float = 0.25,
+    valid_fraction_max: float = 0.65,
+    projection_dim: int = 0,
+    projection_seed: int = 0,
+    gate_geometry: bool = False,
+) -> np.ndarray:
+    """Build a compact, phase-gated relation descriptor.
+
+    The first nine values describe directed relative geometry and gate state.
+    The remaining values are the mean NDF descriptor of query points that lie
+    inside the support object's normalized field. Far/OOD interactions are
+    explicitly zeroed so they cannot dominate the grasp-localization phase.
+    """
+    support_point_cloud = np.asarray(support_object_point_cloud, dtype=np.float32)
+    query_point_cloud = np.asarray(query_object_point_cloud, dtype=np.float32)
+    if support_point_cloud.ndim != 2 or support_point_cloud.shape[1] < 3:
+        raise ValueError(
+            f"Expected support point cloud with shape (N, C>=3), got {support_point_cloud.shape}"
+        )
+    if query_point_cloud.ndim != 2 or query_point_cloud.shape[1] < 3:
+        raise ValueError(
+            f"Expected query point cloud with shape (N, C>=3), got {query_point_cloud.shape}"
+        )
+    if gate_far_ratio <= gate_near_ratio:
+        raise ValueError("gate_far_ratio must be greater than gate_near_ratio")
+    if valid_fraction_max <= valid_fraction_min:
+        raise ValueError("valid_fraction_max must be greater than valid_fraction_min")
+
+    feature_dim = int(getattr(model, "latent_dim", 256))
+    descriptor_dim = int(projection_dim) if int(projection_dim) > 0 else feature_dim
+    token = np.zeros((9 + descriptor_dim,), dtype=np.float32)
+    support_xyz = support_point_cloud[:, :3]
+    query_xyz = query_point_cloud[:, :3]
+    support_xyz = support_xyz[~np.isclose(support_xyz, 0.0).all(axis=1)]
+    query_xyz = query_xyz[~np.isclose(query_xyz, 0.0).all(axis=1)]
+    if len(support_xyz) == 0 or len(query_xyz) == 0:
+        return token
+
+    normalized_support_xyz, support_center, support_scale = normalize_object_point_cloud_with_transform(
+        support_xyz
+    )
+    sampled_query_world_xyz = deterministic_farthest_point_sample(query_xyz, int(target_num_points))
+    normalized_query_xyz = (
+        sampled_query_world_xyz - support_center[None, :]
+    ) / max(float(support_scale), 1e-6)
+
+    relative_world = query_xyz.mean(axis=0) - support_center
+    relative_normalized = relative_world / max(float(support_scale), 1e-6)
+    distance_ratio = float(np.linalg.norm(relative_normalized))
+    valid_mask = np.linalg.norm(normalized_query_xyz, axis=1) <= float(valid_query_radius)
+    valid_fraction = float(np.mean(valid_mask))
+    distance_gate = _smoothstep01(
+        (float(gate_far_ratio) - distance_ratio)
+        / (float(gate_far_ratio) - float(gate_near_ratio))
+    )
+    validity_gate = _smoothstep01(
+        (valid_fraction - float(valid_fraction_min))
+        / (float(valid_fraction_max) - float(valid_fraction_min))
+    )
+    gate = float(distance_gate * validity_gate)
+
+    geometry = np.concatenate(
+        [
+            relative_world.astype(np.float32),
+            relative_normalized.astype(np.float32),
+            np.asarray([distance_ratio, valid_fraction, gate], dtype=np.float32),
+        ]
+    )
+    if gate_geometry:
+        token[:8] = geometry[:8] * gate
+        token[8] = gate
+    else:
+        token[:9] = geometry
+    if gate <= 1e-6 or not np.any(valid_mask):
+        return token
+
+    support_t = torch.from_numpy(normalized_support_xyz[None, ...]).float().to(device)
+    query_t = torch.from_numpy(normalized_query_xyz[None, ...]).float().to(device)
+    z = model.extract_latent({"point_cloud": support_t})
+    local_features = model.forward_latent(z, query_t)
+    if local_features.ndim != 3:
+        raise RuntimeError(
+            f"Expected local NDF features with shape [B, N, F], got {tuple(local_features.shape)}"
+        )
+    local_features = local_features.squeeze(0).detach().cpu().numpy().astype(np.float32)
+    descriptor = local_features[valid_mask].mean(axis=0)
+    if int(projection_dim) > 0:
+        descriptor = descriptor @ _fixed_projection_matrix(feature_dim, int(projection_dim), int(projection_seed))
+    token[9:] = np.asarray(descriptor, dtype=np.float32) * gate
+    return token
+
 
 def summarize_modes(mode_counter: Counter) -> Dict[str, int]:
     return {str(k): int(v) for k, v in sorted(mode_counter.items(), key=lambda kv: kv[0])}
