@@ -63,3 +63,9 @@
 - vendored graph helper 的硬编码 CUDA index device 改为输入 tensor device；真实 shoe checkpoint 已在 CPU 成功 load+forward，最小端到端 NDF validator smoke 也成功写出结果。
 - 新增 `requirements_shoe_se3.txt` 和 `check_shoe_se3_dependencies.py`；四个 comparison wrapper 会提前报告缺失包。`ndf_robot` 不再需要安装或 clone，通用 Python 包仍需安装。
 - RoboTwin 环境验证：23 个 relation tests 全过，baseline 1-episode zarr 预处理通过，NDF validator smoke 通过，shell/Python syntax 与 diff whitespace 均通过。
+
+## 推理成功率判定修复（2026-07-21）
+- 旧 `place_shoe_rotating_block.check_success()` 要求功能点 XY 到位、姿态到位且左右夹爪均打开；placement-only 模型保持抓取时必然得到 0%。
+- 新指标定义为 geometric placement alignment：功能点 XYZ 分量误差分别小于 5cm/3cm/4cm，四元数绝对内积 >0.98，不要求松爪。
+- 新增 Z 约束是为了避免仅删除 gripper 条件后，将鞋在目标正上方经过误判为成功。
+- 位姿指标抽成纯 NumPy `envs/placement_metrics.py`，覆盖到位、悬空、错误 XY、错误旋转和四元数符号等价测试；共 16 个相关测试通过。

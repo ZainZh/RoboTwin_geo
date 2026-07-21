@@ -13,6 +13,9 @@
 - [complete] 7. 解耦 baseline 预处理对 NDF 的非必要依赖
 - [complete] 8. 将真正需要的 NDF 运行时代码纳入仓库或明确安装项
 - [complete] 9. 添加干净环境依赖检查并验证 baseline/NDF 入口
+- [complete] 10. 追踪鞋子推理 rollout 终止与成功率判定
+- [complete] 11. 将成功判定改为适配“持物到位但不松爪”的 placement 指标
+- [complete] 12. 添加回归测试并验证评估入口
 
 ## 约束
 - 将比较实验改为可从单一 `RoboTwin_geo` checkout 运行，不依赖本机其他源码仓库。
@@ -23,3 +26,4 @@
 |---|---:|---|
 | relation 集成测试缺 `zarr` / `diffusers` | 1 | 记录为当前 Python 环境依赖缺失；其余可运行测试继续验证，不擅自安装依赖。 |
 | vendored NDF CPU forward 使用硬编码 CUDA device | 1 | 将 graph index tensor 改为跟随输入 device；CPU checkpoint forward 与 validator smoke 通过。 |
+| 直接导入完整任务做 runtime 单测时 Curobo 强制初始化 CUDA | 1 | 将成功指标抽成独立纯 NumPy 模块，在无仿真/GPU依赖下完成真实逻辑单测。 |

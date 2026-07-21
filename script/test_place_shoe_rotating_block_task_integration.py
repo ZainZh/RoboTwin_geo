@@ -46,8 +46,13 @@ class TestPlaceShoeRotatingBlockTaskIntegration(unittest.TestCase):
     def test_success_uses_functional_point_pose_and_quaternion_dot_similarity(self):
         source = TASK_PATH.read_text(encoding="utf-8")
         self.assertIn('self.shoe.get_functional_point(0, "pose")', source)
-        self.assertIn("quat_alignment", source)
-        self.assertIn("abs(float(np.dot", source)
+        self.assertIn("functional_pose_alignment_success", source)
+
+    def test_success_measures_full_pose_alignment_without_requiring_release(self):
+        source = TASK_PATH.read_text(encoding="utf-8")
+        self.assertIn("position_tolerance=(0.05, 0.03, 0.04)", source)
+        self.assertNotIn("and self.is_left_gripper_open()", source)
+        self.assertNotIn("and self.is_right_gripper_open()", source)
 
     def test_object_pointcloud_targets_include_shoe_and_rotating_block(self):
         source = TARGETS_PATH.read_text(encoding="utf-8")

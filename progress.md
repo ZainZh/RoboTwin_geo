@@ -13,3 +13,5 @@
 - 服务器复现发现 `include/geometry_awareness_manipulation` 是指向本机外部仓库的绝对 symlink，服务器因此找不到 `ndf_robot`；开始依赖自包含整改。
 - 完成依赖自包含：baseline 解耦 NDF import、最小 NDF runtime vendoring、requirements/preflight 检查与 wrapper 接入。
 - 验证完成：RoboTwin 环境 23 tests、1-episode baseline zarr、真实 checkpoint CPU forward、NDF validator smoke、shell/Python syntax 全部通过。
+- 开始修复推理成功率恒为 0：审计 rollout 终止条件与必须松爪的旧成功判定。
+- 已将鞋任务成功标准改为持物也可满足的完整功能位姿对齐，并用纯 NumPy 回归测试验证；16 tests、py_compile、diff check 通过。
