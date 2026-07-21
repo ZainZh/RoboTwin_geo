@@ -55,3 +55,11 @@
 - 当前 token 的“目标关系”来自 NDF 或 oracle，但“当前关系”由模拟器真值 object poses 计算；所以 v1 验证的是在完美状态估计下，显式几何目标误差能否改善策略放置，不等价于完整视觉系统端到端地从点云估姿。
 - baseline 没有 11D 分支，而其他组有，参数结构并非完全等同；增加 zero-token baseline 可消除这一混淆。
 - goal table 按同一批固定 10 个 shoe IDs 查表，主要验证跨实例目标迁移+控制收益，而不是未见鞋实例上的在线泛化。
+
+## 服务器依赖自包含整改（2026-07-21）
+- 根因：`include/geometry_awareness_manipulation` 是本机绝对 symlink；同时 comparison baseline 为了 `summarize_modes` 和资产尺寸工具间接 import 了 `ndf_feature_utils`，从而不必要地加载 `ndf_robot`。
+- baseline/oracle 数据预处理已与 NDF 网络解耦。实际 1-episode baseline zarr smoke 成功，并确认 import comparison 时 `ndf_robot` 未加载。
+- 当前 NDF checkpoint 所需的最小 MIT runtime（`layers_equi.py`、`vnn_occupancy_net_pointnet_dgcnn.py`）已 vendored 到 `policy/DP3/third_party/ndf_robot`，并保留 license/provenance；NDF import 改为仓库内路径。
+- vendored graph helper 的硬编码 CUDA index device 改为输入 tensor device；真实 shoe checkpoint 已在 CPU 成功 load+forward，最小端到端 NDF validator smoke 也成功写出结果。
+- 新增 `requirements_shoe_se3.txt` 和 `check_shoe_se3_dependencies.py`；四个 comparison wrapper 会提前报告缺失包。`ndf_robot` 不再需要安装或 clone，通用 Python 包仍需安装。
+- RoboTwin 环境验证：23 个 relation tests 全过，baseline 1-episode zarr 预处理通过，NDF validator smoke 通过，shell/Python syntax 与 diff whitespace 均通过。

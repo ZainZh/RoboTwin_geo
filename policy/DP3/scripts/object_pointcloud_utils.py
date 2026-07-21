@@ -1,8 +1,15 @@
+import json
 import os
+from collections import Counter
+from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import h5py
 import numpy as np
+import trimesh
+
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def _read_optional(group: h5py.Group, path: str):
@@ -62,8 +69,6 @@ def frame_image(arr, idx: int):
 
 
 def parse_target_extents(scene_info: dict, episode_idx: int, placeholder: str):
-    from ndf_feature_utils import load_asset_extents, parse_asset_spec
-
     episode_info = scene_info.get(f"episode_{episode_idx}", {}) if isinstance(scene_info, dict) else {}
     info_dict = episode_info.get("info", {}) if isinstance(episode_info, dict) else {}
     asset_spec = info_dict.get(placeholder, None)
@@ -73,9 +78,70 @@ def parse_target_extents(scene_info: dict, episode_idx: int, placeholder: str):
 
 
 def load_scene_info(scene_info_path: str) -> Dict:
-    from ndf_feature_utils import load_scene_info as _load_scene_info
+    if not os.path.isfile(scene_info_path):
+        return {}
+    with open(scene_info_path, "r", encoding="utf-8") as handle:
+        return json.load(handle)
 
-    return _load_scene_info(scene_info_path)
+
+def parse_asset_spec(asset_spec: Optional[str]) -> Tuple[Optional[str], Optional[int]]:
+    if not isinstance(asset_spec, str) or "/base" not in asset_spec:
+        return None, None
+    model_name, base_id = asset_spec.rsplit("/base", 1)
+    try:
+        return model_name, int(base_id)
+    except ValueError:
+        return None, None
+
+
+def _concat_meshes(meshes: List[trimesh.Trimesh]) -> Optional[trimesh.Trimesh]:
+    valid = [mesh for mesh in meshes if isinstance(mesh, trimesh.Trimesh) and len(mesh.vertices) > 0]
+    if not valid:
+        return None
+    if len(valid) == 1:
+        return valid[0]
+    return trimesh.util.concatenate(valid)
+
+
+def _load_mesh(path: Path) -> Optional[trimesh.Trimesh]:
+    if not path.exists():
+        return None
+    try:
+        mesh_or_scene = trimesh.load(path, force="scene")
+    except Exception:
+        return None
+    if isinstance(mesh_or_scene, trimesh.Scene):
+        return _concat_meshes(list(mesh_or_scene.geometry.values()))
+    if isinstance(mesh_or_scene, trimesh.Trimesh):
+        return mesh_or_scene
+    return None
+
+
+def load_asset_extents(model_name: Optional[str], model_id: Optional[int]) -> Optional[np.ndarray]:
+    if model_name is None or model_id is None:
+        return None
+    model_dir = REPO_ROOT / "assets" / "objects" / model_name
+    candidates = [
+        model_dir / f"base{model_id}.glb",
+        model_dir / f"textured{model_id}.obj",
+        model_dir / "visual" / f"base{model_id}.glb",
+        model_dir / "visual" / f"textured{model_id}.obj",
+        model_dir / "collision" / f"base{model_id}.glb",
+        model_dir / "collision" / f"textured{model_id}.obj",
+    ]
+    for candidate in candidates:
+        mesh = _load_mesh(candidate)
+        if mesh is None or mesh.bounds is None:
+            continue
+        bounds = np.asarray(mesh.bounds, dtype=np.float32)
+        extents = bounds[1] - bounds[0]
+        if np.all(extents > 1e-6):
+            return extents.astype(np.float32)
+    return None
+
+
+def summarize_modes(mode_counter: Counter) -> Dict[str, int]:
+    return {str(key): int(value) for key, value in sorted(mode_counter.items(), key=lambda item: item[0])}
 
 
 def ensure_point_cloud_channels(point_cloud: np.ndarray, channels: int = 6) -> np.ndarray:

@@ -9,12 +9,17 @@
 - [complete] 3. 对照 PCA/SE(3) 姿态回归脚本，归纳研究假设
 - [complete] 4. 检查昨天的改动、缺口与潜在问题
 - [complete] 5. 向用户汇报理解并提出接手后的执行顺序
+- [complete] 6. 审计服务器缺失的 NDF 源码与第三方 import 链
+- [complete] 7. 解耦 baseline 预处理对 NDF 的非必要依赖
+- [complete] 8. 将真正需要的 NDF 运行时代码纳入仓库或明确安装项
+- [complete] 9. 添加干净环境依赖检查并验证 baseline/NDF 入口
 
 ## 约束
-- 本轮先调查和描述，不擅自启动训练或修改算法实现。
+- 将比较实验改为可从单一 `RoboTwin_geo` checkout 运行，不依赖本机其他源码仓库。
 - 保留用户及其他 AI 已有改动。
 
 ## 错误记录
 | 错误 | 尝试 | 处理 |
 |---|---:|---|
 | relation 集成测试缺 `zarr` / `diffusers` | 1 | 记录为当前 Python 环境依赖缺失；其余可运行测试继续验证，不擅自安装依赖。 |
+| vendored NDF CPU forward 使用硬编码 CUDA device | 1 | 将 graph index tensor 改为跟随输入 device；CPU checkpoint forward 与 validator smoke 通过。 |

@@ -11,7 +11,6 @@ from pathlib import Path
 import numpy as np
 
 from incremental_objpc_zarr import append_episode_to_buffer, open_or_reset_replay_buffer
-from ndf_feature_utils import summarize_modes
 from object_pointcloud_utils import (
     default_placeholder_order,
     extract_placeholder_point_cloud,
@@ -20,6 +19,7 @@ from object_pointcloud_utils import (
     merge_object_point_clouds,
     parse_placeholder_list,
     parse_target_extents,
+    summarize_modes,
     valid_xyz_centroid,
 )
 from process_data_se3_relation_hybrid import (

@@ -24,6 +24,12 @@ val_pin_memory=${18:-false}
 max_val_steps=${19:-2}
 resume=${20:-true}
 
+dependency_route=baseline
+if [ "${route}" = "ndf_no_direction" ] || [ "${route}" = "ndf_direction" ]; then
+    dependency_route=ndf
+fi
+python scripts/check_shoe_se3_dependencies.py --route "${dependency_route}" --training
+
 if [ "${route}" = "baseline" ]; then
     route_suffix="baseline"
 else

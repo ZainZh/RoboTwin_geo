@@ -10,3 +10,6 @@
 - 已检查 NDF 验证结果与每鞋最优解，识别 shoe5 的方向路线错误解仍以 confidence=1 入表。
 - 验证：4 个 shell 语法通过；16 个 relation 单测通过、2 个因当前环境缺依赖无法导入；任务静态集成 11 tests、相关 py_compile 均通过。
 - 调查阶段完成；已形成继续补数据、完善公平对照、增加严格 PCA route、训练评估的接手顺序。
+- 服务器复现发现 `include/geometry_awareness_manipulation` 是指向本机外部仓库的绝对 symlink，服务器因此找不到 `ndf_robot`；开始依赖自包含整改。
+- 完成依赖自包含：baseline 解耦 NDF import、最小 NDF runtime vendoring、requirements/preflight 检查与 wrapper 接入。
+- 验证完成：RoboTwin 环境 23 tests、1-episode baseline zarr、真实 checkpoint CPU forward、NDF validator smoke、shell/Python syntax 全部通过。

@@ -13,8 +13,8 @@ import trimesh
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-NDF_SRC = REPO_ROOT / "include" / "geometry_awareness_manipulation" / "include" / "ndf_robot" / "src"
-if NDF_SRC.exists() and str(NDF_SRC) not in sys.path:
+NDF_SRC = REPO_ROOT / "policy" / "DP3" / "third_party"
+if str(NDF_SRC) not in sys.path:
     sys.path.insert(0, str(NDF_SRC))
 
 import ndf_robot.model.vnn_occupancy_net_pointnet_dgcnn as vnn_occupancy_network  # noqa: E402

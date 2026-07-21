@@ -7,6 +7,8 @@ output_dir=${3:-../../outputs/ndf_shoe_ramp_se3/comparison}
 demo_shoe_id=${4:-0}
 trials=${5:-3}
 
+python scripts/check_shoe_se3_dependencies.py --route ndf
+
 mkdir -p "${output_dir}"
 validation_json="${output_dir}/validation_with_transforms.json"
 goal_table_json="${output_dir}/goal_table.json"

@@ -15,6 +15,12 @@ checkpoint_num=${10:-3000}
 point_cloud_num=${11:-1024}
 test_num=${12:-100}
 
+dependency_route=baseline
+if [ "${route}" = "ndf_no_direction" ] || [ "${route}" = "ndf_direction" ]; then
+    dependency_route=ndf
+fi
+python scripts/check_shoe_se3_dependencies.py --route "${dependency_route}" --training
+
 if [ "${route}" = "baseline" ]; then
     route_suffix="baseline"
 else

@@ -1,5 +1,8 @@
 3D-Diffusion-Policy/data/*
-third_party/
-third_party/pytorch3d
+third_party/*
+!third_party/ndf_robot/
+!third_party/ndf_robot/**
+third_party/ndf_robot/**/__pycache__/
+third_party/ndf_robot/**/*.pyc
 checkpoints/*
 data/*

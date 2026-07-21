@@ -10,6 +10,8 @@ object_placeholders=${6:-\{A\},\{B\}}
 point_cloud_num=${7:-1024}
 output_suffix=${8:-}
 
+python scripts/check_shoe_se3_dependencies.py --route baseline
+
 extra_args=()
 if [ -n "${goal_table}" ]; then
     goal_table=$(realpath "${goal_table}")
