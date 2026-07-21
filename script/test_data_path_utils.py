@@ -21,7 +21,7 @@ def test_uses_project_paths_when_server_storage_is_missing(tmp_path):
 def test_uses_shared2_paths_when_server_storage_exists(tmp_path):
     repo_root = tmp_path / "repo"
     server_root = tmp_path / "shared2" / "sz"
-    server_root.mkdir(parents=True)
+    (server_root / "robotwin_data" / "data").mkdir(parents=True)
 
     paths = resolve_data_paths(
         repo_root=repo_root,
@@ -30,8 +30,8 @@ def test_uses_shared2_paths_when_server_storage_exists(tmp_path):
     )
 
     assert paths.mode == "server"
-    assert paths.raw_data_root == server_root / "RoboTwin_geo" / "data"
-    assert paths.dp3_data_root == server_root / "RoboTwin_geo" / "policy" / "DP3" / "data"
+    assert paths.raw_data_root == server_root / "robotwin_data" / "data"
+    assert paths.dp3_data_root == server_root / "robotwin_data" / "policy" / "DP3" / "data"
 
 
 def test_environment_can_override_resolved_data_roots(tmp_path):
