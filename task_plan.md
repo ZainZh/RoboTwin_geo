@@ -16,10 +16,22 @@
 - [complete] 10. 追踪鞋子推理 rollout 终止与成功率判定
 - [complete] 11. 将成功判定改为适配“持物到位但不松爪”的 placement 指标
 - [complete] 12. 添加回归测试并验证评估入口
+- [complete] 13. 审计评估产物是否足够恢复逐 episode 失败统计
+- [complete] 14. 明确可恢复字段、必须重跑字段与服务器检查命令
+- [complete] 15. 定义移除 shoe_id/资产 metadata 的无身份泄漏实验协议
+- [in_progress] 16. 统一 NDF/PCA 为 GeometryRelationEstimator 接口与预测数据结构
+- [pending] 17. 从成功演示末端 object_pointcloud_A/B 构建 reference bank
+- [pending] 18. 实现 observation-derived 纯几何 benchmark 与 held-out-shoe 划分
+- [pending] 19. 保留 simulator current pose，离线生成 observation-derived token zarr
+- [pending] 20. 训练 observation-goal DP3 并与 baseline/oracle/goal-table NDF 配对比较
+- [pending] 21. 由观测估计 current correction，移除 simulator object pose
 
 ## 约束
 - 将比较实验改为可从单一 `RoboTwin_geo` checkout 运行，不依赖本机其他源码仓库。
 - 保留用户及其他 AI 已有改动。
+- `shoe_id` 只允许用于数据集划分和评测分组，不得进入 estimator、token builder 或 policy。
+- estimator 输入不得包含 query 资产路径、`functional_matrix`、`orientation_point` 或预计算 per-shoe goal。
+- 训练/参考实例和 held-out 测试实例必须按鞋划分，避免通过 observation 最近邻隐式恢复实例身份。
 
 ## 错误记录
 | 错误 | 尝试 | 处理 |

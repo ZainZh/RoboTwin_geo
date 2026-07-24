@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 
 from incremental_objpc_zarr import append_episode_to_buffer, open_or_reset_replay_buffer
+from geometry_relation_estimator import create_estimator_from_spec
 from object_pointcloud_utils import (
     default_placeholder_order,
     extract_placeholder_point_cloud,
@@ -29,9 +30,11 @@ from process_data_se3_relation_hybrid import (
     should_keep_frame,
 )
 from se3_relation_token_utils import (
+    OBSERVATION_RELATION_ROUTES,
     RELATION_TOKEN_DIM,
     RELATION_TOKEN_KEY,
     SUPPORTED_RELATION_ROUTES,
+    build_se3_relation_token,
 )
 
 
@@ -47,6 +50,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("expert_data_num", type=int)
     parser.add_argument("--route", choices=COMPARISON_ROUTES, required=True)
     parser.add_argument("--goal_table", default="")
+    parser.add_argument("--geometry_estimator_spec", default="")
+    parser.add_argument("--geometry_device", default="")
     parser.add_argument("--object_placeholders", default="{A},{B}")
     parser.add_argument("--target_num_points", type=int, default=1024)
     parser.add_argument("--output_suffix", default="")
@@ -79,7 +84,17 @@ def main(argv=None) -> None:
         placeholders = default_placeholder_order(scene_info, first_episode)
     if "{A}" not in placeholders or "{B}" not in placeholders:
         raise ValueError("Placement comparison requires {A} (shoe) and {B} (ramp).")
-    goal_table = load_goal_table(args.goal_table, route)
+    geometry_estimator = None
+    if route in OBSERVATION_RELATION_ROUTES:
+        if not args.geometry_estimator_spec:
+            raise ValueError(f"--geometry_estimator_spec is required for route={route}")
+        geometry_estimator = create_estimator_from_spec(
+            args.geometry_estimator_spec,
+            device_override=args.geometry_device or None,
+        )
+        goal_table = None
+    else:
+        goal_table = load_goal_table(args.goal_table, route)
 
     replay_buffer, start_episode = open_or_reset_replay_buffer(save_dir)
     existing_meta = {}
@@ -118,6 +133,7 @@ def main(argv=None) -> None:
                 continue
 
             object_clouds = []
+            object_cloud_by_placeholder = {}
             for placeholder in placeholders:
                 target_extents, _ = parse_target_extents(scene_info, current_ep, placeholder)
                 object_pc, extract_meta = extract_placeholder_point_cloud(
@@ -133,6 +149,7 @@ def main(argv=None) -> None:
                     table_margin=float(args.table_margin),
                 )
                 object_clouds.append(object_pc)
+                object_cloud_by_placeholder[placeholder] = object_pc
                 local_modes[placeholder][str(extract_meta.get("mode", "unknown"))] += 1
                 centroid = valid_xyz_centroid(object_pc)
                 if centroid is not None:
@@ -148,13 +165,31 @@ def main(argv=None) -> None:
             actions.append(vector_all[frame_idx + 1].astype(np.float32))
             source_frame_indices.append(frame_idx)
             if route != "baseline":
-                relation_tokens.append(
-                    relation_token_for_frame(
-                        route=route,
-                        task_state=task_state,
-                        goal_table=goal_table,
+                if route in OBSERVATION_RELATION_ROUTES:
+                    prediction = geometry_estimator.estimate_goal(
+                        object_cloud_by_placeholder["{A}"],
+                        object_cloud_by_placeholder["{B}"],
                     )
-                )
+                    relation_tokens.append(
+                        build_se3_relation_token(
+                            object_pose_a=task_state["object_pose_A"],
+                            object_pose_b=task_state["object_pose_B"],
+                            goal_a_from_b=prediction.goal_t_a_from_b,
+                            phase_gate=float(
+                                np.asarray(task_state["relation_phase"]).reshape(-1)[0]
+                            ),
+                            solver_energy=prediction.solver_energy,
+                            confidence=prediction.confidence,
+                        )
+                    )
+                else:
+                    relation_tokens.append(
+                        relation_token_for_frame(
+                            route=route,
+                            task_state=task_state,
+                            goal_table=goal_table,
+                        )
+                    )
 
         if not point_clouds:
             raise RuntimeError(
@@ -193,6 +228,11 @@ def main(argv=None) -> None:
             "relation_token_dim": RELATION_TOKEN_DIM if route != "baseline" else 0,
             "relation_token_schema": "translation3_rotation6d_energy_valid",
             "goal_table": str(Path(args.goal_table).resolve()) if args.goal_table else None,
+            "geometry_estimator_spec": (
+                str(Path(args.geometry_estimator_spec).resolve())
+                if args.geometry_estimator_spec
+                else None
+            ),
             "object_placeholders": placeholders,
             "target_num_points": int(args.target_num_points),
             "episodes": episode_stats,

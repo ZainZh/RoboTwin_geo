@@ -25,7 +25,7 @@ from object_pointcloud_utils import (
 from se3_relation_token_utils import (
     RELATION_TOKEN_DIM,
     RELATION_TOKEN_KEY,
-    SUPPORTED_RELATION_ROUTES,
+    TABLE_RELATION_ROUTES,
     build_relation_token_from_task_state,
 )
 
@@ -84,7 +84,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("task_name")
     parser.add_argument("task_config")
     parser.add_argument("expert_data_num", type=int)
-    parser.add_argument("--route", choices=SUPPORTED_RELATION_ROUTES, required=True)
+    parser.add_argument("--route", choices=TABLE_RELATION_ROUTES, required=True)
     parser.add_argument("--goal_table", default="")
     parser.add_argument("--object_placeholders", default="{A},{B}")
     parser.add_argument("--target_num_points", type=int, default=1024)

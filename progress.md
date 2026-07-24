@@ -15,3 +15,10 @@
 - 验证完成：RoboTwin 环境 23 tests、1-episode baseline zarr、真实 checkpoint CPU forward、NDF validator smoke、shell/Python syntax 全部通过。
 - 开始修复推理成功率恒为 0：审计 rollout 终止条件与必须松爪的旧成功判定。
 - 已将鞋任务成功标准改为持物也可满足的完整功能位姿对齐，并用纯 NumPy 回归测试验证；16 tests、py_compile、diff check 通过。
+- 开始审计已有 100 次评估产物能否支持逐 seed/鞋型/姿态误差与配对统计。
+- 审计完成：现有 `_result.txt` 只含聚合成功率，视频不含结构化种子/姿态元数据；完整失败分析需加 logger 后重跑评估，但无需重训。
+- 2026-07-23：定义去除 `shoe_id` 的无身份泄漏协议；明确 ID 只用于 evaluator 分组，query metadata/资产路径禁止进入 estimator，并要求 held-out-shoe reference split。
+- 已将 GeometryRelationEstimator、演示 reference bank、纯几何 benchmark、observation token、DP3 对照和最终移除 simulator pose 追加为后续阶段。
+- 开始实现无 ID 第一阶段：统一 estimator API、成功演示 reference bank 和 observation-only 几何 benchmark；DP3 接入将在几何达标后进行。
+- 已确认现有 NDF validator 的 query 路径仍依赖完整资产 mesh、functional/toe metadata，不能通过替换 `shoe_id` 参数实现真正 observation-only；开始拆分 estimator 与 evaluator。
+- 决定统一 prediction 以 observation-only `correction_T_world` 为主；simulator pose 仅在 estimator 外部适配到旧 relation token，避免要求真实点云具有 actor-local 坐标系。

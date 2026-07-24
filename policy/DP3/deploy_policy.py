@@ -45,11 +45,14 @@ from dp3_policy import *
 from object_pointcloud_utils import merge_object_point_clouds, parse_placeholder_list
 from pointwise_context_utils import build_context_point_cloud
 from se3_relation_token_utils import (
+    OBSERVATION_RELATION_ROUTES,
     RELATION_TOKEN_DIM,
     RELATION_TOKEN_KEY,
     SUPPORTED_RELATION_ROUTES,
     build_relation_token_from_task_state,
+    build_se3_relation_token,
 )
+from geometry_relation_estimator import create_estimator_from_spec
 
 
 def placeholder_feature_key(placeholder: str) -> str:
@@ -359,11 +362,35 @@ def encode_obs(observation, model):  # Post-Process Observation
                 "SE(3) relation eval requires task_state pose metadata from "
                 "place_shoe_rotating_block.get_obs()."
             )
-        obs[RELATION_TOKEN_KEY] = build_relation_token_from_task_state(
-            route=str(getattr(model, "se3_relation_route", "oracle")),
-            task_state=task_state,
-            goal_table=getattr(model, "se3_relation_goal_table", None),
-        ).astype(np.float32)
+        relation_route = str(getattr(model, "se3_relation_route", "oracle"))
+        if relation_route in OBSERVATION_RELATION_ROUTES:
+            pointcloud_a = object_pointcloud.get("{A}")
+            pointcloud_b = object_pointcloud.get("{B}")
+            if pointcloud_a is None or pointcloud_b is None:
+                raise RuntimeError(
+                    "Observation-derived SE(3) goal requires separated "
+                    "object_pointcloud/{A} and object_pointcloud/{B}."
+                )
+            prediction = model.se3_geometry_estimator.estimate_goal(
+                pointcloud_a, pointcloud_b
+            )
+            obs[RELATION_TOKEN_KEY] = build_se3_relation_token(
+                object_pose_a=task_state["object_pose_A"],
+                object_pose_b=task_state["object_pose_B"],
+                goal_a_from_b=prediction.goal_t_a_from_b,
+                phase_gate=float(
+                    np.asarray(task_state["relation_phase"]).reshape(-1)[0]
+                ),
+                solver_energy=prediction.solver_energy,
+                confidence=prediction.confidence,
+            ).astype(np.float32)
+        else:
+            obs[RELATION_TOKEN_KEY] = build_relation_token_from_task_state(
+                route=relation_route,
+                task_state=task_state,
+                goal_table=getattr(model, "se3_relation_goal_table", None),
+            ).astype(np.float32)
+
 
     if use_ndf_pointwise:
         _, compute_ndf_interact_pointwise_cloud, compute_ndf_relation_pointwise_cloud, compute_ndf_pointwise_cloud, _ = get_ndf_utils()
@@ -675,13 +702,28 @@ def get_model(usr_args):
         )
     se3_relation_goal_table_path = str(usr_args.get("se3_relation_goal_table", "") or "")
     se3_relation_goal_table = None
-    if use_se3_relation_token and se3_relation_route != "oracle":
+    if (
+        use_se3_relation_token
+        and se3_relation_route not in OBSERVATION_RELATION_ROUTES
+        and se3_relation_route != "oracle"
+    ):
         if not se3_relation_goal_table_path:
             raise ValueError(
                 f"se3_relation_goal_table is required for route={se3_relation_route}"
             )
         with open(se3_relation_goal_table_path, "r", encoding="utf-8") as handle:
             se3_relation_goal_table = json.load(handle)
+    se3_geometry_estimator = None
+    if use_se3_relation_token and se3_relation_route in OBSERVATION_RELATION_ROUTES:
+        geometry_spec_path = str(usr_args.get("se3_geometry_estimator_spec", "") or "")
+        if not geometry_spec_path:
+            raise ValueError(
+                f"se3_geometry_estimator_spec is required for route={se3_relation_route}"
+            )
+        se3_geometry_estimator = create_estimator_from_spec(
+            geometry_spec_path,
+            device_override=str(usr_args.get("se3_geometry_device", ndf_device)),
+        )
     semantic_point_num = int(usr_args.get("semantic_point_num", 128))
     semantic_input_color_mode = str(usr_args.get("semantic_input_color_mode", "debug_placeholder"))
     semantic_forward_mode = str(usr_args.get("semantic_forward_mode", "reference"))
@@ -887,6 +929,7 @@ def get_model(usr_args):
     DP3_Model.use_se3_relation_token = use_se3_relation_token
     DP3_Model.se3_relation_route = se3_relation_route
     DP3_Model.se3_relation_goal_table = se3_relation_goal_table
+    DP3_Model.se3_geometry_estimator = se3_geometry_estimator
     DP3_Model.use_semantic_pointwise = use_semantic_pointwise
     DP3_Model.use_semantic_pointwise_hybrid = use_semantic_pointwise_hybrid
     DP3_Model.use_utonia_pointwise = use_utonia_pointwise

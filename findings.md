@@ -69,3 +69,23 @@
 - 新指标定义为 geometric placement alignment：功能点 XYZ 分量误差分别小于 5cm/3cm/4cm，四元数绝对内积 >0.98，不要求松爪。
 - 新增 Z 约束是为了避免仅删除 gripper 条件后，将鞋在目标正上方经过误判为成功。
 - 位姿指标抽成纯 NumPy `envs/placement_metrics.py`，覆盖到位、悬空、错误 XY、错误旋转和四元数符号等价测试；共 16 个相关测试通过。
+
+## 现有评估产物可恢复性（2026-07-23）
+- `script/eval_policy.py` 当前每次运行只持久化 `_result.txt`（时间、instruction type、一个聚合成功率）以及可选 `episodeN.mp4`。
+- `suc_test_seed_list` 虽在内存中构造，但从未写盘；`episodeN` 是第 N 个被 expert-check 接受的评估 episode，不保证等于 `evaluation_seed=100000+N`。
+- 当前未保存逐 episode success、shoe_id、ramp yaw、终点/最佳 XYZ 与旋转误差、flip、solver energy/confidence。因此仅凭 `_result.txt` 无法做按鞋型失败分析或 McNemar 配对检验。
+- 如果服务器曾用 `tee` 保存完整 stdout，可从 `Success!/Fail!` 与 `current seed` 恢复逐 episode seed+success；goal table 可补 route 对应的 energy/confidence。但仍无法可靠恢复 shoe_id、yaw 和数值位姿误差，视频只能做人工定性标注。
+- 结论：现有结果足够保留 60/91/78/86 聚合结论，但完整失败统计需要在加入结构化逐 episode logger 后重新评估；不需要重新训练。
+
+## 无 shoe_id 的下一阶段协议（2026-07-23）
+- 当前 comparison 的任务目标并非从 50 条机器人演示提取：参考鞋目标由资产 `functional_matrix` 与固定 ramp functional frame 构造；NDF 再为每个 query shoe 离线优化目标并按 `shoe_id` 写入 goal table。
+- 新阶段应把成功演示末端的分离点云对作为任务关系 reference；simulator/functional metadata 只能在 benchmark evaluator 中生成真值，不能进入 estimator。
+- 推荐 estimator 主接口只接收 reference 点云关系与 query `object_pointcloud_A/B`，输出目标或 correction SE(3)、energy、confidence、flip probability；不得接收 shoe ID、资产路径或 query metadata。
+- 仅删除函数参数不足以证明泛化：如果 reference bank 包含 query 同一鞋实例，模型仍可通过几何外观做隐式实例检索。因此必须至少报告 seen-instance 与 held-out-shoe 两组结果。
+- 第一阶段保留 simulator current object poses，只替换 goal 来源，可以隔离验证 observation-derived goal；最后才从点云估计 current relation/correction。
+- 最小对照应包含：旧 per-ID NDF goal-table 上界、observation NDF seen-instance、observation NDF held-out-shoe、observation PCA held-out-shoe、oracle。纯几何先报告平移/旋转/flip/confidence，再决定是否训练 DP3。
+- 现有 `validate_ndf_shoe_ramp_se3.py` 不能直接改成 observation 输入：它用 `shoe_id` 定位完整 mesh 和 metadata，query normalization、目标真值、toe axis 与 sole normal 都直接依赖资产标注；必须将无标注 estimator 与带标注 evaluator 分层。
+- 当前 HDF5 loader 已能读取分离的 `/object_pointcloud/{A}/{B}`，comparison 预处理也会优先使用这些 exact collected clouds；因此 reference/query observation 数据无需从合并点云反分割。
+- 本机仍是 50 个原始 pkl、9 个 HDF5；新的 reference/benchmark CLI 应发现现有 episode 而非假设 50 个 HDF5 全部存在，以便本机 smoke 与服务器完整数据共用。
+- 真实 observation 没有与 simulator actor-local frame 对齐的天然坐标系，因此 estimator 第一输出应为作用于当前鞋世界点云的 `correction_T_world`。在当前过渡阶段，由 estimator 外部使用 simulator `world_T_A/B` 将 correction 转成现有 `goal_T_A_from_B`；这样 current pose 仍保留为 sim GT，但不会泄漏进 estimator。
+- PCA observation baseline 可从成功 reference 点云对建立两个数据驱动局部 frame 的目标关系，并对 query 点云对输出 world correction；它的符号/对称歧义正好作为 NDF/PCA descriptor 后端必须改善的基线。

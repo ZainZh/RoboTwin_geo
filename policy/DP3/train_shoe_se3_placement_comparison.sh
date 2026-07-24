@@ -9,7 +9,7 @@ expert_data_num=${3}
 seed=${4}
 gpu_id=${5}
 route=${6:-baseline}
-goal_table=${7:-}
+route_artifact=${7:-}
 object_placeholders=${8:-\{A\},\{B\}}
 point_cloud_num=${9:-1024}
 batch_size=${10:-256}
@@ -25,7 +25,7 @@ max_val_steps=${19:-2}
 resume=${20:-true}
 
 dependency_route=baseline
-if [ "${route}" = "ndf_no_direction" ] || [ "${route}" = "ndf_direction" ]; then
+if [ "${route}" = "ndf_no_direction" ] || [ "${route}" = "ndf_direction" ] || [ "${route}" = "ndf_observation_goal" ]; then
     dependency_route=ndf
 fi
 python scripts/check_shoe_se3_dependencies.py --route "${dependency_route}" --training
@@ -45,7 +45,7 @@ zarr_dir="${ROBOTWIN_DP3_DATA_ROOT}/${task_name}-${task_config}-${expert_data_nu
 if [ ! -d "${zarr_dir}" ]; then
     bash process_data_shoe_se3_placement_comparison.sh \
         "${task_name}" "${task_config}" "${expert_data_num}" "${route}" \
-        "${goal_table}" "${object_placeholders}" "${point_cloud_num}" "${output_suffix}"
+        "${route_artifact}" "${object_placeholders}" "${point_cloud_num}" "${output_suffix}"
 fi
 
 dataset_overrides=()

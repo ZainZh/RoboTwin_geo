@@ -7,7 +7,9 @@ import numpy as np
 
 RELATION_TOKEN_KEY = "se3_relation_token_A_to_B"
 RELATION_TOKEN_DIM = 11
-SUPPORTED_RELATION_ROUTES = ("oracle", "ndf_no_direction", "ndf_direction")
+TABLE_RELATION_ROUTES = ("oracle", "ndf_no_direction", "ndf_direction")
+OBSERVATION_RELATION_ROUTES = ("ndf_observation_goal",)
+SUPPORTED_RELATION_ROUTES = TABLE_RELATION_ROUTES + OBSERVATION_RELATION_ROUTES
 
 
 def functional_goal_a_from_b(functional_a: np.ndarray, functional_b: np.ndarray) -> np.ndarray:
@@ -131,6 +133,11 @@ def resolve_relation_goal(
     route = str(route)
     if route not in SUPPORTED_RELATION_ROUTES:
         raise ValueError(f"unsupported relation route {route!r}; expected one of {SUPPORTED_RELATION_ROUTES}")
+    if route in OBSERVATION_RELATION_ROUTES:
+        raise ValueError(
+            f"route={route} must be resolved from object point clouds by "
+            "GeometryRelationEstimator, not from task_state or a goal table"
+        )
     if route == "oracle":
         value = task_state.get("goal_T_A_from_B_oracle")
         if value is None:
