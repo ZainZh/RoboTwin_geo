@@ -58,6 +58,37 @@ class TestSe3RelationDeploy(unittest.TestCase):
         self.assertEqual(encoded[RELATION_TOKEN_KEY].shape, (11,))
         self.assertEqual(float(encoded[RELATION_TOKEN_KEY][-1]), 1.0)
 
+    def test_zero_ablation_returns_exact_zero_without_running_estimator(self):
+        model = make_model()
+        model.se3_relation_route = "ndf_observation_goal"
+        model.se3_relation_token_ablation = "zero"
+        observation = make_observation()
+        observation.pop("task_state")
+        encoded = deploy_policy.encode_obs(observation, model)
+        np.testing.assert_array_equal(
+            encoded[RELATION_TOKEN_KEY], np.zeros((11,), dtype=np.float32)
+        )
+
+    def test_constant_ablation_uses_replacement_estimator(self):
+        class ConstantEstimator:
+            def estimate_goal(self, pointcloud_a, pointcloud_b):
+                goal = np.eye(4, dtype=np.float64)
+                goal[0, 3] = 0.02
+                return SimpleNamespace(
+                    goal_t_a_from_b=goal, solver_energy=0.0, confidence=1.0
+                )
+
+        model = make_model()
+        model.se3_relation_route = "ndf_observation_goal"
+        model.se3_relation_token_ablation = "constant_goal"
+        model.se3_geometry_estimator = ConstantEstimator()
+        encoded = deploy_policy.encode_obs(make_observation(), model)
+        self.assertEqual(float(encoded[RELATION_TOKEN_KEY][-1]), 1.0)
+        self.assertGreater(
+            float(np.linalg.norm(encoded[RELATION_TOKEN_KEY][:3])), 0.0
+        )
+
+
     def test_online_encoder_rejects_observation_without_task_state(self):
         observation = make_observation()
         observation.pop("task_state")

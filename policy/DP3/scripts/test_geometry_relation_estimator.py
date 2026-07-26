@@ -16,6 +16,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from geometry_relation_estimator import (  # noqa: E402
+    ConstantGoalEstimator,
     GeometryRelationEstimator,
     GeometryRelationPrediction,
     OBSERVATION_RELATION_ROUTES,
@@ -61,7 +62,10 @@ class TestGeometryRelationEstimator(unittest.TestCase):
             list(parameters),
             ["self", "object_pointcloud_a", "object_pointcloud_b"],
         )
-        self.assertEqual(OBSERVATION_RELATION_ROUTES, ("ndf_observation_goal",))
+        self.assertEqual(
+            OBSERVATION_RELATION_ROUTES,
+            ("ndf_observation_goal", "constant_goal"),
+        )
 
     def test_invariant_extras_ignore_world_rigid_transform(self):
         cloud_a = _cloud(1)
@@ -94,6 +98,19 @@ class TestGeometryRelationEstimator(unittest.TestCase):
         output = model(torch.zeros((2, 12)))
         rotation = rotation_6d_to_matrix(output[:, 3:9]).detach().numpy()
         np.testing.assert_allclose(rotation, np.repeat(np.eye(3)[None], 2, axis=0))
+
+    def test_constant_goal_ignores_both_point_clouds(self):
+        goal = np.eye(4, dtype=np.float64)
+        goal[:3, 3] = [0.01, -0.02, 0.03]
+        estimator = ConstantGoalEstimator(goal)
+        first = estimator.estimate_goal(_cloud(1), _cloud(2))
+        second = estimator.estimate_goal(_cloud(3), _cloud(4))
+        np.testing.assert_allclose(first.goal_t_a_from_b, goal)
+        np.testing.assert_allclose(second.goal_t_a_from_b, goal)
+        self.assertEqual(
+            first.diagnostics["feature_source"], "constant_training_mean"
+        )
+
 
     def test_prediction_validates_goal(self):
         prediction = GeometryRelationPrediction(goal_t_a_from_b=np.eye(4))

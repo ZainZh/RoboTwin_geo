@@ -9,18 +9,20 @@ expert_data_num=${4}
 seed=${5}
 gpu_id=${6}
 route=${7:-baseline}
-# Legacy NDF routes consume a goal-table JSON.  ndf_observation_goal consumes
+# Legacy NDF routes consume a goal-table JSON. Estimator-backed routes consume
 # a GeometryRelationEstimator spec JSON in the same positional slot.
 route_artifact=${8:-}
 object_placeholders=${9:-\{A\},\{B\}}
 checkpoint_num=${10:-3000}
 point_cloud_num=${11:-1024}
 test_num=${12:-100}
+token_ablation=${13:-none}
+ablation_estimator_spec=${14:-}
 
 dependency_route=baseline
 if [ "${route}" = "ndf_no_direction" ] \
     || [ "${route}" = "ndf_direction" ] \
-    || [ "${route}" = "ndf_observation_goal" ]; then
+    || { [ "${route}" = "ndf_observation_goal" ] && [ "${token_ablation}" = "none" ]; }; then
     dependency_route=ndf
 fi
 python scripts/check_shoe_se3_dependencies.py --route "${dependency_route}" --training
@@ -42,12 +44,18 @@ if [ "${route}" != "baseline" ]; then
     route_overrides+=(--se3_relation_route "${route}")
     if [ -n "${route_artifact}" ]; then
         route_artifact=$(realpath "${route_artifact}")
-        if [ "${route}" = "ndf_observation_goal" ]; then
+        if [ "${route}" = "ndf_observation_goal" ] || [ "${route}" = "constant_goal" ]; then
             route_overrides+=(--se3_geometry_estimator_spec "${route_artifact}")
         else
             route_overrides+=(--se3_relation_goal_table "${route_artifact}")
         fi
     fi
+fi
+
+route_overrides+=(--se3_relation_token_ablation "${token_ablation}")
+if [ -n "${ablation_estimator_spec}" ]; then
+    ablation_estimator_spec=$(realpath "${ablation_estimator_spec}")
+    route_overrides+=(--se3_ablation_estimator_spec "${ablation_estimator_spec}")
 fi
 
 export CUDA_VISIBLE_DEVICES=${gpu_id}

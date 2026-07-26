@@ -8,7 +8,7 @@ import numpy as np
 RELATION_TOKEN_KEY = "se3_relation_token_A_to_B"
 RELATION_TOKEN_DIM = 11
 TABLE_RELATION_ROUTES = ("oracle", "ndf_no_direction", "ndf_direction")
-OBSERVATION_RELATION_ROUTES = ("ndf_observation_goal",)
+OBSERVATION_RELATION_ROUTES = ("ndf_observation_goal", "constant_goal")
 SUPPORTED_RELATION_ROUTES = TABLE_RELATION_ROUTES + OBSERVATION_RELATION_ROUTES
 
 

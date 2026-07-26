@@ -49,10 +49,12 @@ from se3_relation_token_utils import (
     RELATION_TOKEN_DIM,
     RELATION_TOKEN_KEY,
     SUPPORTED_RELATION_ROUTES,
-    build_relation_token_from_task_state,
-    build_se3_relation_token,
 )
 from geometry_relation_estimator import create_estimator_from_spec
+from se3_relation_deploy_utils import (
+    SUPPORTED_TOKEN_ABLATIONS,
+    build_deploy_relation_token,
+)
 
 
 def placeholder_feature_key(placeholder: str) -> str:
@@ -356,41 +358,9 @@ def encode_obs(observation, model):  # Post-Process Observation
     obs['point_cloud'] = point_cloud
 
     if use_se3_relation_token:
-        task_state = observation.get("task_state")
-        if not isinstance(task_state, dict):
-            raise RuntimeError(
-                "SE(3) relation eval requires task_state pose metadata from "
-                "place_shoe_rotating_block.get_obs()."
-            )
-        relation_route = str(getattr(model, "se3_relation_route", "oracle"))
-        if relation_route in OBSERVATION_RELATION_ROUTES:
-            pointcloud_a = object_pointcloud.get("{A}")
-            pointcloud_b = object_pointcloud.get("{B}")
-            if pointcloud_a is None or pointcloud_b is None:
-                raise RuntimeError(
-                    "Observation-derived SE(3) goal requires separated "
-                    "object_pointcloud/{A} and object_pointcloud/{B}."
-                )
-            prediction = model.se3_geometry_estimator.estimate_goal(
-                pointcloud_a, pointcloud_b
-            )
-            obs[RELATION_TOKEN_KEY] = build_se3_relation_token(
-                object_pose_a=task_state["object_pose_A"],
-                object_pose_b=task_state["object_pose_B"],
-                goal_a_from_b=prediction.goal_t_a_from_b,
-                phase_gate=float(
-                    np.asarray(task_state["relation_phase"]).reshape(-1)[0]
-                ),
-                solver_energy=prediction.solver_energy,
-                confidence=prediction.confidence,
-            ).astype(np.float32)
-        else:
-            obs[RELATION_TOKEN_KEY] = build_relation_token_from_task_state(
-                route=relation_route,
-                task_state=task_state,
-                goal_table=getattr(model, "se3_relation_goal_table", None),
-            ).astype(np.float32)
-
+        obs[RELATION_TOKEN_KEY] = build_deploy_relation_token(
+            observation=observation, object_pointcloud=object_pointcloud, model=model
+        )
 
     if use_ndf_pointwise:
         _, compute_ndf_interact_pointwise_cloud, compute_ndf_relation_pointwise_cloud, compute_ndf_pointwise_cloud, _ = get_ndf_utils()
@@ -713,13 +683,38 @@ def get_model(usr_args):
             )
         with open(se3_relation_goal_table_path, "r", encoding="utf-8") as handle:
             se3_relation_goal_table = json.load(handle)
+    se3_relation_token_ablation = str(
+        usr_args.get("se3_relation_token_ablation", "none")
+    ).lower()
+    if se3_relation_token_ablation not in SUPPORTED_TOKEN_ABLATIONS:
+        raise ValueError(
+            f"Unsupported SE(3) token ablation {se3_relation_token_ablation!r}; "
+            f"expected one of {SUPPORTED_TOKEN_ABLATIONS}"
+        )
     se3_geometry_estimator = None
-    if use_se3_relation_token and se3_relation_route in OBSERVATION_RELATION_ROUTES:
-        geometry_spec_path = str(usr_args.get("se3_geometry_estimator_spec", "") or "")
-        if not geometry_spec_path:
-            raise ValueError(
-                f"se3_geometry_estimator_spec is required for route={se3_relation_route}"
+    if (
+        use_se3_relation_token
+        and se3_relation_route in OBSERVATION_RELATION_ROUTES
+        and se3_relation_token_ablation != "zero"
+    ):
+        if se3_relation_token_ablation == "constant_goal":
+            geometry_spec_path = str(
+                usr_args.get("se3_ablation_estimator_spec", "") or ""
             )
+            if not geometry_spec_path:
+                raise ValueError(
+                    "se3_ablation_estimator_spec is required for "
+                    "se3_relation_token_ablation=constant_goal"
+                )
+        else:
+            geometry_spec_path = str(
+                usr_args.get("se3_geometry_estimator_spec", "") or ""
+            )
+            if not geometry_spec_path:
+                raise ValueError(
+                    f"se3_geometry_estimator_spec is required for "
+                    f"route={se3_relation_route}"
+                )
         se3_geometry_estimator = create_estimator_from_spec(
             geometry_spec_path,
             device_override=str(usr_args.get("se3_geometry_device", ndf_device)),
@@ -930,6 +925,7 @@ def get_model(usr_args):
     DP3_Model.se3_relation_route = se3_relation_route
     DP3_Model.se3_relation_goal_table = se3_relation_goal_table
     DP3_Model.se3_geometry_estimator = se3_geometry_estimator
+    DP3_Model.se3_relation_token_ablation = se3_relation_token_ablation
     DP3_Model.use_semantic_pointwise = use_semantic_pointwise
     DP3_Model.use_semantic_pointwise_hybrid = use_semantic_pointwise_hybrid
     DP3_Model.use_utonia_pointwise = use_utonia_pointwise

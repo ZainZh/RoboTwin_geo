@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Observation-derived object relation estimator.
-
-The estimator API accepts only the two observed point clouds.  Simulator
-poses remain outside this module and are used later solely to convert the
-predicted actor-local goal relation into the DP3 correction token.
-"""
+"""ID-free geometry relation estimators for shoe placement."""
 
 from __future__ import annotations
 
@@ -15,15 +10,11 @@ from pathlib import Path
 
 import numpy as np
 
-from ndf_goal_regressor import (
-    FrozenNdfFeatureConfig,
-    FrozenNdfGeometryEncoder,
-    GoalRelationRegressor,
-    target_to_goal_matrix,
-)
 
 
-OBSERVATION_RELATION_ROUTES = ("ndf_observation_goal",)
+ESTIMATOR_RELATION_ROUTES = ("ndf_observation_goal", "constant_goal")
+# Backward-compatible name used by existing preprocessing/deployment code.
+OBSERVATION_RELATION_ROUTES = ESTIMATOR_RELATION_ROUTES
 
 
 @dataclass(frozen=True)
@@ -47,7 +38,7 @@ class GeometryRelationPrediction:
 
 
 class GeometryRelationEstimator(ABC):
-    """ID-free relation estimator interface."""
+    """Estimator API deliberately excludes object IDs and simulator poses."""
 
     @abstractmethod
     def estimate_goal(
@@ -56,6 +47,27 @@ class GeometryRelationEstimator(ABC):
         object_pointcloud_b: np.ndarray,
     ) -> GeometryRelationPrediction:
         raise NotImplementedError
+
+
+class ConstantGoalEstimator(GeometryRelationEstimator):
+    """Point-cloud-free training-set mean used as a shortcut control."""
+
+    def __init__(self, goal_t_a_from_b: np.ndarray) -> None:
+        self.goal_t_a_from_b = np.asarray(
+            goal_t_a_from_b, dtype=np.float64
+        ).reshape(4, 4)
+        GeometryRelationPrediction(goal_t_a_from_b=self.goal_t_a_from_b)
+
+    def estimate_goal(
+        self,
+        object_pointcloud_a: np.ndarray,
+        object_pointcloud_b: np.ndarray,
+    ) -> GeometryRelationPrediction:
+        # Point clouds are intentionally ignored by this negative control.
+        return GeometryRelationPrediction(
+            goal_t_a_from_b=self.goal_t_a_from_b.copy(),
+            diagnostics={"feature_source": "constant_training_mean"},
+        )
 
 
 def _resolve_path(value: str, *, relative_to: Path) -> Path:
@@ -76,12 +88,16 @@ class NdfGoalRegressionEstimator(GeometryRelationEstimator):
         device: str = "cuda:0",
     ) -> None:
         import torch
+        from ndf_goal_regressor import (
+            FrozenNdfFeatureConfig,
+            FrozenNdfGeometryEncoder,
+            GoalRelationRegressor,
+        )
 
         requested = torch.device(device)
         if requested.type == "cuda" and not torch.cuda.is_available():
             requested = torch.device("cpu")
         self.device = requested
-
         try:
             checkpoint = torch.load(
                 regressor_checkpoint, map_location=self.device, weights_only=False
@@ -90,6 +106,7 @@ class NdfGoalRegressionEstimator(GeometryRelationEstimator):
             checkpoint = torch.load(regressor_checkpoint, map_location=self.device)
         if not isinstance(checkpoint, dict):
             raise ValueError("geometry regressor checkpoint must be a dictionary")
+
         feature_config = FrozenNdfFeatureConfig(
             latent_dim=int(checkpoint.get("latent_dim", 256)),
             target_num_points=int(checkpoint.get("target_num_points", 1024)),
@@ -99,7 +116,9 @@ class NdfGoalRegressionEstimator(GeometryRelationEstimator):
             device=self.device,
             config=feature_config,
         )
-        hidden_dims = tuple(int(value) for value in checkpoint.get("hidden_dims", (256, 128)))
+        hidden_dims = tuple(
+            int(value) for value in checkpoint.get("hidden_dims", (256, 128))
+        )
         dropout = float(checkpoint.get("dropout", 0.05))
         self.regressor = GoalRelationRegressor(
             input_dim=int(checkpoint.get("input_dim", feature_config.output_dim)),
@@ -132,23 +151,17 @@ class NdfGoalRegressionEstimator(GeometryRelationEstimator):
     ) -> GeometryRelationPrediction:
         import torch
 
+        from ndf_goal_regressor import target_to_goal_matrix
         feature = self.encoder.encode(object_pointcloud_a, object_pointcloud_b)
         feature = (feature - self.feature_mean) / self.feature_std
         with torch.no_grad():
             output = self.regressor(feature.unsqueeze(0))[0].detach().cpu().numpy()
-        goal = target_to_goal_matrix(output)
-        diagnostics = {
-            "feature_source": "ndf_vector_norm_plus_invariant_geometry",
-            "regressor_validation": self.validation_metrics,
-        }
         return GeometryRelationPrediction(
-            goal_t_a_from_b=goal,
-            # This regression route has no iterative solver.  Keep energy zero
-            # and confidence one so the DP3 token is not silently attenuated.
-            solver_energy=0.0,
-            confidence=1.0,
-            flip_probability=0.0,
-            diagnostics=diagnostics,
+            goal_t_a_from_b=target_to_goal_matrix(output),
+            diagnostics={
+                "feature_source": "ndf_vector_norm_plus_invariant_geometry",
+                "regressor_validation": self.validation_metrics,
+            },
         )
 
 
@@ -167,10 +180,15 @@ def create_estimator_from_spec(
 ) -> GeometryRelationEstimator:
     spec, spec_path = load_estimator_spec(path)
     estimator_type = str(spec.get("type", ""))
+    if estimator_type == "constant_goal":
+        goal = spec.get("goal_T_A_from_B")
+        if goal is None:
+            raise ValueError("constant-goal spec requires goal_T_A_from_B")
+        return ConstantGoalEstimator(np.asarray(goal, dtype=np.float64))
     if estimator_type != "ndf_goal_regressor":
         raise ValueError(
             "unsupported geometry estimator type "
-            f"{estimator_type!r}; expected 'ndf_goal_regressor'"
+            f"{estimator_type!r}; expected 'ndf_goal_regressor' or 'constant_goal'"
         )
     regressor_value = spec.get("regressor_checkpoint")
     ndf_value = spec.get("ndf_checkpoint")
@@ -182,12 +200,16 @@ def create_estimator_from_spec(
         regressor_checkpoint=str(
             _resolve_path(str(regressor_value), relative_to=spec_path.parent)
         ),
-        ndf_checkpoint=str(_resolve_path(str(ndf_value), relative_to=spec_path.parent)),
+        ndf_checkpoint=str(
+            _resolve_path(str(ndf_value), relative_to=spec_path.parent)
+        ),
         device=str(device_override or spec.get("device", "cuda:0")),
     )
 
 
 __all__ = (
+    "ConstantGoalEstimator",
+    "ESTIMATOR_RELATION_ROUTES",
     "GeometryRelationEstimator",
     "GeometryRelationPrediction",
     "NdfGoalRegressionEstimator",
