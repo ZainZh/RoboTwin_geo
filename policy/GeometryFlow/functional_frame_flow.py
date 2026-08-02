@@ -85,6 +85,39 @@ def endpoint_correct_flow(
     return output.astype(np.float32)
 
 
+def rotation_endpoint_correct_flow(
+    initial_anchors: np.ndarray,
+    predicted_flow: np.ndarray,
+    goal_transform: np.ndarray,
+) -> np.ndarray:
+    """Correct only endpoint rotation while preserving every flow centroid.
+
+    This diagnostic separates correspondence-induced orientation error from
+    the translation component of transported flow.  The correction is applied
+    about each step's centroid, so PCA-predicted translational motion is not
+    changed.
+    """
+    anchors = np.asarray(initial_anchors, dtype=np.float64)
+    flow = np.asarray(predicted_flow, dtype=np.float64)
+    predicted_rotation = rigid_rotation(anchors, flow[:, -1])
+    correction = (
+        np.asarray(goal_transform, dtype=np.float64)[:3, :3]
+        @ predicted_rotation.T
+    )
+    correction_vector = Rotation.from_matrix(correction).as_rotvec()
+    output = np.empty_like(flow)
+    denominator = max(flow.shape[1] - 1, 1)
+    for step in range(flow.shape[1]):
+        fraction = float(step / denominator)
+        step_rotation = Rotation.from_rotvec(
+            correction_vector * fraction
+        ).as_matrix()
+        center = flow[:, step].mean(axis=0)
+        output[:, step] = (flow[:, step] - center) @ step_rotation.T + center
+    output[:, 0] = anchors
+    return output.astype(np.float32)
+
+
 class FunctionalPcaFlowEstimator:
     """Calibrate functional object and goal frames from training episodes."""
 

@@ -26,6 +26,7 @@ from .eef_frame_action import action_eef_to_world
 from .functional_frame_flow import (
     FunctionalPcaFlowEstimator,
     endpoint_correct_flow as oracle_endpoint_correct_flow,
+    rotation_endpoint_correct_flow as oracle_rotation_endpoint_correct_flow,
 )
 from .online_flow import OnlinePcaFlowTransporter
 from .ndf_adapter import NdfPointwiseAdapter
@@ -169,6 +170,7 @@ def get_model(usr_args):
         "pca",
         "ndf",
         "oracle_endpoint",
+        "oracle_rotation_endpoint",
         "grasp_relation_geometry",
     }:
         raise ValueError(f"unsupported geometry-flow representation {representation!r}")
@@ -572,12 +574,20 @@ def eval(TASK_ENV, model, observation):
         representation_cost = float(result.representation_cost)
         selection_margin = None
         grasp_relation_accepted = None
-        if model.flow_representation == "oracle_endpoint":
+        if model.flow_representation in {
+            "oracle_endpoint",
+            "oracle_rotation_endpoint",
+        }:
             shoe_pose = _pose_matrix(TASK_ENV.shoe.get_functional_point(0, "pose"))
             target_pose = _pose_matrix(
                 TASK_ENV.target_block.get_functional_point(0, "pose")
             )
-            model.predicted_flow = oracle_endpoint_correct_flow(
+            correction_function = (
+                oracle_endpoint_correct_flow
+                if model.flow_representation == "oracle_endpoint"
+                else oracle_rotation_endpoint_correct_flow
+            )
+            model.predicted_flow = correction_function(
                 result.initial_anchors,
                 model.predicted_flow,
                 target_pose @ np.linalg.inv(shoe_pose),

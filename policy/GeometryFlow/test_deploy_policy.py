@@ -11,6 +11,7 @@ from .deploy_policy import (
     gate_active_gripper_by_flow_progress,
     hold_active_gripper_closed,
     oracle_endpoint_correct_flow,
+    oracle_rotation_endpoint_correct_flow,
     reset_model,
     route_action_to_closed_gripper,
     temporal_ensemble_action,
@@ -239,6 +240,58 @@ class DeployPolicyTest(unittest.TestCase):
         expected = anchors @ goal[:3, :3].T + goal[:3, 3]
         np.testing.assert_allclose(corrected[:, 0], anchors, atol=1e-6)
         np.testing.assert_allclose(corrected[:, -1], expected, atol=1e-6)
+
+    def test_oracle_rotation_correction_preserves_translation_centroids(self):
+        generator = np.random.default_rng(11)
+        anchors = generator.normal(size=(16, 3))
+        anchor_center = anchors.mean(axis=0)
+        predicted_angle = np.deg2rad(20.0)
+        predicted_rotation = np.array(
+            [
+                [np.cos(predicted_angle), -np.sin(predicted_angle), 0.0],
+                [np.sin(predicted_angle), np.cos(predicted_angle), 0.0],
+                [0.0, 0.0, 1.0],
+            ]
+        )
+        flow_steps = []
+        for fraction in np.linspace(0.0, 1.0, 5):
+            step_angle = predicted_angle * fraction
+            step_rotation = np.array(
+                [
+                    [np.cos(step_angle), -np.sin(step_angle), 0.0],
+                    [np.sin(step_angle), np.cos(step_angle), 0.0],
+                    [0.0, 0.0, 1.0],
+                ]
+            )
+            translation = fraction * np.array([0.08, -0.03, 0.02])
+            flow_steps.append(
+                (anchors - anchor_center) @ step_rotation.T
+                + anchor_center
+                + translation
+            )
+        flow = np.stack(flow_steps, axis=1)
+
+        goal_angle = np.deg2rad(70.0)
+        goal = np.eye(4)
+        goal[:3, :3] = np.array(
+            [
+                [np.cos(goal_angle), -np.sin(goal_angle), 0.0],
+                [np.sin(goal_angle), np.cos(goal_angle), 0.0],
+                [0.0, 0.0, 1.0],
+            ]
+        )
+        goal[:3, 3] = [0.4, 0.3, -0.2]
+        corrected = oracle_rotation_endpoint_correct_flow(anchors, flow, goal)
+
+        np.testing.assert_allclose(corrected[:, 0], anchors, atol=1e-6)
+        np.testing.assert_allclose(
+            corrected.mean(axis=0), flow.mean(axis=0), atol=1e-6
+        )
+        expected_endpoint = (
+            (anchors - anchor_center) @ goal[:3, :3].T
+            + flow[:, -1].mean(axis=0)
+        )
+        np.testing.assert_allclose(corrected[:, -1], expected_endpoint, atol=1e-6)
 
     def test_flow_progress_gate_holds_then_releases_active_gripper(self):
         action = np.full(14, 0.25, dtype=np.float32)

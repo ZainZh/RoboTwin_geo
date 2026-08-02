@@ -18,6 +18,7 @@ from .train_task_flow_benchmark import (
 from .train_recovery_aware_flow import (
     ActiveActionNormalization,
     RecoveryAwareFlowPolicy,
+    flow_goal_rotvec,
 )
 
 
@@ -144,19 +145,26 @@ class RecoveryAwareFlowRuntime:
         if "active_normalization" not in payload or "model_config" not in payload:
             raise ValueError("checkpoint is not a recovery-aware flow policy")
         config = dict(payload["model_config"])
+        active_normalization = ActiveActionNormalization(
+            **payload["active_normalization"]
+        )
         self.model = RecoveryAwareFlowPolicy(
             condition=str(config["condition"]),
             flow_steps=int(config["flow_steps"]),
             horizon=int(config["horizon"]),
             hidden_dim=int(config.get("hidden_dim", 128)),
             explicit_flow_progress=bool(config.get("explicit_flow_progress", True)),
+            action_decoder=str(config.get("action_decoder", "coupled")),
+            rotation_parameterization=str(
+                config.get("rotation_parameterization", "direct")
+            ),
+            active_action_mean=active_normalization.mean,
+            active_action_std=active_normalization.std,
         ).to(self.device)
         self.model.load_state_dict(payload["model_state"])
         self.model.eval()
         self.normalization = Normalization(**payload["normalization"])
-        self.active_normalization = ActiveActionNormalization(
-            **payload["active_normalization"]
-        )
+        self.active_normalization = active_normalization
         self.observation_points = int(observation_points)
         self.flow_steps = int(config["flow_steps"])
         self.horizon = int(config["horizon"])
@@ -226,6 +234,9 @@ class RecoveryAwareFlowRuntime:
             "flow_progress": torch.tensor(
                 [[progress]], dtype=torch.float32, device=self.device
             ),
+            "flow_goal_rotvec": torch.from_numpy(
+                flow_goal_rotvec(flow, anchors)
+            )[None].to(self.device),
         }
         output = self.model(batch)
         active = output["active_action"].cpu().numpy()[0]

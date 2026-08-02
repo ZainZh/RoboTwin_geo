@@ -97,6 +97,8 @@ class OnlinePcaFlowTransporter:
         self,
         operated_point_cloud: np.ndarray,
         target_point_cloud: np.ndarray,
+        *,
+        target_frame: np.ndarray | None = None,
     ) -> OnlineFlowResult:
         operated_full = self._valid_xyzrgb(operated_point_cloud)
         operated_xyz = valid_xyz(operated_full)
@@ -115,7 +117,10 @@ class OnlinePcaFlowTransporter:
         operated[:, :3] = operated_indices_xyz
         target = self._sample_target(target_point_cloud)
         anchors = operated[: self.library["initial_anchors"].shape[1], :3].copy()
-        target_frame, _ = estimate_geometry_marker_frame(target)
+        if target_frame is None:
+            target_frame, _ = estimate_geometry_marker_frame(target)
+        else:
+            target_frame = np.asarray(target_frame, dtype=np.float32).reshape(4, 4)
 
         task_steps = int(self.library["episode_flow"].shape[2])
         dummy_flow = np.repeat(anchors[:, None, :], task_steps, axis=1)

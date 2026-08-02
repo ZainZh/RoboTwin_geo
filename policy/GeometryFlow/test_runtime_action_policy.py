@@ -84,6 +84,8 @@ class FlowActionRuntimeTest(unittest.TestCase):
                         "explicit_flow_progress": True,
                         "action_frame": "world",
                         "flow_context_mode": "full",
+                        "action_decoder": "coupled",
+                        "rotation_parameterization": "direct",
                     },
                     "normalization": normalization,
                     "active_normalization": {

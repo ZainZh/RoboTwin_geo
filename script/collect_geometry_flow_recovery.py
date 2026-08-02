@@ -63,6 +63,17 @@ def parser() -> argparse.ArgumentParser:
     )
     result.add_argument("--checkpoint", type=Path, required=True)
     result.add_argument("--library", type=Path, required=True)
+    result.add_argument(
+        "--representation",
+        choices=("pca", "grasp_relation_geometry"),
+        default="pca",
+    )
+    result.add_argument(
+        "--oracle-task-dataset",
+        type=Path,
+        default=Path("outputs/geometry_flow/task_flow_oracle_50_stride1_goal_labels.npz"),
+    )
+    result.add_argument("--grasp-fit-threshold-m2", type=float, default=2.5e-4)
     result.add_argument("--seed-file", type=Path)
     result.add_argument("--seed-start", type=int, default=0)
     result.add_argument("--seed-stop", type=int, default=1000)
@@ -79,6 +90,8 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--execute-steps", type=int, default=6)
     result.add_argument("--output", type=Path, required=True)
     result.add_argument("--device", default="cuda:0")
+    result.add_argument("--max-translation-delta-m", type=float, default=0.08)
+    result.add_argument("--max-rotation-delta-rad", type=float, default=0.5)
     result.add_argument(
         "--full-recording",
         action="store_true",
@@ -118,12 +131,19 @@ def main() -> None:
             "geometry_flow_checkpoint": str(args_cli.checkpoint),
             "geometry_flow_library": str(args_cli.library),
             "geometry_flow_train_shoes": args_cli.train_shoes,
+            "geometry_flow_representation": args_cli.representation,
+            "geometry_flow_oracle_task_dataset": str(args_cli.oracle_task_dataset),
+            "geometry_flow_grasp_fit_threshold_m2": float(
+                args_cli.grasp_fit_threshold_m2
+            ),
             "geometry_flow_device": args_cli.device,
             "geometry_flow_execute_steps": int(args_cli.execute_steps),
             "geometry_flow_route_to_closed_gripper": True,
             "geometry_flow_hold_active_gripper_closed": True,
-            "max_eef_translation_delta_m": 0.04,
-            "max_eef_rotation_delta_rad": 0.25,
+            "max_eef_translation_delta_m": float(
+                args_cli.max_translation_delta_m
+            ),
+            "max_eef_rotation_delta_rad": float(args_cli.max_rotation_delta_rad),
         }
     )
     task = class_decorator(args_cli.task_name)
@@ -206,6 +226,11 @@ def main() -> None:
         "schema_version": 1,
         "checkpoint": str(args_cli.checkpoint.resolve()),
         "library": str(args_cli.library.resolve()),
+        "representation": str(args_cli.representation),
+        "oracle_task_dataset": str(args_cli.oracle_task_dataset.resolve()),
+        "grasp_fit_threshold_m2": float(args_cli.grasp_fit_threshold_m2),
+        "max_translation_delta_m": float(args_cli.max_translation_delta_m),
+        "max_rotation_delta_rad": float(args_cli.max_rotation_delta_rad),
         "allowed_shoes": sorted(allowed),
         "requested_episodes": int(args_cli.episodes),
         "max_per_shoe": int(args_cli.max_per_shoe),
