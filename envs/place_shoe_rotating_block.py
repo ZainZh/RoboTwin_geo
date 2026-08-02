@@ -1,5 +1,8 @@
 from ._base_task import Base_Task
-from .placement_metrics import functional_pose_alignment_success
+from .placement_metrics import (
+    functional_pose_alignment_errors,
+    functional_pose_alignment_success,
+)
 from .utils import *
 import sapien
 import numpy as np
@@ -9,6 +12,8 @@ import transforms3d as t3d
 class place_shoe_rotating_block(Base_Task):
 
     def setup_demo(self, is_test=False, **kwags):
+        self._min_translation_error_norm_m = float("inf")
+        self._min_rotation_error_deg = float("inf")
         super()._init_task_env_(**kwags)
 
     def load_actors(self):
@@ -153,6 +158,21 @@ class place_shoe_rotating_block(Base_Task):
         shoe_pose = self.shoe.get_functional_point(0, "pose")
         target_pose = self.target_block.get_functional_point(0, "pose")
 
+        pose_errors = functional_pose_alignment_errors(
+            shoe_pose.p,
+            shoe_pose.q,
+            target_pose.p,
+            target_pose.q,
+        )
+        self._min_translation_error_norm_m = min(
+            float(getattr(self, "_min_translation_error_norm_m", float("inf"))),
+            float(pose_errors["translation_error_norm_m"]),
+        )
+        self._min_rotation_error_deg = min(
+            float(getattr(self, "_min_rotation_error_deg", float("inf"))),
+            float(pose_errors["rotation_error_deg"]),
+        )
+
         # This benchmark evaluates geometric placement alignment. The learned
         # placement-only policy may accurately move the shoe to the ramp while
         # keeping the grasp closed, so gripper release is deliberately not part
@@ -166,3 +186,27 @@ class place_shoe_rotating_block(Base_Task):
             position_tolerance=(0.05, 0.03, 0.04),
             min_quaternion_alignment=0.98,
         )
+
+    def get_evaluation_metrics(self):
+        """Return continuous diagnostics without changing the task success rule."""
+        shoe_pose = self.shoe.get_functional_point(0, "pose")
+        target_pose = self.target_block.get_functional_point(0, "pose")
+        metrics = functional_pose_alignment_errors(
+            shoe_pose.p,
+            shoe_pose.q,
+            target_pose.p,
+            target_pose.q,
+        )
+        metrics.update(
+            {
+                "shoe_id": int(self.shoe_id),
+                "policy_steps": int(getattr(self, "take_action_cnt", 0)),
+                "min_translation_error_norm_m": float(
+                    getattr(self, "_min_translation_error_norm_m", float("inf"))
+                ),
+                "min_rotation_error_deg": float(
+                    getattr(self, "_min_rotation_error_deg", float("inf"))
+                ),
+            }
+        )
+        return metrics
