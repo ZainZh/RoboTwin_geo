@@ -29,7 +29,7 @@ def reference_flows(raw_dir: Path, episode_count: int) -> np.ndarray:
 
 def merge_payloads(
     nominal: dict[str, np.ndarray],
-    recoveries: list[tuple[dict[str, np.ndarray], np.ndarray]],
+    recoveries: list[tuple[dict[str, np.ndarray], np.ndarray, dict]],
 ) -> dict[str, np.ndarray]:
     result = {key: value.copy() for key, value in nominal.items()}
     nominal_samples = int(len(nominal["state"]))
@@ -41,10 +41,12 @@ def merge_payloads(
     sample_parts = {key: [nominal[key]] for key in sample_keys}
     episode_parts = {key: [nominal[key]] for key in EPISODE_KEYS}
     recovery_flags = [np.zeros(nominal_samples, dtype=np.float32)]
+    recovery_policy_actions = [np.zeros(nominal_samples, dtype=np.int64)]
+    recovery_source_seeds = [np.full(nominal_samples, -1, dtype=np.int64)]
     episode_offset = int(len(nominal["episode_flow"]))
     episode_id_offset = int(np.max(nominal["episode_id"])) + 1
 
-    for recovery, predicted_flow in recoveries:
+    for recovery, predicted_flow, manifest in recoveries:
         recovery_samples = int(len(recovery["state"]))
         recovery_episodes = int(len(recovery["episode_flow"]))
         if len(predicted_flow) != recovery_episodes:
@@ -60,6 +62,23 @@ def merge_payloads(
         episode_parts["episode_pose"].append(recovery["episode_pose"])
         episode_parts["episode_shoe_id"].append(recovery["episode_shoe_id"])
         recovery_flags.append(np.ones(recovery_samples, dtype=np.float32))
+        records = manifest.get("records", [])
+        if len(records) != recovery_episodes:
+            raise ValueError("recovery manifest record count does not match episodes")
+        record_by_episode = {int(record["episode"]): record for record in records}
+        if set(record_by_episode) != set(range(recovery_episodes)):
+            raise ValueError("recovery manifest must contain every episode exactly once")
+        local_episode = np.asarray(recovery["episode_index"], dtype=np.int64)
+        depth_by_episode = np.asarray(
+            [record_by_episode[index]["policy_actions"] for index in range(recovery_episodes)],
+            dtype=np.int64,
+        )
+        seed_by_episode = np.asarray(
+            [record_by_episode[index]["seed"] for index in range(recovery_episodes)],
+            dtype=np.int64,
+        )
+        recovery_policy_actions.append(depth_by_episode[local_episode])
+        recovery_source_seeds.append(seed_by_episode[local_episode])
         episode_offset += recovery_episodes
         episode_id_offset += recovery_episodes
 
@@ -68,6 +87,8 @@ def merge_payloads(
     for key, parts in episode_parts.items():
         result[key] = np.concatenate(parts, axis=0)
     result["is_recovery_sample"] = np.concatenate(recovery_flags)
+    result["recovery_policy_actions"] = np.concatenate(recovery_policy_actions)
+    result["recovery_source_seed"] = np.concatenate(recovery_source_seeds)
     return result
 
 
@@ -96,13 +117,17 @@ def main() -> None:
     for dataset_path, raw_path in zip(args.recovery, args.recovery_raw):
         payload = load_npz(dataset_path)
         predicted = reference_flows(raw_path, len(payload["episode_flow"]))
-        recovery_pairs.append((payload, predicted))
+        manifest_path = raw_path / "recovery_manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        recovery_pairs.append((payload, predicted, manifest))
+        policy_actions = [int(record["policy_actions"]) for record in manifest["records"]]
         recovery_metadata.append(
             {
                 "dataset": str(dataset_path.resolve()),
                 "raw": str(raw_path.resolve()),
                 "episodes": int(len(payload["episode_flow"])),
                 "samples": int(len(payload["state"])),
+                "policy_actions": policy_actions,
             }
         )
     merged = merge_payloads(nominal, recovery_pairs)
@@ -116,7 +141,7 @@ def main() -> None:
     if not np.array_equal(indices[order], np.arange(len(nominal["episode_flow"]))):
         raise ValueError("nominal prediction does not cover every nominal episode")
     all_prediction = [nominal_prediction[order]]
-    all_prediction.extend(predicted for _, predicted in recovery_pairs)
+    all_prediction.extend(predicted for _, predicted, _ in recovery_pairs)
     all_prediction = np.concatenate(all_prediction, axis=0)
     args.prediction_output.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(

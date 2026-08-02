@@ -29,7 +29,7 @@ from .functional_frame_flow import (
 )
 from .online_flow import OnlinePcaFlowTransporter
 from .ndf_adapter import NdfPointwiseAdapter
-from .runtime_action_policy import FlowActionRuntime
+from .runtime_action_policy import load_flow_action_runtime
 from .train_task_flow_benchmark import geometric_flow_progress
 
 
@@ -189,7 +189,7 @@ def get_model(usr_args):
             device=device,
         )
     model = SimpleNamespace(
-        action_policy=FlowActionRuntime(checkpoint, device=device),
+        action_policy=load_flow_action_runtime(checkpoint, device=device),
         flow_transporter=OnlinePcaFlowTransporter(
             library,
             train_shoe_ids=_int_tuple(
@@ -307,6 +307,10 @@ def get_model(usr_args):
         max_flow_progress=0.0,
         progress_gate_closed_actions=0,
         progress_gate_released_actions=0,
+        learned_phase=None,
+        learned_stop_probabilities=None,
+        learned_steps_to_release=None,
+        learned_phase_counts={"continue": 0, "settle": 0, "release": 0},
     )
     model.get_evaluation_metrics = lambda: {
         "geometry_flow_source_episode": model.flow_diagnostics.get("source_episode"),
@@ -377,6 +381,10 @@ def get_model(usr_args):
         "geometry_flow_progress_gate_released_actions": int(
             model.progress_gate_released_actions
         ),
+        "geometry_flow_learned_phase": model.learned_phase,
+        "geometry_flow_learned_stop_probabilities": model.learned_stop_probabilities,
+        "geometry_flow_learned_steps_to_release": model.learned_steps_to_release,
+        "geometry_flow_learned_phase_counts": dict(model.learned_phase_counts),
         "geometry_flow_routed_action_count": int(model.routed_action_count),
         "geometry_flow_routed_arm": model.routed_arm,
         "geometry_flow_mean_predicted_translation_delta_m": (
@@ -657,13 +665,23 @@ def eval(TASK_ENV, model, observation):
         ):
             TASK_ENV.step_lim = TASK_ENV.take_action_cnt
         return
-    actions = model.action_policy.predict(
-        operated_point_cloud=operated,
-        target_point_cloud=target,
-        eef_state20=_endpose_state(observation),
-        current_anchors=current_anchors,
-        predicted_episode_flow=model.predicted_flow,
-    )
+    prediction_args = {
+        "operated_point_cloud": operated,
+        "target_point_cloud": target,
+        "eef_state20": _endpose_state(observation),
+        "current_anchors": current_anchors,
+        "predicted_episode_flow": model.predicted_flow,
+    }
+    if model.action_policy.is_recovery_aware:
+        prediction_args["active_arm"] = model.routed_arm
+    actions = model.action_policy.predict(**prediction_args)
+    if model.action_policy.is_recovery_aware:
+        model.learned_phase = model.action_policy.last_stop_phase
+        model.learned_stop_probabilities = (
+            model.action_policy.last_stop_probabilities.tolist()
+        )
+        model.learned_steps_to_release = model.action_policy.last_steps_to_release
+        model.learned_phase_counts[model.learned_phase] += 1
     model.action_chunks += 1
     chunk_start = int(model.executed_actions)
     model.pending_action_chunks.append((chunk_start, actions.copy()))
@@ -769,6 +787,10 @@ def reset_model(model):
     model.max_flow_progress = 0.0
     model.progress_gate_closed_actions = 0
     model.progress_gate_released_actions = 0
+    model.learned_phase = None
+    model.learned_stop_probabilities = None
+    model.learned_steps_to_release = None
+    model.learned_phase_counts = {"continue": 0, "settle": 0, "release": 0}
     model.relation_plan_stage = 0
     model.relation_target_frame = None
     model.relation_source_episode = None

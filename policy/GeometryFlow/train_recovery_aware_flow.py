@@ -21,6 +21,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
+from .eef_frame_action import payload_with_eef_frame_actions
 from .train_task_flow_benchmark import (
     FOLDS,
     FlowBottleneckTransformer,
@@ -310,6 +311,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--steps-loss-weight", type=float, default=0.05)
     result.add_argument("--sample-phase", choices=("all", "relation"), default="relation")
     result.add_argument("--flow-context-mode", choices=("full", "remaining"), default="full")
+    result.add_argument("--action-frame", choices=("world", "eef"), default="world")
     return result
 
 
@@ -320,6 +322,8 @@ def main() -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     with np.load(args.dataset, allow_pickle=False) as archive:
         payload = {key: archive[key] for key in archive.files}
+    if args.action_frame == "eef":
+        payload = payload_with_eef_frame_actions(payload)
     test_payload = dict(payload)
     if args.test_flow_prediction is not None:
         test_payload["episode_flow"] = load_predicted_episode_flow(
@@ -453,6 +457,8 @@ def main() -> None:
                 "horizon": horizon,
                 "hidden_dim": 128,
                 "explicit_flow_progress": True,
+                "action_frame": args.action_frame,
+                "flow_context_mode": args.flow_context_mode,
             },
             "normalization": asdict(base_normalization),
             "active_normalization": asdict(active_normalization),

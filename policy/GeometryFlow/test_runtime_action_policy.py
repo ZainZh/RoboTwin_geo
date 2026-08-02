@@ -7,7 +7,12 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from .runtime_action_policy import FlowActionRuntime
+from .runtime_action_policy import (
+    FlowActionRuntime,
+    RecoveryAwareFlowRuntime,
+    load_flow_action_runtime,
+)
+from .train_recovery_aware_flow import RecoveryAwareFlowPolicy
 from .train_task_flow_benchmark import ActionPredictor
 
 
@@ -48,8 +53,68 @@ class FlowActionRuntimeTest(unittest.TestCase):
                 current_anchors=anchors,
                 predicted_episode_flow=flow,
             )
-        self.assertEqual(action.shape, (2, 14))
-        self.assertTrue(np.all(np.isfinite(action)))
+            self.assertEqual(action.shape, (2, 14))
+            self.assertTrue(np.all(np.isfinite(action)))
+
+    def test_recovery_runtime_routes_active_arm_and_phase(self):
+        model = RecoveryAwareFlowPolicy("flow", flow_steps=4, horizon=2, hidden_dim=32)
+        with torch.no_grad():
+            model.phase_head[-1].weight.zero_()
+            model.phase_head[-1].bias.copy_(torch.tensor([0.0, 0.0, 10.0]))
+        normalization = {
+            "state_mean": np.zeros(20, dtype=np.float32),
+            "state_std": np.ones(20, dtype=np.float32),
+            "action_mean": np.zeros(14, dtype=np.float32),
+            "action_std": np.ones(14, dtype=np.float32),
+            "xyz_mean": np.zeros(3, dtype=np.float32),
+            "xyz_std": np.ones(3, dtype=np.float32),
+            "point_feature_mean": None,
+            "point_feature_std": None,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint = Path(directory) / "recovery.pt"
+            torch.save(
+                {
+                    "model_state": model.state_dict(),
+                    "model_config": {
+                        "condition": "flow",
+                        "flow_steps": 4,
+                        "horizon": 2,
+                        "hidden_dim": 32,
+                        "explicit_flow_progress": True,
+                        "action_frame": "world",
+                        "flow_context_mode": "full",
+                    },
+                    "normalization": normalization,
+                    "active_normalization": {
+                        "mean": np.zeros(7, dtype=np.float32),
+                        "std": np.ones(7, dtype=np.float32),
+                        "steps_log_mean": 0.0,
+                        "steps_log_std": 1.0,
+                    },
+                },
+                checkpoint,
+            )
+            runtime = load_flow_action_runtime(checkpoint)
+            self.assertIsInstance(runtime, RecoveryAwareFlowRuntime)
+            state = np.zeros(20, dtype=np.float32)
+            state[9] = 1.0
+            state[19] = 0.0
+            anchors = np.zeros((5, 3), dtype=np.float32)
+            flow = np.zeros((5, 4, 3), dtype=np.float32)
+            cloud = np.zeros((64, 3), dtype=np.float32)
+            cloud[:, 0] = np.linspace(0.01, 0.1, 64)
+            action = runtime.predict(
+                operated_point_cloud=cloud,
+                target_point_cloud=cloud,
+                eef_state20=state,
+                current_anchors=anchors,
+                predicted_episode_flow=flow,
+            )
+            self.assertEqual(action.shape, (2, 14))
+            np.testing.assert_allclose(action[:, :7], 0.0)
+            np.testing.assert_allclose(action[:, 13], 1.0)
+            self.assertEqual(runtime.last_stop_phase, "release")
 
 
 if __name__ == "__main__":
