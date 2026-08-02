@@ -619,7 +619,8 @@ class FlowBottleneckTransformer(nn.Module):
         nn.init.normal_(self.action_query, std=0.02)
         self.action_head = nn.Linear(hidden_dim, 14)
 
-    def forward(self, batch: dict[str, torch.Tensor]) -> torch.Tensor:
+    def encode_memory(self, batch: dict[str, torch.Tensor]) -> torch.Tensor:
+        """Encode proprioception and flow without exposing raw point clouds."""
         state_input = batch["state"]
         flow_input = batch["flow"]
         if self.condition == "zero_flow":
@@ -637,9 +638,17 @@ class FlowBottleneckTransformer(nn.Module):
             if self.condition == "zero_flow":
                 se3_input = torch.zeros_like(se3_input)
             memory_tokens.append(self.se3_token(se3_input) + self.type_embedding[2])
-        memory = self.encoder(torch.cat(memory_tokens, dim=1))
+        return self.encoder(torch.cat(memory_tokens, dim=1))
+
+    def decode_action_tokens(
+        self, memory: torch.Tensor
+    ) -> torch.Tensor:
         query = self.action_query[None].expand(len(memory), -1, -1)
-        return self.action_head(self.decoder(query, memory))
+        return self.decoder(query, memory)
+
+    def forward(self, batch: dict[str, torch.Tensor]) -> torch.Tensor:
+        memory = self.encode_memory(batch)
+        return self.action_head(self.decode_action_tokens(memory))
 
 
 def build_action_predictor(
