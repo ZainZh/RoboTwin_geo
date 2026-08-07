@@ -111,6 +111,14 @@ def parser() -> argparse.ArgumentParser:
         help="Recompute summaries in an existing output without rerunning simulation.",
     )
     result.add_argument(
+        "--resume-existing",
+        action="store_true",
+        help=(
+            "Resume an interrupted in-progress output, skipping already recorded "
+            "(variant, episode) pairs after validating the frozen protocol."
+        ),
+    )
+    result.add_argument(
         "--paired-snapshot",
         action="store_true",
         help=(
@@ -667,6 +675,70 @@ def _commit_result(
     print(json.dumps(progress), flush=True)
 
 
+def _validate_resume_output(
+    *,
+    existing: dict,
+    expected: dict,
+    records: list[dict],
+) -> dict[str, set[int]]:
+    """Validate an interrupted output and return completed episodes per variant."""
+
+    invariant_keys = (
+        "schema_version",
+        "protocol",
+        "manifest",
+        "policy_calls",
+        "execute_steps",
+        "target_latch_frames",
+        "snapshot_settle_steps",
+        "dense_frame_mode",
+        "variant_dense_frame_modes",
+        "perturbation_seed",
+        "success_threshold",
+        "manifest_replay_tolerance",
+        "policy_inputs",
+        "simulator_pose_usage",
+        "setup_is_test",
+    )
+    for key in invariant_keys:
+        if existing.get(key) != expected.get(key):
+            raise ValueError(
+                f"resume output protocol mismatch for {key!r}: "
+                f"{existing.get(key)!r} != {expected.get(key)!r}"
+            )
+    if set(existing.get("results", {})) != set(expected["results"]):
+        raise ValueError(
+            "resume output variants do not match requested checkpoints: "
+            f"{sorted(existing.get('results', {}))!r} != "
+            f"{sorted(expected['results'])!r}"
+        )
+
+    selected = {int(record["episode"]): record for record in records}
+    completed: dict[str, set[int]] = {}
+    for name, values in existing["results"].items():
+        episodes: set[int] = set()
+        for value in values:
+            episode = int(value["episode"])
+            if episode in episodes:
+                raise ValueError(
+                    f"resume output has duplicate {name!r} episode {episode}"
+                )
+            if episode not in selected:
+                raise ValueError(
+                    f"resume output has {name!r} episode {episode} outside selection"
+                )
+            source = selected[episode]
+            for key in ("scene_seed", "shoe_id", "level"):
+                if int(value[key]) != int(source[key]):
+                    raise ValueError(
+                        f"resume output {name!r} episode {episode} mismatches "
+                        f"manifest {key}: {value[key]!r} != {source[key]!r}"
+                    )
+            episodes.add(episode)
+        completed[str(name)] = episodes
+    return completed
+
+
 def _run_paired_snapshot_evaluation(
     *,
     class_decorator,
@@ -677,6 +749,7 @@ def _run_paired_snapshot_evaluation(
     levels,
     output: dict,
     args: argparse.Namespace,
+    completed: dict[str, set[int]] | None = None,
 ) -> None:
     """Evaluate variants from one portable state in independent fresh scenes."""
 
@@ -687,6 +760,13 @@ def _run_paired_snapshot_evaluation(
     }
     for source in records:
         episode = int(source["episode"])
+        pending_names = [
+            name
+            for name in models
+            if episode not in (completed or {}).get(str(name), set())
+        ]
+        if not pending_names:
+            continue
         scene_seed = int(source["scene_seed"])
         level_index = int(source["level"])
         common = {
@@ -783,7 +863,8 @@ def _run_paired_snapshot_evaluation(
         except Exception:
             pass
 
-        for _variant_index, (name, model) in enumerate(models.items()):
+        for _variant_index, name in enumerate(pending_names):
+            model = models[name]
             record = deepcopy(common)
             variant_task = None
             if preparation_error is not None:
@@ -859,6 +940,10 @@ def main() -> None:
     from script.collect_data import class_decorator
 
     args = parser().parse_args()
+    if args.resummarize_existing and args.resume_existing:
+        raise ValueError(
+            "--resummarize-existing and --resume-existing are mutually exclusive"
+        )
     if (
         int(args.policy_calls) < 1
         or int(args.execute_steps) < 1
@@ -886,8 +971,12 @@ def main() -> None:
             flush=True,
         )
         return
-    if args.output.exists():
+    if args.output.exists() and not args.resume_existing:
         raise FileExistsError(f"refuse to overwrite closed-loop result: {args.output}")
+    if args.resume_existing and not args.output.is_file():
+        raise FileNotFoundError(
+            f"--resume-existing requires an interrupted output: {args.output}"
+        )
     manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
     records = _selected_records(
         manifest, _integer_set(args.episodes), _integer_set(args.levels)
@@ -947,7 +1036,7 @@ def main() -> None:
         )
         for name, checkpoint in args.checkpoint
     }
-    output = {
+    expected_output = {
         "schema_version": 1,
         "protocol": "paired_camera_only_gripper_closed_pose_correction_v1",
         "manifest": str(args.manifest.resolve()),
@@ -977,9 +1066,42 @@ def main() -> None:
             else "metrics only"
         ),
         "setup_is_test": bool(manifest.get("setup_is_test", True)),
+        "checkpoint_sources": {
+            str(name): str(Path(checkpoint).resolve())
+            for name, checkpoint in args.checkpoint
+        },
+        "dense_frame_checkpoint_sources": [
+            str(path.resolve()) for path in args.dense_frame_checkpoint
+        ],
+        "camera_metadata_source": str(args.camera_metadata.resolve()),
+        "ensemble_metadata_source": str(args.ensemble_metadata.resolve()),
         "results": {name: [] for name in models},
         "status": "in_progress",
     }
+    completed: dict[str, set[int]] = {name: set() for name in models}
+    if args.resume_existing:
+        output = json.loads(args.output.read_text(encoding="utf-8"))
+        completed = _validate_resume_output(
+            existing=output,
+            expected=expected_output,
+            records=records,
+        )
+        provenance_keys = (
+            "checkpoint_sources",
+            "dense_frame_checkpoint_sources",
+            "camera_metadata_source",
+            "ensemble_metadata_source",
+        )
+        for key in provenance_keys:
+            if key in output and output[key] != expected_output[key]:
+                raise ValueError(
+                    f"resume output provenance mismatch for {key!r}: "
+                    f"{output[key]!r} != {expected_output[key]!r}"
+                )
+            output[key] = expected_output[key]
+        output["status"] = "in_progress"
+    else:
+        output = expected_output
     _write_output(args.output, output)
 
     if args.paired_snapshot:
@@ -992,6 +1114,7 @@ def main() -> None:
             levels=levels,
             output=output,
             args=args,
+            completed=completed,
         )
         output["status"] = "complete"
         output["summaries"] = {
@@ -1010,6 +1133,8 @@ def main() -> None:
         task = class_decorator(str(manifest["task_name"]))
         for source in records:
             episode = int(source["episode"])
+            if episode in completed.get(str(name), set()):
+                continue
             scene_seed = int(source["scene_seed"])
             level_index = int(source["level"])
             record = {

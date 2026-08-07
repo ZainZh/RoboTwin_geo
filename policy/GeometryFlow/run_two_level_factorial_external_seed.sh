@@ -18,6 +18,10 @@ followup_root="outputs/geometry_flow/goal_policy_frame_joint_followup_v1/fold1"
 frozen_root="outputs/geometry_flow/goal_policy_frame_crossfold_frozen_v1/fold1"
 manifest="outputs/geometry_flow/external_shoe_blind_v2/blind_policy_eval/pose_correction_snapshots_32.json"
 output="${factorial_root}/external_factorial_seed${seed}_32.json"
+resume_args=()
+if [[ -f "${output}" ]]; then
+  resume_args+=(--resume-existing)
+fi
 
 "${python_bin}" script/evaluate_pose_correction_closedloop.py \
   --manifest "${manifest}" \
@@ -32,6 +36,7 @@ output="${factorial_root}/external_factorial_seed${seed}_32.json"
   --camera-metadata "${frozen_root}/task_flow_fold1_recovery_v4_ndf_valtop2_p99_camera.json" \
   --ensemble-metadata "${frozen_root}/fold1_recovery_v4_ndf_valtop2_p99.json" \
   --output "${output}" \
+  "${resume_args[@]}" \
   --device cuda:0 \
   --variant-dense-frame-mode local_flow_zero_global zero \
   --levels 0 \
