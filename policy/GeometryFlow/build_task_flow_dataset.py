@@ -17,7 +17,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from .build_grasp_dataset import deterministic_farthest_points, valid_xyz
-from .target_frame import estimate_geometry_marker_frame
+from .target_frame import estimate_cached_geometry_marker_frame
 
 
 DEFAULT_DATA_DIR = Path(
@@ -197,6 +197,59 @@ def identify_active_arm(left_gripper: np.ndarray, right_gripper: np.ndarray) -> 
     return closing[0]
 
 
+def collapse_static_active_eef_frames(
+    left_pose: np.ndarray,
+    left_gripper: np.ndarray,
+    right_pose: np.ndarray,
+    right_gripper: np.ndarray,
+    active_arm: str,
+    *,
+    translation_threshold_m: float = 1.0e-5,
+    rotation_threshold_deg: float = 0.02,
+    gripper_threshold: float = 1.0e-3,
+) -> np.ndarray:
+    """Collapse recorder duplicates while retaining every physical transition.
+
+    RoboTwin records an identical state before the first commanded correction.
+    Leaving that duplicate in a short recovery episode labels the deployment
+    state with a zero first action.  This helper constructs a compact raw-frame
+    index without interpolating or inventing any action target.
+    """
+
+    if active_arm not in {"left", "right"}:
+        raise ValueError(f"invalid active arm {active_arm!r}")
+    poses = np.asarray(left_pose if active_arm == "left" else right_pose)
+    gripper = np.asarray(
+        left_gripper if active_arm == "left" else right_gripper
+    ).reshape(-1)
+    if poses.ndim != 2 or poses.shape[1] != 7 or len(poses) != len(gripper):
+        raise ValueError("active EEF pose/gripper arrays have incompatible shapes")
+    if len(poses) < 2:
+        raise ValueError("at least two EEF frames are required")
+    retained = [0]
+    for index in range(1, len(poses)):
+        previous = retained[-1]
+        translation = float(np.linalg.norm(poses[index, :3] - poses[previous, :3]))
+        rotation = float(
+            np.rad2deg(
+                (
+                    pose7_wxyz_to_rotation(poses[index])
+                    * pose7_wxyz_to_rotation(poses[previous]).inv()
+                ).magnitude()
+            )
+        )
+        gripper_change = abs(float(gripper[index] - gripper[previous]))
+        if (
+            translation > float(translation_threshold_m)
+            or rotation > float(rotation_threshold_deg)
+            or gripper_change > float(gripper_threshold)
+        ):
+            retained.append(index)
+    if len(retained) < 2:
+        raise ValueError("episode contains no non-static active-arm transition")
+    return np.asarray(retained, dtype=np.int64)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
@@ -205,11 +258,27 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--point-channels", type=int, choices=(3, 6), default=3)
     parser.add_argument("--target-color-priority", action="store_true")
     parser.add_argument("--cache-target-observation", action="store_true")
+    parser.add_argument(
+        "--cache-operated-observation",
+        action="store_true",
+        help=(
+            "Reuse the most recent visible operated-object cloud when the "
+            "current segmented cloud is empty, matching deployment runtime."
+        ),
+    )
     parser.add_argument("--target-frame-token", action="store_true")
     parser.add_argument("--anchors", type=int, default=32)
     parser.add_argument("--flow-steps", type=int, default=16)
     parser.add_argument("--action-horizon", type=int, default=6)
     parser.add_argument("--frame-stride", type=int, default=2)
+    parser.add_argument(
+        "--collapse-static-eef-frames",
+        action="store_true",
+        help=(
+            "Collapse duplicate active-EEF recorder frames before forming action "
+            "chunks; intended for short pose-correction demonstrations."
+        ),
+    )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--overwrite", action="store_true")
     return parser
@@ -266,10 +335,21 @@ def main() -> None:
             shoe_id = int(np.asarray(root["task_state/shoe_id"][0]).reshape(-1)[0])
             active_arm = identify_active_arm(left_gripper, right_gripper)
             active_gripper = left_gripper if active_arm == "left" else right_gripper
+            episode_frames = (
+                collapse_static_active_eef_frames(
+                    left_pose,
+                    left_gripper,
+                    right_pose,
+                    right_gripper,
+                    active_arm,
+                )
+                if args.collapse_static_eef_frames
+                else np.arange(frame_count, dtype=np.int64)
+            )
             target_frame9 = None
             if args.target_frame_token:
-                target_frame, _ = estimate_geometry_marker_frame(
-                    root["object_pointcloud/{B}"][0]
+                target_frame, _ = estimate_cached_geometry_marker_frame(
+                    root["object_pointcloud/{B}"]
                 )
                 target_frame9 = np.concatenate(
                     (
@@ -279,6 +359,24 @@ def main() -> None:
                     )
                 ).astype(np.float32)
 
+            operated_observations = root["object_pointcloud/{A}"]
+            cached_operated_observations = None
+            if args.cache_operated_observation:
+                cached_operated_observations = []
+                last_visible = None
+                for raw_frame in range(frame_count):
+                    observation = np.asarray(
+                        operated_observations[raw_frame], dtype=np.float32
+                    )
+                    if len(valid_xyz(observation)):
+                        last_visible = observation
+                    if last_visible is None:
+                        raise ValueError(
+                            f"episode {episode} has no visible operated object "
+                            f"through frame {raw_frame}"
+                        )
+                    cached_operated_observations.append(last_visible)
+
             initial_visible = valid_xyz(root["object_pointcloud/{A}"][0])
             initial_anchors_world = deterministic_farthest_points(
                 initial_visible, int(args.anchors)
@@ -287,7 +385,9 @@ def main() -> None:
             anchors_local = transform_points(
                 np.linalg.inv(initial_transform), initial_anchors_world
             )
-            task_indices = resample_indices(frame_count, int(args.flow_steps))
+            task_indices = episode_frames[
+                resample_indices(len(episode_frames), int(args.flow_steps))
+            ]
             task_flow = np.stack(
                 [
                     transform_points(pose7_wxyz_to_matrix(object_pose[index]), anchors_local)
@@ -303,11 +403,21 @@ def main() -> None:
             episode_shoe_id.append(shoe_id)
 
             sample_count_before = len(frame_arrays["episode_id"])
-            for frame in range(0, frame_count - 1, int(args.frame_stride)):
+            for compact_frame in range(
+                0, len(episode_frames) - 1, int(args.frame_stride)
+            ):
                 sequence_frames = [
-                    min(frame + int(args.frame_stride) * step, frame_count - 1)
+                    int(
+                        episode_frames[
+                            min(
+                                compact_frame + int(args.frame_stride) * step,
+                                len(episode_frames) - 1,
+                            )
+                        ]
+                    )
                     for step in range(int(args.action_horizon) + 1)
                 ]
+                frame = int(episode_frames[compact_frame])
                 actions = []
                 future_poses = []
                 for step in range(int(args.action_horizon)):
@@ -328,9 +438,14 @@ def main() -> None:
                     future_poses.append(np.stack((left_pose[target], right_pose[target])))
 
                 current_transform = pose7_wxyz_to_matrix(object_pose[frame])
+                operated_observation = (
+                    cached_operated_observations[frame]
+                    if cached_operated_observations is not None
+                    else operated_observations[frame]
+                )
                 frame_arrays["points_a"].append(
                     deterministic_sample(
-                        root["object_pointcloud/{A}"][frame],
+                        operated_observation,
                         int(args.observation_points),
                         seed=episode * 100003 + frame * 17 + 1,
                         point_channels=int(args.point_channels),
@@ -407,6 +522,7 @@ def main() -> None:
                     "episode": episode,
                     "shoe_id": shoe_id,
                     "frames": frame_count,
+                    "compact_frames": int(len(episode_frames)),
                     "samples": len(frame_arrays["episode_id"]) - sample_count_before,
                     "active_arm": active_arm,
                     "task_indices": task_indices.tolist(),
@@ -438,11 +554,13 @@ def main() -> None:
         "point_channels": int(args.point_channels),
         "target_color_priority": bool(args.target_color_priority),
         "cache_target_observation": bool(args.cache_target_observation),
+        "cache_operated_observation": bool(args.cache_operated_observation),
         "target_frame_token": bool(args.target_frame_token),
         "anchors": int(args.anchors),
         "flow_steps": int(args.flow_steps),
         "action_horizon": int(args.action_horizon),
         "frame_stride": int(args.frame_stride),
+        "collapse_static_eef_frames": bool(args.collapse_static_eef_frames),
         "privileged_training_labels": [
             "simulator object pose used to construct oracle task flow",
             "simulator end-effector pose used to construct action labels",

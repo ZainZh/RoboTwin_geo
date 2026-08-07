@@ -143,3 +143,72 @@ def estimate_geometry_marker_frame(xyzrgb: np.ndarray) -> tuple[np.ndarray, dict
         ),
         "determinant": float(np.linalg.det(transform[:3, :3])),
     }
+
+
+def sparse_geometry_marker_frame(xyzrgb: np.ndarray) -> tuple[np.ndarray, dict]:
+    """Estimate a camera-only frame when fewer than eight marker points remain.
+
+    The full target cloud supplies the support-plane normal and principal axis;
+    Yellow observations resolve the otherwise ambiguous axis sign when they
+    exist. With complete marker occlusion, a deterministic world-axis sign is
+    used only to keep the runtime tensor finite; callers must assign zero
+    confidence. This fallback never consults simulator state.
+    """
+    cloud = np.asarray(xyzrgb, dtype=np.float64)
+    marker = cloud[yellow_marker_mask(cloud), :3]
+    xyz = cloud[:, :3]
+    center = xyz.mean(axis=0)
+    covariance = (xyz - center).T @ (xyz - center) / max(len(xyz), 1)
+    _, eigenvector = np.linalg.eigh(covariance)
+    normal = eigenvector[:, 0]
+    if normal[2] < 0.0:
+        normal = -normal
+    axis_x = eigenvector[:, -1]
+    axis_x -= normal * float(np.dot(axis_x, normal))
+    axis_x /= max(float(np.linalg.norm(axis_x)), 1e-8)
+    if len(marker):
+        sign_reference = marker.mean(axis=0) - center
+        sign_reference -= normal * float(np.dot(sign_reference, normal))
+    else:
+        world_x = np.asarray((1.0, 0.0, 0.0))
+        sign_reference = world_x - normal * float(np.dot(world_x, normal))
+        if float(np.linalg.norm(sign_reference)) < 1e-6:
+            world_y = np.asarray((0.0, 1.0, 0.0))
+            sign_reference = world_y - normal * float(np.dot(world_y, normal))
+    if float(np.dot(axis_x, sign_reference)) < 0.0:
+        axis_x = -axis_x
+    axis_y = np.cross(normal, axis_x)
+    axis_y /= max(float(np.linalg.norm(axis_y)), 1e-8)
+    transform = np.eye(4, dtype=np.float64)
+    transform[:3, :3] = np.stack((axis_x, axis_y, normal), axis=-1)
+    transform[:3, 3] = center
+    return transform.astype(np.float32), {
+        "marker_points": int(len(marker)),
+        "fit_score_m2": None,
+        "sparse_fallback": True,
+        "orthogonality_error": float(
+            np.max(np.abs(transform[:3, :3].T @ transform[:3, :3] - np.eye(3)))
+        ),
+        "determinant": float(np.linalg.det(transform[:3, :3])),
+    }
+
+
+def estimate_cached_geometry_marker_frame(
+    observations: np.ndarray, max_frames: int = 3
+) -> tuple[np.ndarray, dict]:
+    """Fuse early camera observations before fitting the stationary target."""
+    value = np.asarray(observations)
+    if value.ndim == 2:
+        value = value[None]
+    if value.ndim != 3 or not len(value):
+        raise ValueError(f"expected nonempty [frames,points,channels], got {value.shape}")
+    used = min(len(value), int(max_frames))
+    cloud = np.concatenate([value[index] for index in range(used)], axis=0)
+    try:
+        frame, diagnostic = estimate_geometry_marker_frame(cloud)
+        diagnostic = dict(diagnostic)
+        diagnostic["sparse_fallback"] = False
+    except ValueError:
+        frame, diagnostic = sparse_geometry_marker_frame(cloud)
+    diagnostic["fused_frames"] = int(used)
+    return frame, diagnostic

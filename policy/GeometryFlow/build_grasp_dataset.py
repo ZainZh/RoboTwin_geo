@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 import h5py
@@ -17,6 +18,27 @@ DEFAULT_DATA_DIR = Path(
     "/shared2/sz/robotwin_data/data/place_shoe_geometry_marker/"
     "demo_clean_3d_object_pc_geometry_marker/data"
 )
+
+
+def shoe_ids_from_scene_info(data_dir: Path, episodes: int) -> list[int]:
+    """Recover object-instance labels from legacy RoboTwin demonstrations."""
+    scene_path = data_dir.parent / "scene_info.json"
+    if not scene_path.exists():
+        raise KeyError(
+            "demonstrations have no task_state/shoe_id and no scene_info.json "
+            f"was found at {scene_path}"
+        )
+    scene = json.loads(scene_path.read_text(encoding="utf-8"))
+    result = []
+    for episode in range(int(episodes)):
+        asset = str(scene[f"episode_{episode}"]["info"]["{A}"])
+        match = re.search(r"base(\d+)$", asset)
+        if match is None:
+            raise ValueError(
+                f"episode {episode}: cannot parse shoe instance from {asset!r}"
+            )
+        result.append(int(match.group(1)))
+    return result
 
 
 def valid_xyz(point_cloud: np.ndarray) -> np.ndarray:
@@ -121,6 +143,7 @@ def main() -> None:
         "target_transform_world": [],
         "target_keypoints_world": [],
         "object_transform_world_label_only": [],
+        "object_transform_available_label_only": [],
         "active_arm_right": [],
         "shoe_id_label_only": [],
         "episode_id": [],
@@ -130,6 +153,7 @@ def main() -> None:
     if ndf is not None:
         arrays["ndf_features"] = []
     diagnostics = []
+    scene_shoe_ids = None
     for episode in range(int(args.episodes)):
         path = data_dir / f"episode{episode}.hdf5"
         with h5py.File(path, "r") as root:
@@ -148,8 +172,13 @@ def main() -> None:
             target_keypoints = transform_points(
                 target_transform, GRIPPER_KEYPOINTS_METERS
             )
-            object_transform = pose7_wxyz_to_matrix(
-                root["task_state/object_pose_A"][observation_frame]
+            object_transform_available = "task_state/object_pose_A" in root
+            object_transform = (
+                pose7_wxyz_to_matrix(
+                    root["task_state/object_pose_A"][observation_frame]
+                )
+                if object_transform_available
+                else np.eye(4, dtype=np.float64)
             )
             arrays["points_world"].append(points.astype(np.float32))
             arrays["target_transform_world"].append(target_transform.astype(np.float32))
@@ -157,10 +186,21 @@ def main() -> None:
             arrays["object_transform_world_label_only"].append(
                 object_transform.astype(np.float32)
             )
-            arrays["active_arm_right"].append(float(arm == "right"))
-            arrays["shoe_id_label_only"].append(
-                int(np.asarray(root["task_state/shoe_id"][0]).reshape(-1)[0])
+            arrays["object_transform_available_label_only"].append(
+                float(object_transform_available)
             )
+            arrays["active_arm_right"].append(float(arm == "right"))
+            if "task_state/shoe_id" in root:
+                shoe_id = int(
+                    np.asarray(root["task_state/shoe_id"][0]).reshape(-1)[0]
+                )
+            else:
+                if scene_shoe_ids is None:
+                    scene_shoe_ids = shoe_ids_from_scene_info(
+                        data_dir, int(args.episodes)
+                    )
+                shoe_id = int(scene_shoe_ids[episode])
+            arrays["shoe_id_label_only"].append(shoe_id)
             arrays["episode_id"].append(episode)
             arrays["observation_frame"].append(observation_frame)
             arrays["grasp_frame"].append(grasp_frame)
@@ -214,6 +254,9 @@ def main() -> None:
         "ndf_checkpoint": str(args.ndf_checkpoint.resolve()) if args.ndf_checkpoint else None,
         "ndf_feature_dim": int(ndf.output_dim) if ndf is not None else 0,
         "ndf_vector_direction": bool(ndf.include_vector_direction) if ndf is not None else False,
+        "object_transform_available": bool(
+            np.all(serialized["object_transform_available_label_only"] > 0.5)
+        ),
         "policy_inputs": [
             "segmented operated-object camera point cloud in world coordinates",
             "active arm identity",

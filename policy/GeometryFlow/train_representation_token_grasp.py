@@ -56,7 +56,7 @@ REPRESENTATIONS = {
     *UTONIA_FEATURE_SLICES,
 }
 AGGREGATIONS = {"global", "token"}
-CORRUPTIONS = {"clean", "point_shuffle"}
+CORRUPTIONS = {"clean", "point_shuffle", "episode_shuffle"}
 FUSIONS = {"early", "gated_residual"}
 
 
@@ -90,8 +90,6 @@ def load_aligned_payload(
     required = {
         "points_a_xyzrgb",
         "pca_features",
-        "ndf_features",
-        "utonia_features",
         "episode_id",
         "shoe_id",
         "active_arm_right",
@@ -99,7 +97,13 @@ def load_aligned_payload(
     missing = required - set(feature_payload)
     if missing:
         raise KeyError(f"feature dataset is missing {sorted(missing)}")
-    checks = (
+    ndf_in_grasp = "ndf_features" in payload
+    ndf_in_feature = "ndf_features" in feature_payload
+    if ndf_in_grasp != ndf_in_feature:
+        raise KeyError(
+            "NDF descriptors must be present in both aligned datasets or neither"
+        )
+    checks = [
         (
             "episode ID",
             payload["episode_id"],
@@ -124,13 +128,16 @@ def load_aligned_payload(
             feature_payload["points_a_xyzrgb"][..., :3],
             1e-7,
         ),
-        (
-            "NDF descriptor",
-            payload["ndf_features"],
-            feature_payload["ndf_features"],
-            1e-7,
-        ),
-    )
+    ]
+    if ndf_in_grasp:
+        checks.append(
+            (
+                "NDF descriptor",
+                payload["ndf_features"],
+                feature_payload["ndf_features"],
+                1e-7,
+            )
+        )
     diagnostics = {}
     for name, first, second, tolerance in checks:
         if first.shape != second.shape:
@@ -149,8 +156,13 @@ def load_aligned_payload(
     payload["pca_features"] = np.asarray(
         feature_payload["pca_features"], dtype=np.float32
     )
-    payload["utonia_features"] = np.asarray(
-        feature_payload["utonia_features"], dtype=np.float32
+    if "utonia_features" in feature_payload:
+        payload["utonia_features"] = np.asarray(
+            feature_payload["utonia_features"], dtype=np.float32
+        )
+    payload["_ndf_available"] = bool(ndf_in_grasp)
+    payload["_utonia_available"] = bool(
+        "utonia_features" in feature_payload
     )
     payload["_alignment_diagnostics"] = diagnostics
     return payload
@@ -166,14 +178,26 @@ def representation_features(
     if representation == "pca":
         return payload["pca_features"]
     if representation == "ndf":
+        if not payload.get("_ndf_available", False):
+            raise KeyError("NDF representation requested but no NDF cache is available")
         # The first 256 channels are invariant scalar descriptors.  The final
         # triplet is an equivariant vector and is screened separately.
         return payload["ndf_features"][..., :256]
     if representation == "ndf_vector":
+        if not payload.get("_ndf_available", False):
+            raise KeyError("NDF vector requested but no NDF cache is available")
         return payload["ndf_features"][..., 256:259]
     if representation == "utonia":
+        if not payload.get("_utonia_available", False):
+            raise KeyError(
+                "UTONIA representation requested but no UTONIA cache is available"
+            )
         return payload["utonia_features"]
     if representation in UTONIA_FEATURE_SLICES:
+        if not payload.get("_utonia_available", False):
+            raise KeyError(
+                "UTONIA representation requested but no UTONIA cache is available"
+            )
         return payload["utonia_features"][..., UTONIA_FEATURE_SLICES[representation]]
     raise ValueError(
         f"unknown representation {representation!r}; choose from "
@@ -306,6 +330,26 @@ class RepresentationGraspDataset(Dataset):
         self.corruption = str(corruption)
         self.point_noise_m = float(point_noise_m)
         self.point_dropout = float(point_dropout)
+        self.episode_feature_map: dict[int, int] = {}
+        if self.corruption == "episode_shuffle":
+            if len(self.indices) < 2:
+                raise ValueError(
+                    "episode_shuffle requires at least two episodes in a split"
+                )
+            generator = np.random.default_rng(
+                2_000_033 + int(np.sum(self.indices, dtype=np.int64))
+            )
+            permutation = generator.permutation(len(self.indices))
+            for _ in range(len(self.indices) + 1):
+                if not np.any(permutation == np.arange(len(self.indices))):
+                    break
+                permutation = np.roll(permutation, 1)
+            if np.any(permutation == np.arange(len(self.indices))):
+                raise RuntimeError("failed to construct episode derangement")
+            self.episode_feature_map = {
+                int(episode): int(self.indices[permutation[row]])
+                for row, episode in enumerate(self.indices)
+            }
 
     def __len__(self) -> int:
         return int(len(self.indices))
@@ -318,7 +362,8 @@ class RepresentationGraspDataset(Dataset):
     def __getitem__(self, item: int) -> dict[str, torch.Tensor]:
         episode = int(self.indices[item])
         points = torch.from_numpy(self.payload["points_world"][episode]).clone()
-        features = torch.from_numpy(self.features[episode]).clone()
+        feature_episode = self.episode_feature_map.get(episode, episode)
+        features = torch.from_numpy(self.features[feature_episode]).clone()
         if self.corruption == "point_shuffle":
             permutation = self.point_permutation(episode, len(points))
             features = features[torch.from_numpy(permutation)]

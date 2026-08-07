@@ -97,6 +97,91 @@ def pose9_transform(value: np.ndarray) -> tuple[np.ndarray, Rotation]:
     return pose_value[:3], sixd_to_rotation(pose_value[3:])
 
 
+def functional_frame9(position: np.ndarray, rotation: Rotation) -> np.ndarray:
+    matrix = rotation.as_matrix()
+    return np.concatenate(
+        (np.asarray(position, dtype=np.float64), matrix[:, 0], matrix[:, 1])
+    ).astype(np.float32)
+
+
+def functional_frame9_transform(
+    value: np.ndarray,
+) -> tuple[np.ndarray, Rotation]:
+    frame_value = np.asarray(value, dtype=np.float64).reshape(9)
+    first = frame_value[3:6]
+    first /= max(float(np.linalg.norm(first)), 1e-12)
+    second = frame_value[6:9] - first * float(
+        np.dot(first, frame_value[6:9])
+    )
+    second /= max(float(np.linalg.norm(second)), 1e-12)
+    matrix = np.column_stack((first, second, np.cross(first, second)))
+    return frame_value[:3], Rotation.from_matrix(matrix)
+
+
+def object_pose9(position: np.ndarray, rotation: Rotation) -> np.ndarray:
+    return np.concatenate(
+        (
+            np.asarray(position, dtype=np.float64),
+            rotation.as_matrix()[:, :2].reshape(6),
+        )
+    ).astype(np.float32)
+
+
+def intended_goal_object_pose9(sample: dict[str, np.ndarray | float]) -> np.ndarray:
+    """Recover the task-defined object goal without using an expert endpoint."""
+
+    required = ("current_object_pose9", "goal_translation_error_xyz_m", "goal_rotation_error_rotvec")
+    missing = [key for key in required if key not in sample]
+    if missing:
+        raise KeyError(f"intended goal labels are missing {missing}")
+    current_position, current_rotation = pose9_transform(
+        np.asarray(sample["current_object_pose9"])
+    )
+    goal_position = current_position + np.asarray(
+        sample["goal_translation_error_xyz_m"], dtype=np.float64
+    )
+    goal_rotation = Rotation.from_rotvec(
+        np.asarray(sample["goal_rotation_error_rotvec"], dtype=np.float64)
+    ) * current_rotation
+    return object_pose9(goal_position, goal_rotation)
+
+
+def update_camera_functional_frame_after_perturbation(
+    result: dict[str, np.ndarray],
+    sample: dict[str, np.ndarray | float],
+    *,
+    object_center: np.ndarray,
+    rotation: Rotation,
+    translation: np.ndarray,
+) -> None:
+    """Keep a camera-derived current-to-goal token consistent with A motion."""
+
+    if "target_frame9" not in sample or "goal_frame9" not in sample:
+        return
+    goal_position, goal_rotation = functional_frame9_transform(
+        sample["goal_frame9"]
+    )
+    relative_position, relative_rotation = functional_frame9_transform(
+        sample["target_frame9"]
+    )
+    current_position = goal_position - relative_position
+    current_rotation = relative_rotation.inv() * goal_rotation
+    perturbed_position = (
+        rotation.apply(current_position - object_center)
+        + object_center
+        + translation
+    )
+    perturbed_rotation = rotation * current_rotation
+    new_relative_rotation = goal_rotation * perturbed_rotation.inv()
+    result["target_frame9"] = functional_frame9(
+        goal_position - perturbed_position, new_relative_rotation
+    )
+    if "source_frame6_columns" in result:
+        result["source_frame6_columns"] = functional_frame9(
+            np.zeros(3), perturbed_rotation
+        )[3:]
+
+
 def augment_recovery_sample(
     sample: dict[str, np.ndarray | float],
     *,
@@ -119,6 +204,28 @@ def augment_recovery_sample(
     result["current_object_pose9"] = pose9(
         np.asarray([*(object_center + translation), w, x, y, z], dtype=np.float64)
     ).astype(np.float32)
+    update_camera_functional_frame_after_perturbation(
+        result,
+        sample,
+        object_center=object_center,
+        rotation=rotation,
+        translation=translation,
+    )
+    if (
+        "goal_translation_error_xyz_m" in sample
+        and "goal_rotation_error_rotvec" in sample
+    ):
+        goal_position, goal_rotation = pose9_transform(
+            intended_goal_object_pose9(sample)
+        )
+        result["goal_translation_error_xyz_m"] = (
+            goal_position - result["current_object_pose9"][:3]
+        ).astype(np.float32)
+        result["goal_rotation_error_rotvec"] = (
+            goal_rotation * object_rotation.inv()
+        ).as_rotvec().astype(np.float32)
+    if "goal_aligned" in result:
+        result["goal_aligned"] = np.asarray(0.0, dtype=result["goal_aligned"].dtype)
 
     current = np.asarray(sample["current_eef_pose7"], dtype=np.float64).copy()
     future = np.asarray(sample["future_eef_pose7"], dtype=np.float64)
@@ -216,6 +323,11 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--seed", type=int, default=0)
     result.add_argument("--relation-only", action="store_true")
     result.add_argument(
+        "--allowed-shoes",
+        default="",
+        help="Optional comma-separated object IDs eligible for augmentation.",
+    )
+    result.add_argument(
         "--recovery-target",
         choices=("nominal_future", "geometry_goal"),
         default="nominal_future",
@@ -241,6 +353,13 @@ def main() -> None:
         key for key, value in payload.items() if value.ndim > 0 and len(value) == sample_count
     ]
     source_indices = np.arange(sample_count, dtype=np.int64)
+    allowed_shoes = {
+        int(item) for item in str(args.allowed_shoes).split(",") if item.strip()
+    }
+    if allowed_shoes:
+        source_indices = source_indices[
+            np.isin(payload["shoe_id"][source_indices], sorted(allowed_shoes))
+        ]
     if args.relation_only:
         source_indices = source_indices[
             np.isclose(payload["relation_phase"][source_indices], 1.0)
@@ -276,8 +395,14 @@ def main() -> None:
             sample = {key: payload[key][index] for key in sample_keys}
             goal_object_pose9 = None
             if args.recovery_target == "geometry_goal":
-                episode = int(payload["episode_index"][index])
-                goal_object_pose9 = payload["episode_pose"][episode, -1]
+                if {
+                    "goal_translation_error_xyz_m",
+                    "goal_rotation_error_rotvec",
+                }.issubset(sample):
+                    goal_object_pose9 = intended_goal_object_pose9(sample)
+                else:
+                    episode = int(payload["episode_index"][index])
+                    goal_object_pose9 = payload["episode_pose"][episode, -1]
             augmented = augment_recovery_sample(
                 sample,
                 translation=translation,
@@ -317,6 +442,7 @@ def main() -> None:
         "copies": int(args.copies),
         "sample_fraction": float(args.sample_fraction),
         "relation_only": bool(args.relation_only),
+        "allowed_shoes": sorted(allowed_shoes),
         "recovery_target": str(args.recovery_target),
         "translation_std_cm": float(args.translation_std_cm),
         "rotation_std_deg": float(args.rotation_std_deg),

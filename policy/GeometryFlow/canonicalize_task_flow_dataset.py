@@ -10,6 +10,12 @@ from pathlib import Path
 import numpy as np
 from scipy.spatial.transform import Rotation
 
+from .functional_action_frame import (
+    frame9_transform,
+    relative_frame9_to_target_frame,
+    transform_point_features_to_target_frame,
+)
+
 
 def rotation_to_sixd(rotation: np.ndarray) -> np.ndarray:
     return np.asarray(rotation, dtype=np.float64)[:, :2].reshape(6)
@@ -83,8 +89,15 @@ def canonicalize(payload: dict[str, np.ndarray], frames: np.ndarray) -> dict[str
     episode_indices = payload["episode_index"].astype(np.int64)
     for sample, episode in enumerate(episode_indices):
         frame = frames[episode]
-        result["points_a"][sample] = transform_xyz(payload["points_a"][sample], frame)
-        result["points_b"][sample] = transform_xyz(payload["points_b"][sample], frame)
+        frame9 = np.concatenate(
+            (frame[:3, 3], frame[:3, 0], frame[:3, 1])
+        ).astype(np.float32)
+        result["points_a"][sample] = transform_point_features_to_target_frame(
+            payload["points_a"][sample], frame9
+        )
+        result["points_b"][sample] = transform_point_features_to_target_frame(
+            payload["points_b"][sample], frame9
+        )
         result["current_anchors"][sample] = transform_xyz(
             payload["current_anchors"][sample], frame
         )
@@ -106,6 +119,28 @@ def canonicalize(payload: dict[str, np.ndarray], frames: np.ndarray) -> dict[str
         result["state"][sample] = eef_state_from_pose7(
             current, (payload["state"][sample, 9], payload["state"][sample, 19])
         )
+        if "target_frame9" in payload:
+            result["target_frame9"][sample] = relative_frame9_to_target_frame(
+                payload["target_frame9"][sample], frame9
+            )
+        if "goal_frame9" in payload:
+            result["goal_frame9"][sample] = np.asarray(
+                (0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0),
+                dtype=np.float32,
+            )
+        if "goal_translation_error_xyz_m" in payload:
+            result["goal_translation_error_xyz_m"][sample] = (
+                np.asarray(payload["goal_translation_error_xyz_m"][sample])
+                @ frame[:3, :3]
+            )
+        if "goal_rotation_error_rotvec" in payload:
+            world_rotation = Rotation.from_rotvec(
+                payload["goal_rotation_error_rotvec"][sample]
+            ).as_matrix()
+            local_rotation = frame[:3, :3].T @ world_rotation @ frame[:3, :3]
+            result["goal_rotation_error_rotvec"][sample] = Rotation.from_matrix(
+                local_rotation
+            ).as_rotvec()
 
     for episode, frame in enumerate(frames):
         result["episode_flow"][episode] = transform_xyz(
@@ -116,6 +151,43 @@ def canonicalize(payload: dict[str, np.ndarray], frames: np.ndarray) -> dict[str
         )
     result["target_frame_camera"] = np.asarray(frames, dtype=np.float32)
     return result
+
+
+def episode_frames_from_sample_frame9(
+    payload: dict[str, np.ndarray], key: str = "goal_frame9"
+) -> np.ndarray:
+    """Recover one stable world target frame per episode from sample rows."""
+    if key not in payload:
+        raise KeyError(f"payload is missing {key}")
+    episode_index = np.asarray(payload["episode_index"], dtype=np.int64)
+    if episode_index.ndim != 1 or len(episode_index) != len(payload[key]):
+        raise ValueError(f"{key} must align one-to-one with episode_index")
+    episodes = np.unique(episode_index)
+    if not np.array_equal(episodes, np.arange(len(episodes))):
+        raise ValueError("episode_index must densely cover [0, episode_count)")
+    frames = []
+    for episode in episodes:
+        rows = np.flatnonzero(episode_index == int(episode))
+        sample_frames = frame9_transform(np.asarray(payload[key][rows]))
+        reference = sample_frames[0]
+        if not np.allclose(sample_frames, reference[None], atol=2e-5):
+            position_error = float(
+                np.max(np.linalg.norm(sample_frames[:, :3, 3] - reference[:3, 3], axis=-1))
+            )
+            rotation_error = float(
+                np.max(
+                    Rotation.from_matrix(
+                        sample_frames[:, :3, :3]
+                        @ reference[:3, :3].T
+                    ).magnitude()
+                )
+            )
+            raise ValueError(
+                f"{key} is not stable in episode {episode}: "
+                f"position_error={position_error}, rotation_error={rotation_error}"
+            )
+        frames.append(reference)
+    return np.asarray(frames, dtype=np.float32)
 
 
 def main() -> None:

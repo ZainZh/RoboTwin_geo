@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import numpy as np
 import sapien
 import transforms3d as t3d
@@ -24,16 +27,94 @@ RAMP_FUNCTIONAL_ROTATION = np.array(
 
 def resolve_shoe_id_candidates(config: dict) -> tuple[int, ...]:
     """Resolve an evaluation-only object subset without exposing IDs to policy."""
-    values = config.get("allowed_shoe_ids", list(range(10)))
+    modelname = str(config.get("shoe_modelname", "041_shoe"))
+    default_values = list(range(10)) if modelname == "041_shoe" else None
+    values = config.get("allowed_shoe_ids", default_values)
     if not isinstance(values, (list, tuple)) or not values:
-        raise ValueError("geometry_marker.allowed_shoe_ids must be a non-empty list")
+        raise ValueError(
+            "geometry_marker.allowed_shoe_ids must be a non-empty list; "
+            "external shoe assets require an explicit frozen ID list"
+        )
     result = tuple(int(value) for value in values)
     if len(set(result)) != len(result):
         raise ValueError("geometry_marker.allowed_shoe_ids must not contain duplicates")
-    invalid = [value for value in result if value < 0 or value >= 10]
+    invalid = [
+        value
+        for value in result
+        if value < 0 or (modelname == "041_shoe" and value >= 10)
+    ]
     if invalid:
         raise ValueError(f"geometry_marker.allowed_shoe_ids contains invalid IDs: {invalid}")
     return result
+
+
+def resolve_shoe_modelname(config: dict) -> str:
+    modelname = str(config.get("shoe_modelname", "041_shoe"))
+    if not modelname or "/" in modelname or "\\" in modelname or modelname in {".", ".."}:
+        raise ValueError(f"invalid geometry_marker.shoe_modelname: {modelname!r}")
+    return modelname
+
+
+def loaded_shoe_footprint(modelname: str, model_id: int) -> np.ndarray:
+    """Return the shoe's loaded half width/length in its local X/Z plane."""
+    path = Path("assets/objects") / modelname / f"model_data{int(model_id)}.json"
+    with path.open("r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    extents = np.asarray(data["extents"], dtype=np.float64)
+    scale = np.asarray(data["scale"], dtype=np.float64)
+    if scale.ndim == 0:
+        scale = np.full((3,), float(scale), dtype=np.float64)
+    loaded = extents * scale
+    return 0.5 * loaded[[0, 2]]
+
+
+def oriented_rectangles_overlap(
+    center_a: np.ndarray,
+    axes_a: np.ndarray,
+    half_extents_a: np.ndarray,
+    center_b: np.ndarray,
+    axes_b: np.ndarray,
+    half_extents_b: np.ndarray,
+    clearance: float = 0.0,
+) -> bool:
+    """Two-dimensional separating-axis test for task initialization."""
+    center_a = np.asarray(center_a, dtype=np.float64)
+    center_b = np.asarray(center_b, dtype=np.float64)
+    axes_a = np.asarray(axes_a, dtype=np.float64)
+    axes_b = np.asarray(axes_b, dtype=np.float64)
+    half_extents_a = np.asarray(half_extents_a, dtype=np.float64)
+    half_extents_b = np.asarray(half_extents_b, dtype=np.float64)
+    delta = center_b - center_a
+    for axis in np.concatenate([axes_a, axes_b], axis=0):
+        axis = axis / max(float(np.linalg.norm(axis)), 1e-12)
+        radius_a = float(np.sum(half_extents_a * np.abs(axes_a @ axis)))
+        radius_b = float(np.sum(half_extents_b * np.abs(axes_b @ axis)))
+        if abs(float(delta @ axis)) > radius_a + radius_b + float(clearance):
+            return False
+    return True
+
+
+def shoe_overlaps_ramp_footprint(
+    shoe_pose: sapien.Pose,
+    shoe_half_extents: np.ndarray,
+    target_xy: np.ndarray,
+    target_yaw: float,
+    ramp_half_extents: np.ndarray,
+    clearance: float = 0.005,
+) -> bool:
+    shoe_rotation = t3d.quaternions.quat2mat(np.asarray(shoe_pose.q, dtype=np.float64))
+    shoe_axes = np.stack([shoe_rotation[:2, 0], shoe_rotation[:2, 2]], axis=0)
+    ramp_rotation = t3d.euler.euler2mat(0.0, 0.0, float(target_yaw))
+    ramp_axes = np.stack([ramp_rotation[:2, 0], ramp_rotation[:2, 1]], axis=0)
+    return oriented_rectangles_overlap(
+        np.asarray(shoe_pose.p[:2], dtype=np.float64),
+        shoe_axes,
+        shoe_half_extents,
+        np.asarray(target_xy, dtype=np.float64),
+        ramp_axes,
+        ramp_half_extents,
+        clearance,
+    )
 
 
 def geometry_marker_local_transform(
@@ -203,14 +284,35 @@ class place_shoe_geometry_marker(place_shoe_rotating_block):
                 np.sum((shoe_pose.get_p()[:2] - target_xy) ** 2) < 0.0225
             )
 
+        self.shoe_modelname = resolve_shoe_modelname(config)
         self.shoe_id = int(np.random.choice(resolve_shoe_id_candidates(config)))
+        shoe_half_extents = loaded_shoe_footprint(self.shoe_modelname, self.shoe_id)
+        ramp_half_extents = np.asarray([half_length, half_width], dtype=np.float64)
+        for _ in range(1000):
+            overlap = shoe_overlaps_ramp_footprint(
+                shoe_pose,
+                shoe_half_extents,
+                target_xy,
+                target_yaw,
+                ramp_half_extents,
+            )
+            too_close_to_origin = np.sum(shoe_pose.get_p()[:2] ** 2) < 0.0225
+            if not overlap and not too_close_to_origin:
+                break
+            shoe_pose = sample_shoe_pose()
+        else:
+            raise RuntimeError("could not sample a collision-free shoe pose in 1000 attempts")
         self.shoe = create_actor(
             scene=self,
             pose=shoe_pose,
-            modelname="041_shoe",
+            modelname=self.shoe_modelname,
             convex=True,
             model_id=self.shoe_id,
         )
+        if self.shoe is None:
+            raise FileNotFoundError(
+                f"failed to create shoe asset {self.shoe_modelname}/base{self.shoe_id}"
+            )
         self.initial_shoe_z = float(self.shoe.get_pose().p[2])
         self.shoe_arm_name = "left" if float(self.shoe.get_pose().p[0]) < 0.0 else "right"
         self.prohibited_area.append([-0.2, -0.15, 0.2, -0.01])
@@ -402,6 +504,7 @@ class place_shoe_geometry_marker(place_shoe_rotating_block):
         metrics.update(
             {
                 "shoe_id": int(self.shoe_id),
+                "shoe_modelname": str(getattr(self, "shoe_modelname", "041_shoe")),
                 "marker_x_m": float(self.marker_x),
                 "marker_y_m": float(self.marker_y),
                 "marker_yaw_deg": float(np.degrees(self.marker_yaw)),

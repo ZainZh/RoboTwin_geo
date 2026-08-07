@@ -1,0 +1,29 @@
+policy_name: GeometryFlow.deploy_interaction_flow
+task_name: place_shoe_geometry_marker
+task_config: demo_clean_3d_object_pc_geometry_marker_unseen05
+ckpt_setting: interaction-flow-fold0-seed0
+seed: 0
+instruction_type: unseen
+test_num: 1
+expert_data_num: 50
+checkpoint_num: 0
+policy_start_phase: placement
+eval_video_log: false
+
+interaction_flow_checkpoint: outputs/geometry_flow/interaction_flow_weight10_fold0_seed0/fold0_interaction_flow_seed0.pt
+interaction_flow_device: cuda:0
+interaction_flow_observation_points: 64
+interaction_flow_execute_steps: 6
+interaction_flow_max_policy_steps: 240
+interaction_flow_temporal_ensemble_decay: 0.0
+interaction_flow_route_to_closed_gripper: true
+# Dense camera-relative NDF policies override the paths/mode below and use
+# exactly 128 policy points.  Privileged oracle evaluation remains opt-in.
+interaction_flow_dense_frame_checkpoints: []
+interaction_flow_dense_camera_metadata: ""
+interaction_flow_dense_ensemble_metadata: ""
+interaction_flow_dense_frame_mode: off
+interaction_flow_allow_privileged_oracle: false
+max_eef_translation_delta_m: 0.08
+max_eef_rotation_delta_rad: 0.5
+skip_expert_check_on_replay: true

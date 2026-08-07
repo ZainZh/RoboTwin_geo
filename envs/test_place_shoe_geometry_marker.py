@@ -6,8 +6,10 @@ from .place_shoe_geometry_marker import (
     RAMP_FUNCTIONAL_ROTATION,
     geometry_marker_functional_matrix,
     geometry_marker_local_transform,
+    oriented_rectangles_overlap,
     place_shoe_geometry_marker,
     resolve_shoe_id_candidates,
+    resolve_shoe_modelname,
 )
 from .placement_metrics import functional_pose_alignment_errors
 
@@ -25,6 +27,18 @@ class TestPlaceShoeGeometryMarker(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "invalid"):
             resolve_shoe_id_candidates({"allowed_shoe_ids": [10]})
 
+    def test_external_assets_require_explicit_ids_without_legacy_cap(self):
+        config = {
+            "shoe_modelname": "gso_shoe_blind_v1",
+            "allowed_shoe_ids": [4, 19],
+        }
+        self.assertEqual(resolve_shoe_modelname(config), "gso_shoe_blind_v1")
+        self.assertEqual(resolve_shoe_id_candidates(config), (4, 19))
+        with self.assertRaisesRegex(ValueError, "explicit frozen ID list"):
+            resolve_shoe_id_candidates({"shoe_modelname": "gso_shoe_blind_v1"})
+        with self.assertRaisesRegex(ValueError, "invalid"):
+            resolve_shoe_modelname({"shoe_modelname": "../041_shoe"})
+
     def test_marker_transform_contains_requested_xy_and_yaw(self):
         transform = geometry_marker_local_transform(0.04, -0.02, np.pi / 2.0)
         np.testing.assert_allclose(transform[:3, 3], [0.04, -0.02, 0.0])
@@ -41,6 +55,19 @@ class TestPlaceShoeGeometryMarker(unittest.TestCase):
             functional[:3, :3], transform[:3, :3] @ RAMP_FUNCTIONAL_ROTATION
         )
         np.testing.assert_allclose(functional[:3, 3], [0.03, 0.01, 0.0])
+
+    def test_oriented_rectangle_overlap_rejects_penetration(self):
+        axes = np.eye(2)
+        self.assertTrue(
+            oriented_rectangles_overlap(
+                [0.18, -0.08], axes, [0.11, 0.05], [0.0, -0.08], axes, [0.18, 0.13]
+            )
+        )
+        self.assertFalse(
+            oriented_rectangles_overlap(
+                [0.36, -0.08], axes, [0.04, 0.10], [0.0, -0.08], axes, [0.18, 0.13]
+            )
+        )
 
     def test_pose_errors_are_sign_invariant_for_quaternions(self):
         errors = functional_pose_alignment_errors(

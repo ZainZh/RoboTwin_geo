@@ -37,6 +37,7 @@ pour_kettle_mug: 600
 move_pillbottle_pad: 400
 place_shoe: 500
 place_shoe_rotating_block: 600
+place_shoe_geometry_marker: 600
 press_stapler: 400
 put_bottles_dustbin: 1700
 put_object_cabinet: 700
