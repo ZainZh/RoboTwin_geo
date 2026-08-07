@@ -87,7 +87,7 @@ class InteractionFlowRuntime:
         dense_ensemble_metadata: str | Path | None = None,
         dense_frame_mode: str = "off",
         allow_privileged_oracle: bool = False,
-        dense_frame_provider: OnlineNdfFunctionalFrameProvider | None = None,
+        dense_frame_provider: object | None = None,
     ) -> None:
         self.checkpoint = Path(checkpoint)
         self.device = torch.device(device)
@@ -172,10 +172,22 @@ class InteractionFlowRuntime:
         self.functional_frame_translation_mode = str(
             payload.get("functional_frame_translation_mode", "absolute")
         )
-        self.dense_camera_relative = bool(
+        marker_camera_relative = bool(
             self.condition in self.FUNCTIONAL_FRAME_CONDITIONS
             and self.functional_frame_encoding
             == "camera_ndf_current_marker_goal_se3_columns_v1"
+        )
+        supplied_camera_relative = bool(
+            dense_frame_provider is not None
+            and self.condition in self.FUNCTIONAL_FRAME_CONDITIONS
+            and self.functional_frame_encoding
+            in {
+                "camera_ndf_current_marker_goal_se3_columns_v1",
+                "dataset_relative_se3_columns_v1",
+            }
+        )
+        self.dense_camera_relative = bool(
+            marker_camera_relative or supplied_camera_relative
         )
         if (
             (
@@ -201,8 +213,8 @@ class InteractionFlowRuntime:
             )
         if not self.dense_camera_relative and self.dense_frame_mode != "off":
             raise ValueError(
-                "dense_frame_mode is only valid for "
-                "camera_ndf_current_marker_goal_se3_columns_v1 checkpoints"
+                "dense_frame_mode requires a deployable camera-relative "
+                "checkpoint/provider pair"
             )
         if self.dense_camera_relative:
             if int(observation_points) != 128:
@@ -219,7 +231,7 @@ class InteractionFlowRuntime:
                     "dense oracle mode requires allow_privileged_oracle=True"
                 )
         self.dense_frame_provider = dense_frame_provider
-        if self.dense_camera_relative and self.dense_frame_provider is None:
+        if marker_camera_relative and self.dense_frame_provider is None:
             checkpoints = list(dense_frame_checkpoints or ())
             if len(checkpoints) < 2:
                 raise ValueError(

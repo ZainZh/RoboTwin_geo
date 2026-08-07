@@ -6,6 +6,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from .augment_hanging_mug_with_camera_rotation import (
+    compose_goal_rotation_frame,
     compose_rotation_token,
     stabilize_frame_symmetry,
     trimmed_icp,
@@ -51,6 +52,12 @@ class HangingMugCameraRotationTest(unittest.TestCase):
         np.testing.assert_array_equal(confidence, np.asarray([0.0, 1.0, 1.0]))
         self.assertLess(float(step[1]), 6.0)
         self.assertGreater(float(margin[1]), 100.0)
+
+    def test_goal_frame_exposes_only_camera_rotation(self):
+        goal = Rotation.from_euler("xyz", [5.0, 8.0, -12.0], degrees=True).as_matrix()
+        frame = compose_goal_rotation_frame(goal[None])
+        np.testing.assert_array_equal(frame[0, :3], np.zeros(3, dtype=np.float32))
+        np.testing.assert_allclose(frame9_rotation(frame)[0], goal, atol=1e-6)
 
 
 if __name__ == "__main__":

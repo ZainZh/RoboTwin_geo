@@ -119,6 +119,27 @@ def compose_rotation_token(
     ).astype(np.float32)
 
 
+def compose_goal_rotation_frame(predicted_goal: np.ndarray) -> np.ndarray:
+    """Encode the camera-derived absolute goal rotation with zero translation.
+
+    The translation is deliberately unavailable in this rotation-only gate.
+    ``goal_action`` policies use only the rotation to canonicalize delta actions,
+    so this remains deployable without simulator position state.
+    """
+
+    goal = np.asarray(predicted_goal, dtype=np.float64)
+    if goal.ndim != 3 or goal.shape[-2:] != (3, 3):
+        raise ValueError(f"goal rotations must be [N,3,3], got {goal.shape}")
+    return np.concatenate(
+        (
+            np.zeros((len(goal), 3), dtype=np.float64),
+            goal[..., :, 0],
+            goal[..., :, 1],
+        ),
+        axis=-1,
+    ).astype(np.float32)
+
+
 def stabilize_frame_symmetry(
     frames: np.ndarray,
     episode_ids: np.ndarray,
@@ -291,6 +312,7 @@ def main() -> None:
         registration_cost[episode] = cost
     predicted_goal = np.stack([goal_by_episode[int(value)] for value in episode_ids])
     target_frame9 = compose_rotation_token(current, predicted_goal)
+    goal_frame9 = compose_goal_rotation_frame(predicted_goal)
 
     train_episodes = [
         episode
@@ -315,6 +337,7 @@ def main() -> None:
 
     output = dict(payload)
     output["target_frame9"] = target_frame9
+    output["goal_frame9"] = goal_frame9
     output["target_frame_confidence"] = confidence
     output["source_frame6_columns"] = np.concatenate(
         (current[..., :, 0], current[..., :, 1]), axis=-1
@@ -361,6 +384,10 @@ def main() -> None:
         "split": {name: list(ids) for name, ids in split.items()},
         "translation_token": "exact zero; no simulator translation",
         "rotation_token": "fully camera-derived after one training reference calibration",
+        "goal_frame9": (
+            "camera-derived rack goal rotation with exact-zero translation; "
+            "deployable for goal_action canonicalization"
+        ),
         "temporal_symmetry_stabilization": bool(args.temporal_symmetry_stabilization),
         "temporal_maximum_step_deg": float(args.temporal_maximum_step_deg),
         "temporal_minimum_margin_deg": float(args.temporal_minimum_margin_deg),

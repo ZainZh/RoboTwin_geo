@@ -20,6 +20,9 @@ from .deploy_policy import (
     temporal_ensemble_action,
 )
 from .interaction_flow_runtime import InteractionFlowRuntime
+from .online_hanging_mug_camera_rotation import (
+    OnlineHangingMugCameraRotationProvider,
+)
 from .online_ndf_functional_frame import relative_frame9_metric
 
 
@@ -91,6 +94,25 @@ def get_model(usr_args):
     dense_checkpoints = _path_list(
         usr_args.get("interaction_flow_dense_frame_checkpoints")
     )
+    dense_frame_mode = str(
+        usr_args.get("interaction_flow_dense_frame_mode", "off")
+    )
+    dense_camera_metadata = usr_args.get(
+        "interaction_flow_dense_camera_metadata"
+    )
+    dense_ensemble_metadata = usr_args.get(
+        "interaction_flow_dense_ensemble_metadata"
+    )
+    dense_provider = None
+    if dense_frame_mode != "off" and dense_camera_metadata not in {None, ""}:
+        calibration_path = Path(str(dense_camera_metadata)).expanduser()
+        if calibration_path.suffix == ".npz":
+            dense_provider = OnlineHangingMugCameraRotationProvider.from_artifacts(
+                frame_checkpoints=dense_checkpoints,
+                calibration=calibration_path,
+                ensemble_metadata=Path(str(dense_ensemble_metadata)).expanduser(),
+                device=str(usr_args.get("interaction_flow_device", "cuda:0")),
+            )
     model = SimpleNamespace(
         action_policy=InteractionFlowRuntime(
             checkpoint,
@@ -109,20 +131,15 @@ def get_model(usr_args):
                 usr_args.get("interaction_flow_target_axis_mode", "clean")
             ),
             dense_frame_checkpoints=dense_checkpoints,
-            dense_camera_metadata=usr_args.get(
-                "interaction_flow_dense_camera_metadata"
-            ),
-            dense_ensemble_metadata=usr_args.get(
-                "interaction_flow_dense_ensemble_metadata"
-            ),
-            dense_frame_mode=str(
-                usr_args.get("interaction_flow_dense_frame_mode", "off")
-            ),
+            dense_camera_metadata=dense_camera_metadata,
+            dense_ensemble_metadata=dense_ensemble_metadata,
+            dense_frame_mode=dense_frame_mode,
             allow_privileged_oracle=_bool(
                 usr_args.get(
                     "interaction_flow_allow_privileged_oracle", False
                 )
             ),
+            dense_frame_provider=dense_provider,
         ),
         checkpoint=str(checkpoint),
         execute_steps=max(

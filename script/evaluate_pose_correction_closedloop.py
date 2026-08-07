@@ -78,7 +78,11 @@ def parser() -> argparse.ArgumentParser:
         ),
     )
     result.add_argument("--episodes", default="")
-    result.add_argument("--levels", default="1,2")
+    result.add_argument(
+        "--levels",
+        default="",
+        help="Optional comma-separated manifest levels; empty evaluates all levels.",
+    )
     result.add_argument("--perturbation-seed", type=int, default=20260804)
     result.add_argument("--policy-calls", type=int, default=6)
     result.add_argument("--execute-steps", type=int, default=1)
@@ -420,7 +424,10 @@ def _checkpoint_uses_dense_camera_frame(checkpoint: Path) -> bool:
         payload.get("condition")
         in deploy_interaction_flow.InteractionFlowRuntime.FUNCTIONAL_FRAME_CONDITIONS
         and payload.get("functional_frame_encoding")
-        == "camera_ndf_current_marker_goal_se3_columns_v1"
+        in {
+            "camera_ndf_current_marker_goal_se3_columns_v1",
+            "dataset_relative_se3_columns_v1",
+        }
     )
 
 

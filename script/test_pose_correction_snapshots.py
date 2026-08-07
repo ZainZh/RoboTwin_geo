@@ -5,10 +5,33 @@ import unittest
 
 import numpy as np
 
-from script.evaluate_pose_correction_closedloop import _snapshot_to_jsonable
+from script.evaluate_pose_correction_closedloop import (
+    _snapshot_to_jsonable,
+    parser,
+)
 
 
 class SemanticSnapshotSerializationTest(unittest.TestCase):
+    def test_closedloop_parser_does_not_silently_filter_manifest_levels(self):
+        args = parser().parse_args(
+            [
+                "--manifest",
+                "manifest.json",
+                "--checkpoint",
+                "zero",
+                "zero.pt",
+                "--dense-frame-checkpoint",
+                "frame.pt",
+                "--camera-metadata",
+                "camera.npz",
+                "--ensemble-metadata",
+                "ensemble.json",
+                "--output",
+                "result.json",
+            ]
+        )
+        self.assertEqual(args.levels, "")
+
     def test_numpy_snapshot_becomes_json_primitives(self):
         value = {
             "array": np.asarray([[1.0, 2.0]], dtype=np.float32),
