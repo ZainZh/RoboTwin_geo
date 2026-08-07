@@ -5,11 +5,32 @@ import unittest
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from .augment_task_flow_with_ndf_full_frame import augment_payload
+from .augment_task_flow_with_ndf_full_frame import (
+    attach_prediction_fields,
+    augment_payload,
+)
 from .functional_action_frame import frame9_rotation
 
 
 class NdfFullFrameAugmentTest(unittest.TestCase):
+    def test_prediction_confidence_gates_source_and_relative_tokens(self):
+        output = {"shoe_id": np.asarray([0, 1], dtype=np.int64)}
+        predictions = {
+            "frame_confidence": np.asarray([1.0, 0.0], dtype=np.float32),
+            "frame_disagreement_deg": np.asarray([1.5, 12.0], dtype=np.float32),
+        }
+        attach_prediction_fields(output, predictions)
+        np.testing.assert_array_equal(
+            output["target_frame_confidence"], predictions["frame_confidence"]
+        )
+        np.testing.assert_array_equal(
+            output["source_frame_confidence"], predictions["frame_confidence"]
+        )
+        np.testing.assert_array_equal(
+            output["source_frame_disagreement_deg"],
+            predictions["frame_disagreement_deg"],
+        )
+
     def test_predicted_current_frame_yields_remaining_relative_rotation(self):
         true_current = Rotation.from_euler("xyz", [10.0, -5.0, 30.0], degrees=True).as_matrix()
         prediction_error = Rotation.from_euler("z", 7.0, degrees=True).as_matrix()

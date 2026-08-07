@@ -105,15 +105,99 @@ Consequently the defensible claim is **oracle task-aligned geometry transfers
 and consistently reduces orientation error**. It is not yet valid to claim
 camera-only generalization or improved hanging success.
 
+## Current-mug camera-frame gate
+
+The next experiment replaced only the **current mug functional frame** with a
+frame estimated from the mug camera point cloud.  The rack/goal frame remains
+the task-state label in this experiment.  It is therefore a partial-perception
+causal gate, not a fully camera-only policy.
+
+Two frame estimators used the same vector-neuron NDF architecture, the same
+task-aligned functional-frame supervision, the same object split, and three
+training seeds:
+
+1. `shoe-pretrained`: initialized from `/shared2/sz/model/ndf/shoe.pth` and
+   fully fine-tuned on the development mugs;
+2. `random-equivariant`: identical architecture trained from random
+   initialization on the development mugs.
+
+Held-out single-model frame errors were:
+
+| initialization | mean SO(3) error (deg) | median (deg) | p90 (deg) | flip rate |
+|---|---:|---:|---:|---:|
+| shoe-pretrained | 11.179 +/- 0.545 | 5.795 +/- 1.065 | 14.058 +/- 2.547 | 2.69% |
+| random-equivariant | **8.745 +/- 0.712** | **4.231 +/- 0.393** | **9.216 +/- 2.070** | 2.42% |
+
+The validation-selected two-model random ensemble reached 8.036-degree mean,
+3.638-degree median, and 7.407-degree p90 test error.  Its disagreement gate
+accepted 85.5% of test samples; accepted samples had 5.254-degree mean error,
+but one 180-degree-like flip was still accepted.  Confidence is therefore
+useful for triage but not yet safety-calibrated.
+
+The frame-confidence interface was corrected before the policy runs:
+confidence now gates both the source-frame consumers and the global relative
+frame token.  Previously only the source field was populated, which could let
+a low-confidence relative token enter the policy unmasked.
+
+### Held-out policy results
+
+The primary controls are capacity-matched:
+
+- `zero_global`: global relation token exactly zeroed;
+- `shuffled`: predicted global tokens shuffled across episodes;
+- `predicted`: correctly aligned predicted global token.
+
+Endpoint rotation errors for the random-equivariant estimator were:
+
+| seed | raw (deg) | zero (deg) | shuffled (deg) | predicted (deg) |
+|---:|---:|---:|---:|---:|
+| 0 | 12.333 | 12.102 | 12.203 | **11.762** |
+| 1 | 11.707 | 11.580 | 12.607 | **11.181** |
+| 2 | 12.519 | 10.668 | 10.883 | **10.326** |
+| mean +/- sample SD | 12.186 +/- 0.426 | 11.450 +/- 0.726 | 11.898 +/- 0.902 | **11.090 +/- 0.722** |
+
+The predicted token beats the exact-zero control in all three seeds by
+0.361 +/- 0.034 degrees, and beats shuffled tokens in all three seeds by
+0.808 +/- 0.538 degrees.  It retains 55.4% of the oracle-versus-zero endpoint
+rotation gain.  Endpoint translation is 1.447 +/- 0.042 cm versus
+1.457 +/- 0.033 cm for zero; this small translation difference is not
+seed-consistent and is not claimed as a positive result.
+
+The shoe-pretrained predicted token also beat zero and shuffled in all three
+seeds, reaching 11.157 +/- 0.656 degrees and retaining 45.0% of the oracle
+rotation gain.  Despite its substantially worse standalone frame error, its
+downstream mean is only 0.068 degrees worse than random initialization and the
+per-seed ranking is not uniform.  Standalone frame error is therefore useful
+but is not a sufficient policy-selection metric.
+
+### Updated interpretation
+
+This gate supports two distinct conclusions:
+
+1. **The task-aligned relation token is causally useful.**  Correct predicted
+   tokens beat both exact-zero and shuffled-token controls in every seed.
+2. **The shoe NDF checkpoint is not the source of the mug gain.**  It is a
+   negative-transfer initialization for mug frame estimation: random
+   initialization improves mean frame error by 2.435 degrees under the same
+   architecture and supervision.
+
+Accordingly, the paper claim should be encoder-agnostic: the contribution is a
+task-aligned geometric relation interface, with an equivariant encoder adapted
+to the task.  We must not claim that category-mismatched NDF pretraining itself
+improves mug manipulation.  UTONIA remains a representation comparison, not a
+required component of the method.
+
 ## Next locked gate
 
-1. Train a camera-only relative functional-frame estimator on development mug
-   IDs only, first with NDF and then with UTONIA if the feature cache is
-   available.
-2. Replace the oracle global token with the predicted token without changing
-   the action-policy architecture or action targets.
-3. Compare `raw`, `zero_global`, `predicted`, `predicted-shuffled`, and oracle
-   on fixed held-out identities and paired initial states.
-4. Only if predicted geometry retains a useful fraction of the oracle gain,
-   run paired closed-loop success evaluation and then replicate in ACT/DP3.
-
+1. Estimate the rack/goal functional frame from camera-B points without task
+   state, using only development data for fitting and validation selection.
+2. Compose the camera mug frame and camera rack/goal frame into a fully
+   camera-derived relative SE(3) token.  Do not change policy capacity, action
+   targets, split, or early-stopping rule.
+3. Repeat exact-zero, shuffled, predicted, and oracle comparisons.  The full
+   camera token must retain a useful, seed-consistent fraction of the oracle
+   orientation gain.
+4. Freeze the representation and policy checkpoints, then run paired
+   closed-loop success evaluation on fixed initial states.  Only after this
+   gate passes should the method be replicated in ACT/DP3 and expanded to
+   blind identities.

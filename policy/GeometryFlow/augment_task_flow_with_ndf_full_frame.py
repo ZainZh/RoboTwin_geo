@@ -113,6 +113,39 @@ def augment_payload(
     return output, frame_error
 
 
+def attach_prediction_fields(
+    output: dict[str, np.ndarray], predictions: dict[str, np.ndarray]
+) -> None:
+    """Attach estimator diagnostics and gate every token derived from its frame."""
+
+    samples = len(output["shoe_id"])
+    if "frame_confidence" in predictions:
+        confidence = np.asarray(predictions["frame_confidence"], dtype=np.float32)
+        if confidence.shape != (samples,):
+            raise ValueError(
+                f"frame_confidence must be {(samples,)}, got {confidence.shape}"
+            )
+        if not np.all(np.isfinite(confidence)) or np.any(
+            (confidence < 0.0) | (confidence > 1.0)
+        ):
+            raise ValueError("frame_confidence must be finite and lie in [0,1]")
+        # target_frame9 contains the predicted current rotation, so confidence
+        # must gate both the global relative token and source-frame consumers.
+        output["target_frame_confidence"] = confidence.copy()
+        output["source_frame_confidence"] = confidence.copy()
+    if "frame_disagreement_deg" in predictions:
+        disagreement = np.asarray(
+            predictions["frame_disagreement_deg"], dtype=np.float32
+        )
+        if disagreement.shape != (samples,):
+            raise ValueError(
+                f"frame_disagreement_deg must be {(samples,)}, got {disagreement.shape}"
+            )
+        if not np.all(np.isfinite(disagreement)) or np.any(disagreement < 0.0):
+            raise ValueError("frame_disagreement_deg must be finite and non-negative")
+        output["source_frame_disagreement_deg"] = disagreement
+
+
 def main() -> None:
     args = parser().parse_args()
     if args.fold < 0 or args.fold >= len(FOLDS):
@@ -144,18 +177,7 @@ def main() -> None:
         predictions = {key: np.asarray(archive[key]) for key in archive.files}
     validate_alignment(payload, predictions)
     output, frame_error = augment_payload(payload, predictions["frames"])
-    if "frame_confidence" in predictions:
-        confidence = np.asarray(predictions["frame_confidence"], dtype=np.float32)
-        if confidence.shape != (len(payload["shoe_id"]),):
-            raise ValueError(
-                f"frame_confidence must be {(len(payload['shoe_id']),)}, "
-                f"got {confidence.shape}"
-            )
-        output["source_frame_confidence"] = confidence
-    if "frame_disagreement_deg" in predictions:
-        output["source_frame_disagreement_deg"] = np.asarray(
-            predictions["frame_disagreement_deg"], dtype=np.float32
-        )
+    attach_prediction_fields(output, predictions)
     shoe_id = np.asarray(payload["shoe_id"], dtype=np.int64)
     diagnostics = {
         split: frame_summary(

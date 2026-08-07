@@ -11,6 +11,7 @@ from .ndf_adapter import NdfFunctionalFrameAdapter
 from .train_ndf_functional_frame_head import (
     frame_loss,
     load_frame_model,
+    resolve_object_split,
     select_training_episode_indices,
 )
 
@@ -24,6 +25,27 @@ import ndf_robot.model.vnn_occupancy_net_pointnet_dgcnn as vnn  # noqa: E402
 
 
 class NdfFunctionalFrameHeadTest(unittest.TestCase):
+    def test_explicit_object_split_is_complete_unique_and_disjoint(self):
+        split = resolve_object_split(
+            0,
+            train_ids=[2, 3, 4, 7],
+            validation_ids=[1, 6],
+            test_ids=[0, 5],
+        )
+        self.assertEqual(split["train"], (2, 3, 4, 7))
+        self.assertEqual(split["validation"], (1, 6))
+        self.assertEqual(split["test"], (0, 5))
+        with self.assertRaisesRegex(ValueError, "supplied together"):
+            resolve_object_split(0, train_ids=[2], validation_ids=[1])
+        with self.assertRaisesRegex(ValueError, "disjoint"):
+            resolve_object_split(
+                0, train_ids=[2, 3], validation_ids=[1, 2], test_ids=[0]
+            )
+        with self.assertRaisesRegex(ValueError, "unique"):
+            resolve_object_split(
+                0, train_ids=[2, 2], validation_ids=[1], test_ids=[0]
+            )
+
     def test_episode_budget_keeps_complete_frames_and_all_train_objects(self):
         import numpy as np
 

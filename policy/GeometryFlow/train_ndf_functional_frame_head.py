@@ -32,6 +32,46 @@ from .train_task_flow_benchmark import FOLDS
 CONDITIONS = ("correct_frame", "shuffled_frame")
 
 
+def resolve_object_split(
+    fold: int,
+    *,
+    train_ids: list[int] | tuple[int, ...] | None = None,
+    validation_ids: list[int] | tuple[int, ...] | None = None,
+    test_ids: list[int] | tuple[int, ...] | None = None,
+) -> dict[str, tuple[int, ...]]:
+    """Resolve either the registered benchmark fold or an explicit split."""
+
+    custom = (train_ids, validation_ids, test_ids)
+    if any(value is not None for value in custom):
+        if not all(value is not None for value in custom):
+            raise ValueError(
+                "train-ids, validation-ids, and test-ids must be supplied together"
+            )
+        split = {
+            "train": tuple(int(value) for value in train_ids),
+            "validation": tuple(int(value) for value in validation_ids),
+            "test": tuple(int(value) for value in test_ids),
+        }
+    else:
+        if int(fold) < 0 or int(fold) >= len(FOLDS):
+            raise ValueError(f"fold must lie in [0,{len(FOLDS) - 1}]")
+        split = {
+            name: tuple(int(value) for value in values)
+            for name, values in FOLDS[int(fold)].items()
+        }
+    sets = {name: set(values) for name, values in split.items()}
+    for name, values in split.items():
+        if not values or len(values) != len(sets[name]):
+            raise ValueError(f"{name} object IDs must be nonempty and unique")
+    if (
+        sets["train"] & sets["validation"]
+        or sets["train"] & sets["test"]
+        or sets["validation"] & sets["test"]
+    ):
+        raise ValueError("train, validation, and test object IDs must be disjoint")
+    return split
+
+
 def select_training_episode_indices(
     train_indices: np.ndarray,
     shoe_ids: np.ndarray,
@@ -509,6 +549,27 @@ def build_parser() -> argparse.ArgumentParser:
     result.add_argument("--folds", nargs="+", type=int, default=[0])
     result.add_argument("--seeds", nargs="+", type=int, default=[0])
     result.add_argument(
+        "--train-ids",
+        nargs="+",
+        type=int,
+        default=None,
+        help="Explicit train object IDs; requires validation-ids and test-ids.",
+    )
+    result.add_argument(
+        "--validation-ids",
+        nargs="+",
+        type=int,
+        default=None,
+        help="Explicit validation object IDs; requires train-ids and test-ids.",
+    )
+    result.add_argument(
+        "--test-ids",
+        nargs="+",
+        type=int,
+        default=None,
+        help="Explicit test object IDs; requires train-ids and validation-ids.",
+    )
+    result.add_argument(
         "--conditions", nargs="+", choices=CONDITIONS, default=list(CONDITIONS)
     )
     result.add_argument("--epochs", type=int, default=300)
@@ -577,17 +638,26 @@ def main() -> None:
     rotations = torch.from_numpy(rotations_numpy).to(device)
     public_results = []
     for fold in args.folds:
+        object_split = resolve_object_split(
+            int(fold),
+            train_ids=args.train_ids,
+            validation_ids=args.validation_ids,
+            test_ids=args.test_ids,
+        )
         split = {
             name: np.flatnonzero(np.isin(shoe_ids, ids))
-            for name, ids in FOLDS[int(fold)].items()
+            for name, ids in object_split.items()
         }
+        empty = [name for name, indices in split.items() if len(indices) == 0]
+        if empty:
+            raise ValueError(f"object split has no dataset rows for {empty}")
         for seed in args.seeds:
             selected_train_indices, episode_selection = (
                 select_training_episode_indices(
                     split["train"],
                     shoe_ids,
                     episode_ids,
-                    FOLDS[int(fold)]["train"],
+                    object_split["train"],
                     episodes_per_object=args.train_episodes_per_object,
                     fold=int(fold),
                     seed=int(seed),
@@ -619,6 +689,9 @@ def main() -> None:
                 result["config"] = {
                     key: str(value) if isinstance(value, Path) else value
                     for key, value in vars(args).items()
+                }
+                result["split"] = {
+                    name: list(values) for name, values in object_split.items()
                 }
                 result["training_episode_selection"] = episode_selection
                 result["frame_semantics"] = {

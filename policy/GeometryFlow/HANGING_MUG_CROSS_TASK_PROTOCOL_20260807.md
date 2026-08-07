@@ -76,3 +76,16 @@ Chamfer is diagnostic only and cannot pass the gate by itself.
 
 The completed three-seed oracle gate and its limitations are recorded in
 `HANGING_MUG_ORACLE_GATE_RESULT_20260807.md`.
+
+## Status on 2026-08-07
+
+- The oracle ceiling passed: the full relative SE(3) token beat the
+  capacity-matched zero-global control on endpoint rotation in all three
+  seeds.
+- The current-mug camera-frame gate also passed offline: correctly aligned
+  predicted tokens beat both zero and shuffled controls in all three seeds and
+  retained 55.4% of the oracle orientation gain.
+- This is not yet a fully camera-only result because the rack/goal functional
+  frame is still supplied from task-state labels.
+- The next frozen intervention is to estimate camera-B rack/goal geometry and
+  rerun the same controls before any closed-loop or blind-identity claim.
