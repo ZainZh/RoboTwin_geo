@@ -39,8 +39,17 @@ geometry improves a learned manipulation action policy.
   3--5 cm / 20--35 degrees, and 4--6 cm / 30--45 degrees.
 - Every admitted initial state must fail the 2 cm / 10 degree geometric
   threshold; no already-solved episode is retained.
+- The demonstration expert may perform at most two recorded re-alignment
+  moves.  The second move recomputes the EEF target from the newly observed
+  mug-in-gripper relation; the success threshold is not relaxed.
 - The expert endpoint, camera A/B clouds, robot EEF state, and task-state
   geometry labels must all be finite and present before dataset conversion.
+
+The initial one-pass feasibility collection was stopped after 16 accepted
+episodes when repeated near-threshold failures exposed in-gripper pose drift.
+That partial set is retained as diagnostics but excluded from training.  The
+24-episode development set is recollected from scratch under the uniform
+two-correction contract above.
 
 ## Staged gate
 

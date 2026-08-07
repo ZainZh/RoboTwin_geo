@@ -54,6 +54,15 @@ def parser() -> argparse.ArgumentParser:
     )
     result.add_argument("--success-translation-cm", type=float, default=4.0)
     result.add_argument("--success-rotation-deg", type=float, default=15.0)
+    result.add_argument(
+        "--max-expert-corrections",
+        type=int,
+        default=1,
+        help=(
+            "Maximum recorded expert re-alignment moves. Each move recomputes "
+            "the EEF target from the current object/grasp relation."
+        ),
+    )
     return result
 
 
@@ -167,6 +176,7 @@ def write_manifest(
             "translation_cm": float(args.success_translation_cm),
             "rotation_deg": float(args.success_rotation_deg),
         },
+        "max_expert_corrections": int(args.max_expert_corrections),
         "perturbation_seed_rule": "collection_seed_plus_scene_seed",
         "setup_is_test": False,
         "status": str(status),
@@ -182,11 +192,9 @@ def write_manifest(
     return manifest
 
 
-def prepare_perturbed_episode(task, level, generator):
-    """Prepare one grasp-preserving perturbation before recording starts."""
-    from envs.utils import ArmTag
+def pose_correction_waypoints(task, arm):
+    """Compute pre/final EEF goals from the current object-grasp relation."""
 
-    arm = ArmTag(str(task.prepare_policy_placement_phase()))
     task_spec = getattr(task, "get_pose_correction_spec", None)
     spec = (
         dict(task_spec())
@@ -225,6 +233,15 @@ def prepare_perturbed_episode(task, level, generator):
         ),
         dtype=np.float64,
     )
+    return pre_pose, final_pose
+
+
+def prepare_perturbed_episode(task, level, generator):
+    """Prepare one grasp-preserving perturbation before recording starts."""
+    from envs.utils import ArmTag
+
+    arm = ArmTag(str(task.prepare_policy_placement_phase()))
+    pre_pose, final_pose = pose_correction_waypoints(task, arm)
     task.move(task.move_to_pose(arm, pre_pose))
     task.move(task.move_to_pose(arm, final_pose))
     if not task.plan_success:
@@ -246,6 +263,8 @@ def main() -> None:
         raise ValueError("success-translation-cm must be positive")
     if not 0.0 < float(args.success_rotation_deg) <= 180.0:
         raise ValueError("success-rotation-deg must lie in (0,180]")
+    if int(args.max_expert_corrections) < 1:
+        raise ValueError("max-expert-corrections must be positive")
     args.output.mkdir(parents=True, exist_ok=True)
     levels = parse_levels(args.levels)
     allowed = {int(item) for item in args.allowed_shoes.split(",") if item}
@@ -300,8 +319,28 @@ def main() -> None:
         task.save_data = True
         task.FRAME_IDX = 0
         task.eval_success = False
-        task.move(task.move_to_pose(arm, final_pose))
-        after = alignment(task)
+        correction_history = []
+        after = before
+        for correction_index in range(int(args.max_expert_corrections)):
+            if correction_index > 0:
+                _, final_pose = pose_correction_waypoints(task, arm)
+            task.move(task.move_to_pose(arm, final_pose))
+            after = alignment(task)
+            correction_history.append(
+                {
+                    "index": int(correction_index),
+                    "after": after,
+                    "plan_success": bool(task.plan_success),
+                }
+            )
+            reached = bool(
+                task.plan_success
+                and after["translation_m"] * 100.0
+                <= float(args.success_translation_cm)
+                and after["rotation_deg"] <= float(args.success_rotation_deg)
+            )
+            if reached or not task.plan_success:
+                break
         record = {
             "episode": episode,
             "scene_seed": int(scene_seed),
@@ -312,6 +351,8 @@ def main() -> None:
             "commanded_perturbation": perturbation,
             "before": before,
             "after": after,
+            "expert_corrections_executed": int(len(correction_history)),
+            "correction_history": correction_history,
             "recorded_frames": int(task.FRAME_IDX),
             "plan_success": bool(task.plan_success),
         }
