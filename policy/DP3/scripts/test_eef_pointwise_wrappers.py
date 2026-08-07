@@ -78,7 +78,10 @@ class TestEefPointwiseWrappers(unittest.TestCase):
         self.assertIn('process_data_semantic_pointwise_hybrid_eef_absolute6d_global.py', semantic_process)
         self.assertIn('output_suffix="-objpc-semantic-pointwise-hybrid${semantic_feature_suffix}-eef-absolute6d-global${point_cloud_suffix}"', semantic_train)
         self.assertIn("task.shape_meta.obs.point_cloud.shape=[${point_cloud_num},6]", semantic_train)
-        self.assertIn("ckpt_setting=\"${task_config}-objpc-semantic-pointwise-hybrid${semantic_feature_suffix}-eef-absolute6d-global\"", semantic_infer)
+        self.assertIn("default_ckpt_setting=\"${task_config}-objpc-semantic-pointwise-hybrid${semantic_feature_suffix}-eef-absolute6d-global\"", semantic_infer)
+        self.assertIn("semantic_policy_output_mode=${SEMANTIC_POLICY_OUTPUT_MODE:-embedding}", semantic_infer)
+        self.assertIn("ckpt_setting=${CKPT_SETTING_OVERRIDE:-${default_ckpt_setting}}", semantic_infer)
+        self.assertIn('--semantic_policy_output_mode "${semantic_policy_output_mode}"', semantic_infer)
         self.assertIn("output_frame=${12:-source}", semantic_infer)
         self.assertIn("eef_frame_mode=${13:-reference_camera}", semantic_infer)
 
@@ -132,6 +135,16 @@ class TestEefPointwiseWrappers(unittest.TestCase):
 
         self.assertIn('parser.add_argument("--point_cloud_num", type=int, default=1024)', inference)
         self.assertIn('"point_cloud_num": str(args.point_cloud_num)', inference)
+    def test_real_dp3_inference_forwards_semantic_feature_contract(self):
+        inference = (SCRIPT_ROOT.parents[2] / "script" / "real_zed_inference" / "real_dp3_inference.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('"semantic_input_color_mode": args.semantic_input_color_mode', inference)
+        self.assertIn('"semantic_forward_mode": args.semantic_forward_mode', inference)
+        self.assertIn('"semantic_policy_output_mode": args.semantic_policy_output_mode', inference)
+        self.assertIn('"--semantic_policy_output_mode"', inference)
+
 
 
 if __name__ == "__main__":

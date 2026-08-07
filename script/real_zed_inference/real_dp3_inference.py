@@ -1119,6 +1119,9 @@ def load_dp3_model(args: argparse.Namespace):
         "semantic_ckpt_B": args.semantic_ckpt_B,
         "semantic_device": args.semantic_device,
         "semantic_point_num": str(args.semantic_point_num),
+        "semantic_input_color_mode": args.semantic_input_color_mode,
+        "semantic_forward_mode": args.semantic_forward_mode,
+        "semantic_policy_output_mode": args.semantic_policy_output_mode,
     }
     with pushd(DP3_ROOT):
         model = get_model(usr_args)
@@ -2154,6 +2157,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default="debug_placeholder",
     )
     parser.add_argument("--semantic_forward_mode", choices=["reference", "dp3"], default="reference")
+    parser.add_argument(
+        "--semantic_policy_output_mode",
+        choices=["embedding", "xyz", "part_prob"],
+        default="embedding",
+        help="Feature written into the policy semantic branch; must match the training zarr/checkpoint.",
+    )
     parser.add_argument("--object_placeholders", default="{A},{B}")
     parser.add_argument("--point_cloud_num", type=int, default=1024)
 

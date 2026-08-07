@@ -49,3 +49,7 @@ outputs/real_zed_collection/robot_camera_calibration/20260430_181928_right_globa
 outputs/real_zed_collection/robot_camera_calibration/20260430_182143_right_global/
 
 
+
+# Local experiment artifacts and paper binaries (keep source/docs in Git).
+outputs/paper_revision/
+corl_version0/*.pdf

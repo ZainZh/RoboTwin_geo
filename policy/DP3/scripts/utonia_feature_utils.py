@@ -10,12 +10,34 @@ from object_pointcloud_utils import resample_point_cloud, strip_zero_points
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+UTONIA_ROOT = os.environ.get("UTONIA_ROOT")
+if UTONIA_ROOT:
+    resolved_utonia_root = Path(UTONIA_ROOT).expanduser().resolve()
+    if not resolved_utonia_root.is_dir():
+        raise ImportError(f"UTONIA_ROOT is not a directory: {resolved_utonia_root}")
+    if str(resolved_utonia_root) not in sys.path:
+        sys.path.insert(0, str(resolved_utonia_root))
 SEM_ROOT = REPO_ROOT / "include" / "3d_semantic_train"
-if SEM_ROOT.exists() and str(SEM_ROOT) not in sys.path:
-    sys.path.insert(0, str(SEM_ROOT))
+SEMANTIC_RELEASE_ROOT = SEM_ROOT / "semantic_field_release"
+if not SEMANTIC_RELEASE_ROOT.is_dir():
+    raise ImportError(
+        f"Semantic field release tree is unavailable: {SEMANTIC_RELEASE_ROOT}"
+    )
+if str(SEMANTIC_RELEASE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SEMANTIC_RELEASE_ROOT))
 
 from my_datasets.partnext_canonical_field import UTONIA  # noqa: E402
 from models.canonical_field.utonia_feature_extractor import UtoniaFeatureExtractor  # noqa: E402
+
+DEBUG_PLACEHOLDER_COLORS_RGB = {
+    "{A}": np.asarray([255.0, 48.0, 48.0], dtype=np.float32),
+    "A": np.asarray([255.0, 48.0, 48.0], dtype=np.float32),
+    "{B}": np.asarray([48.0, 96.0, 255.0], dtype=np.float32),
+    "B": np.asarray([48.0, 96.0, 255.0], dtype=np.float32),
+}
+DEFAULT_DEBUG_PLACEHOLDER_COLOR_RGB = np.asarray(
+    [180.0, 180.0, 180.0], dtype=np.float32
+)
 
 
 def _build_utonia_transform(grid_size: float):

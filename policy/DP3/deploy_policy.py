@@ -480,6 +480,7 @@ def encode_obs(observation, model):  # Post-Process Observation
                 placeholder=placeholder,
                 semantic_input_color_mode=str(getattr(model, "semantic_input_color_mode", "debug_placeholder")),
                 semantic_forward_mode=str(getattr(model, "semantic_forward_mode", "reference")),
+                output_mode=str(getattr(model, "semantic_policy_output_mode", "embedding")),
             ).astype(np.float32)
 
     if use_utonia_pointwise:
@@ -722,6 +723,11 @@ def get_model(usr_args):
     semantic_point_num = int(usr_args.get("semantic_point_num", 128))
     semantic_input_color_mode = str(usr_args.get("semantic_input_color_mode", "debug_placeholder"))
     semantic_forward_mode = str(usr_args.get("semantic_forward_mode", "reference"))
+    semantic_policy_output_mode = str(usr_args.get("semantic_policy_output_mode", "embedding"))
+    if semantic_policy_output_mode not in {"embedding", "xyz", "part_prob"}:
+        raise ValueError(
+            f"Unsupported semantic_policy_output_mode: {semantic_policy_output_mode}"
+        )
     semantic_device = torch.device(usr_args.get("semantic_device", "cuda:0") if torch.cuda.is_available() else "cpu")
     semantic_model_specs = resolve_semantic_models(usr_args)
     semantic_feat_dim_by_placeholder = {}
@@ -796,7 +802,15 @@ def get_model(usr_args):
                 checkpoint=checkpoint,
                 device=semantic_device,
             )
-            semantic_feat_dim_by_placeholder[placeholder] = int(semantic_models[placeholder]["sem_embedding_dim"])
+            if semantic_policy_output_mode == "embedding":
+                output_feature_dim = int(semantic_models[placeholder]["sem_embedding_dim"])
+            elif semantic_policy_output_mode == "part_prob":
+                output_feature_dim = len(semantic_models[placeholder].get("canonical_label_names", []))
+                if output_feature_dim <= 0:
+                    raise ValueError(f"No semantic labels available for {placeholder}")
+            else:
+                output_feature_dim = 0
+            semantic_feat_dim_by_placeholder[placeholder] = output_feature_dim
     else:
         semantic_models = {}
 
@@ -897,7 +911,7 @@ def get_model(usr_args):
                 continue
             pointcloud_key = placeholder_semantic_pointcloud_key(placeholder)
             cfg.task.shape_meta.obs[pointcloud_key] = {
-                "shape": [semantic_point_num, 3 + int(artifacts["sem_embedding_dim"])],
+                "shape": [semantic_point_num, 3 + semantic_feat_dim_by_placeholder[placeholder]],
                 "type": "point_cloud",
             }
     if use_utonia_pointwise:
@@ -1013,6 +1027,7 @@ def get_model(usr_args):
     DP3_Model.semantic_device = semantic_device
     DP3_Model.semantic_input_color_mode = semantic_input_color_mode
     DP3_Model.semantic_forward_mode = semantic_forward_mode
+    DP3_Model.semantic_policy_output_mode = semantic_policy_output_mode
     DP3_Model.semantic_point_num_by_placeholder = {
         placeholder: semantic_point_num
         for placeholder in object_placeholders

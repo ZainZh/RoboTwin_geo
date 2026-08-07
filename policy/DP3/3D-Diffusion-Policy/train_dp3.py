@@ -43,6 +43,7 @@ from diffusion_policy_3d.common.checkpoint_util import TopKCheckpointManager
 from diffusion_policy_3d.common.pytorch_util import dict_apply, optimizer_to
 from diffusion_policy_3d.model.diffusion.ema_model import EMAModel
 from diffusion_policy_3d.model.common.lr_scheduler import get_scheduler
+from scripts.safe_dp3_checkpoint import save_weights_only_checkpoint
 
 import pdb, random
 
@@ -293,6 +294,30 @@ class TrainDP3Workspace:
                     save_path = f"checkpoints/{self.cfg.task.name}_w_rgb_{cfg.training.seed}/{self.epoch + 1}.ckpt"
 
                 self.save_checkpoint(save_path)
+            weights_only_path = str(cfg.checkpoint.get("weights_only_path", "") or "").strip()
+            if (
+                ((self.epoch + 1) % cfg.training.checkpoint_every) == 0
+                and bool(cfg.checkpoint.get("save_weights_only", False))
+            ):
+                if not weights_only_path:
+                    raise ValueError("checkpoint.weights_only_path is required when save_weights_only=true")
+                resolved_weights_path = weights_only_path.format(epoch=self.epoch + 1)
+                metadata = {
+                    "epoch": int(self.epoch + 1),
+                    "global_step": int(self.global_step),
+                    "seed": int(cfg.training.seed),
+                    "task_name": str(cfg.task.name),
+                    "zarr_path": str(cfg.task.dataset.zarr_path),
+                    "shape_meta": OmegaConf.to_container(cfg.task.shape_meta, resolve=True),
+                    "use_ema": bool(cfg.training.use_ema),
+                }
+                saved_weights_path = save_weights_only_checkpoint(
+                    resolved_weights_path,
+                    model=self.model,
+                    ema_model=self.ema_model,
+                    metadata=metadata,
+                )
+                print(f"saved weights-only checkpoint in {saved_weights_path}")
 
             # ========= eval end for this epoch ==========
             policy.train()

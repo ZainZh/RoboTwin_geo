@@ -111,6 +111,8 @@ logging:
 
 checkpoint:
   save_ckpt: False
+  save_weights_only: False
+  weights_only_path: ""
   topk:
     monitor_key: test_mean_score
     mode: max

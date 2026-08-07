@@ -11,10 +11,22 @@ from object_pointcloud_utils import resample_point_cloud, strip_zero_points
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+UTONIA_ROOT = os.environ.get("UTONIA_ROOT")
+if UTONIA_ROOT:
+    resolved_utonia_root = Path(UTONIA_ROOT).expanduser().resolve()
+    if not resolved_utonia_root.is_dir():
+        raise ImportError(f"UTONIA_ROOT is not a directory: {resolved_utonia_root}")
+    if str(resolved_utonia_root) not in sys.path:
+        sys.path.insert(0, str(resolved_utonia_root))
 SEM_ROOT = REPO_ROOT / "include" / "3d_semantic_train"
+SEMANTIC_RELEASE_ROOT = SEM_ROOT / "semantic_field_release"
 home_directory = os.path.expanduser('~')
-if SEM_ROOT.exists() and str(SEM_ROOT) not in sys.path:
-    sys.path.insert(0, str(SEM_ROOT))
+if not SEMANTIC_RELEASE_ROOT.is_dir():
+    raise ImportError(
+        f"Semantic field release tree is unavailable: {SEMANTIC_RELEASE_ROOT}"
+    )
+if str(SEMANTIC_RELEASE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SEMANTIC_RELEASE_ROOT))
 
 from my_datasets.partnext_canonical_field import UTONIA  # noqa: E402
 from models.universal_field.utonia_universal_field import UtoniaUniversalFieldNet  # noqa: E402
@@ -29,6 +41,7 @@ DEBUG_PLACEHOLDER_COLORS_RGB = {
 DEFAULT_DEBUG_PLACEHOLDER_COLOR_RGB = np.asarray([180.0, 180.0, 180.0], dtype=np.float32)
 SEMANTIC_INPUT_COLOR_MODES = {"debug_placeholder", "stored_scaled", "stored"}
 SEMANTIC_FORWARD_MODES = {"reference", "dp3"}
+SEMANTIC_POLICY_OUTPUT_MODES = {"embedding", "xyz", "part_prob"}
 
 
 def ensure_point_cloud_channels(point_cloud: np.ndarray, *, channels: int = 6) -> np.ndarray:
@@ -324,16 +337,27 @@ def compute_semantic_pointwise_cloud(
     semantic_forward_mode: str = "reference",
     normal_mode: str | None = None,
     query_sample_mode: str | None = None,
+    output_mode: str = "embedding",
 ) -> np.ndarray:
+    resolved_output_mode = str(output_mode)
+    if resolved_output_mode not in SEMANTIC_POLICY_OUTPUT_MODES:
+        raise ValueError(f"Unsupported semantic policy output mode: {output_mode}")
     point_cloud = prepare_semantic_input_point_cloud(
         object_point_cloud,
         placeholder=str(placeholder),
         color_mode=str(semantic_input_color_mode),
     )
     point_cloud = strip_zero_points(point_cloud)
-    sem_dim = int(artifacts["sem_embedding_dim"])
+    if resolved_output_mode == "embedding":
+        output_feature_dim = int(artifacts["sem_embedding_dim"])
+    elif resolved_output_mode == "part_prob":
+        output_feature_dim = len(artifacts.get("canonical_label_names", []))
+        if output_feature_dim <= 0:
+            raise ValueError("part_prob output requires canonical_label_names")
+    else:
+        output_feature_dim = 0
     if len(point_cloud) == 0:
-        return np.zeros((int(target_num_points), 3 + sem_dim), dtype=np.float32)
+        return np.zeros((int(target_num_points), 3 + output_feature_dim), dtype=np.float32)
     resolved_normal_mode, resolved_query_sample_mode = semantic_forward_options(
         semantic_forward_mode=str(semantic_forward_mode),
         normal_mode=normal_mode,
@@ -347,8 +371,17 @@ def compute_semantic_pointwise_cloud(
         normal_mode=resolved_normal_mode,
         query_sample_mode=resolved_query_sample_mode,
     )
-    embeddings = semantic_output["embedding"].squeeze(0).detach().cpu().numpy().astype(np.float32)
-    return np.concatenate([query_world_xyz, embeddings], axis=1)
+    if resolved_output_mode == "xyz":
+        return query_world_xyz.astype(np.float32)
+    if resolved_output_mode == "part_prob":
+        logits = semantic_output.get("logits")
+        if logits is None:
+            raise RuntimeError("Semantic model output does not include logits")
+        probabilities = torch.softmax(logits.squeeze(0), dim=-1)
+        features = probabilities.detach().cpu().numpy().astype(np.float32)
+    else:
+        features = semantic_output["embedding"].squeeze(0).detach().cpu().numpy().astype(np.float32)
+    return np.concatenate([query_world_xyz, features], axis=1)
 
 
 @torch.no_grad()

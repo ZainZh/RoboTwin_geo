@@ -852,6 +852,7 @@ def _load_dinov2_camera_contexts(
     dataset_dir: Path,
     episode_idx: int,
     frame_idx: int,
+    placeholder: str,
     camera_labels: Sequence[str] | None,
     args: argparse.Namespace,
 ) -> list[dict]:
@@ -918,10 +919,41 @@ def _load_dinov2_camera_contexts(
             if str(getattr(args, "raw_intrinsics_source", "frame")) == "frame" and "camera_matrix" in camera_frame
             else calib[calib_label].camera_matrix.astype(np.float32)
         )
+        foreground_mask = None
+        if not bool(getattr(args, "dinov2_disable_foreground_mask", False)):
+            mask_root_text = str(record.get("mask_root", "") or "").strip()
+            if mask_root_text:
+                mask_path = (
+                    Path(mask_root_text).expanduser()
+                    / str(placeholder)
+                    / label
+                    / f"mask_{frame_idx:06d}.png"
+                )
+                if mask_path.exists():
+                    try:
+                        from PIL import Image
+
+                        foreground_mask = np.asarray(Image.open(mask_path)) > 0
+                    except Exception as exc:
+                        raise RuntimeError(f"Failed to load DINOv2 foreground mask: {mask_path}") from exc
+                    if foreground_mask.shape != depth.shape:
+                        try:
+                            import cv2
+                        except Exception as exc:  # pragma: no cover - runtime image stack.
+                            raise RuntimeError(
+                                "cv2 is required when a DINOv2 foreground mask and depth image have different shapes."
+                            ) from exc
+                        foreground_mask = cv2.resize(
+                            foreground_mask.astype(np.uint8),
+                            (int(depth.shape[1]), int(depth.shape[0])),
+                            interpolation=cv2.INTER_NEAREST,
+                        ).astype(bool)
         contexts.append(
             {
                 "label": label,
                 "rgb": rgb,
+                "depth_m": depth,
+                "foreground_mask": foreground_mask,
                 "camera_matrix": camera_matrix,
                 "t_cam_from_output": np.linalg.inv(t_output_from_cam_by_label[label]).astype(np.float32),
             }
@@ -953,6 +985,15 @@ def _project_xyz_to_camera_pixels(
 def _load_dinov2_backend(args: argparse.Namespace, dataset_dir: Path):
     import torch
     import torch.nn.functional as F
+    scripts_dir = Path(__file__).resolve().parents[1] / "policy" / "DP3" / "scripts"
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    from dinov2_visibility_utils import (
+        compute_depth_visibility,
+        fuse_multiview_features,
+        sample_feature_grid_bilinear,
+    )
+
 
     device = torch.device(str(getattr(args, "dinov2_device", "") or getattr(args, "device", "cuda")))
     model_name = str(getattr(args, "dinov2_model_name", "dinov2_vits14"))
@@ -969,7 +1010,7 @@ def _load_dinov2_backend(args: argparse.Namespace, dataset_dir: Path):
     camera_labels = _parse_camera_labels(getattr(args, "dinov2_camera_labels", "")) or _parse_camera_labels(
         getattr(args, "camera_labels", "")
     )
-    context_cache: dict[tuple[int, int], list[dict]] = {}
+    context_cache: dict[tuple[int, int, str], list[dict]] = {}
     feature_cache: dict[tuple[int, int, str], dict] = {}
 
     def image_to_patch_features(episode_idx: int, frame_idx: int, context: Mapping[str, object]) -> dict:
@@ -1012,6 +1053,7 @@ def _load_dinov2_backend(args: argparse.Namespace, dataset_dir: Path):
         *,
         episode_idx: int,
         frame_idx: int,
+        placeholder: str,
         target_num_points: int,
         **_kwargs,
     ) -> np.ndarray:
@@ -1020,51 +1062,56 @@ def _load_dinov2_backend(args: argparse.Namespace, dataset_dir: Path):
         if int(target_num_points) > 0:
             cloud = resample_point_cloud(cloud, int(target_num_points))
         xyz = cloud[:, :3].astype(np.float32, copy=False)
-        cache_key = (int(episode_idx), int(frame_idx))
+        cache_key = (int(episode_idx), int(frame_idx), str(placeholder))
         if cache_key not in context_cache:
             context_cache[cache_key] = _load_dinov2_camera_contexts(
                 dataset_dir=dataset_dir,
                 episode_idx=int(episode_idx),
                 frame_idx=int(frame_idx),
                 camera_labels=camera_labels,
+                placeholder=str(placeholder),
                 args=args,
             )
         contexts = context_cache[cache_key]
         if not contexts:
             raise RuntimeError("DINOv2 feature extraction requires at least one camera context.")
 
-        feature_sum = None
-        valid_count = np.zeros((xyz.shape[0], 1), dtype=np.float32)
+        features_by_view: list[np.ndarray] = []
+        visible_by_view: list[np.ndarray] = []
+        weights_by_view: list[np.ndarray] = []
         for context in contexts:
             patch = image_to_patch_features(int(episode_idx), int(frame_idx), context)
-            pixels, valid = _project_xyz_to_camera_pixels(
+            visibility = compute_depth_visibility(
                 xyz,
+                depth_m=np.asarray(context["depth_m"], dtype=np.float32),
                 camera_matrix=np.asarray(context["camera_matrix"], dtype=np.float32),
                 t_cam_from_output=np.asarray(context["t_cam_from_output"], dtype=np.float32),
-                image_shape_hw=(int(patch["image_h"]), int(patch["image_w"])),
+                foreground_mask=context.get("foreground_mask"),
+                min_depth_m=float(getattr(args, "min_depth_m", 0.05)),
+                max_depth_m=float(getattr(args, "max_depth_m", 3.0)),
+                absolute_tolerance_m=float(getattr(args, "dinov2_depth_tolerance_m", 0.02)),
+                relative_tolerance=float(getattr(args, "dinov2_depth_relative_tolerance", 0.01)),
+                query_zbuffer_tolerance_m=float(getattr(args, "dinov2_query_zbuffer_tolerance_m", 0.005)),
             )
-            if feature_sum is None:
-                feature_sum = np.zeros((xyz.shape[0], int(patch["features"].shape[-1])), dtype=np.float32)
-            valid_idx = np.flatnonzero(valid)
-            if valid_idx.shape[0] == 0:
-                continue
-            px = pixels[valid_idx, 0] / max(float(patch["image_w"]), 1.0)
-            py = pixels[valid_idx, 1] / max(float(patch["image_h"]), 1.0)
-            patch_x = np.clip((px * int(patch["grid_w"])).astype(np.int64), 0, int(patch["grid_w"]) - 1)
-            patch_y = np.clip((py * int(patch["grid_h"])).astype(np.int64), 0, int(patch["grid_h"]) - 1)
-            feature_sum[valid_idx] += patch["features"][patch_y, patch_x]
-            valid_count[valid_idx, 0] += 1.0
-        if feature_sum is None:
+            sampled = sample_feature_grid_bilinear(
+                np.asarray(patch["features"], dtype=np.float32),
+                visibility.pixels_uv,
+                image_shape_hw=(int(patch["image_h"]), int(patch["image_w"])),
+                valid=visibility.visible,
+            )
+            features_by_view.append(sampled)
+            visible_by_view.append(visibility.visible)
+            weights_by_view.append(visibility.confidence_weight)
+        if not features_by_view:
             raise RuntimeError("DINOv2 feature extraction did not produce any patch features.")
-        valid_rows = valid_count[:, 0] > 0.0
-        if np.any(valid_rows):
-            feature_sum[valid_rows] /= valid_count[valid_rows]
-            fallback = feature_sum[valid_rows].mean(axis=0, keepdims=True)
-        else:
-            fallback = np.zeros((1, feature_sum.shape[1]), dtype=np.float32)
-        if np.any(~valid_rows):
-            feature_sum[~valid_rows] = fallback
-        return np.concatenate([xyz, feature_sum], axis=1).astype(np.float32, copy=False)
+        fused, _valid, _weight_sum, _view_count = fuse_multiview_features(
+            features_by_view,
+            visible_by_view,
+            weights_by_view=weights_by_view,
+            l2_normalize_inputs=True,
+            l2_normalize_output=True,
+        )
+        return np.concatenate([xyz, fused], axis=1).astype(np.float32, copy=False)
 
     return compute_dinov2_pointwise_cloud
 
@@ -1523,6 +1570,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Comma-separated raw camera labels used to project object points into RGB frames for DINOv2.",
     )
     parser.add_argument("--dinov2_image_size", type=int, default=224)
+    parser.add_argument("--dinov2_depth_tolerance_m", type=float, default=0.02)
+    parser.add_argument("--dinov2_depth_relative_tolerance", type=float, default=0.01)
+    parser.add_argument("--dinov2_query_zbuffer_tolerance_m", type=float, default=0.005)
+    parser.add_argument(
+        "--dinov2_disable_foreground_mask",
+        action="store_true",
+        default=False,
+        help="Disable the per-object SAM2 mask check during DINOv2 RGB-D lifting.",
+    )
+
     parser.add_argument(
         "--overlay_mode",
         choices=["cut_replace", "append", "replace_nearest"],
