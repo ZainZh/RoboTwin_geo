@@ -73,3 +73,6 @@ Chamfer is diagnostic only and cannot pass the gate by itself.
 - Report every admitted state and every runtime failure.
 - Use mug identity/state hierarchical resampling; policy seeds on one stored
   state are not independent scene trials.
+
+The completed three-seed oracle gate and its limitations are recorded in
+`HANGING_MUG_ORACLE_GATE_RESULT_20260807.md`.
