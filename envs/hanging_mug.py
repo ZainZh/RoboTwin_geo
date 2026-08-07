@@ -2,11 +2,30 @@ from ._base_task import Base_Task
 from .utils import *
 import json
 import numpy as np
+import sapien
 import transforms3d as t3d
 from pathlib import Path
 from ._GLOBAL_CONFIGS import *
 
 DEFAULT_MUG_SPAWN_QPOS = [0.707, 0.707, 0.0, 0.0]
+POSE_CORRECTION_FINAL_OFFSET_M = -0.05
+
+
+def resolve_mug_id_candidates(config=None):
+    """Resolve a frozen built-in mug subset for object-disjoint experiments."""
+
+    values = (config or {}).get("allowed_mug_ids", list(range(10)))
+    if not isinstance(values, (list, tuple)) or not values:
+        raise ValueError("mug_geometry.allowed_mug_ids must be a non-empty list")
+    result = tuple(int(value) for value in values)
+    if len(set(result)) != len(result):
+        raise ValueError("mug_geometry.allowed_mug_ids must not contain duplicates")
+    invalid = [value for value in result if value < 0 or value >= 10]
+    if invalid:
+        raise ValueError(
+            f"mug_geometry.allowed_mug_ids contains invalid IDs: {invalid}"
+        )
+    return result
 
 
 def quat_multiply(lhs, rhs):
@@ -115,6 +134,7 @@ class hanging_mug(Base_Task):
 
     def setup_demo(self, is_test=False, **kwags):
         self.custom_mug_eval = kwags.get("custom_mug_eval")
+        self.mug_geometry_config = dict(kwags.get("mug_geometry", {}))
         self.mug_asset_config = resolve_mug_asset_config(
             self.custom_mug_eval,
             episode_index=kwags.get("now_ep_num", 0),
@@ -131,7 +151,9 @@ class hanging_mug(Base_Task):
         if (self.custom_mug_eval or {}).get("enabled"):
             self.mug_id = int(self.mug_asset_config["model_id"])
         else:
-            self.mug_id = int(np.random.choice([i for i in range(10)]))
+            self.mug_id = int(
+                np.random.choice(resolve_mug_id_candidates(self.mug_geometry_config))
+            )
             self.mug_asset_config = {
                 "modelname": "039_mug",
                 "model_id": self.mug_id,
@@ -164,6 +186,130 @@ class hanging_mug(Base_Task):
         self.add_prohibit_area(self.mug, padding=0.1)
         self.add_prohibit_area(self.rack, padding=0.1)
         self.middle_pos = [0.0, -0.15, 0.75, 1, 0, 0, 0]
+
+        # Generic pose-correction aliases keep the learned-policy data/runtime
+        # stack task-agnostic without changing the frozen shoe implementation.
+        self.shoe = self.mug
+        self.target_block = self.rack
+        self.shoe_id = int(self.mug_id)
+        self.shoe_arm_name = "right"
+
+    @staticmethod
+    def _pose7(actor):
+        pose = actor.get_pose()
+        return np.concatenate((np.asarray(pose.p), np.asarray(pose.q))).astype(
+            np.float32
+        )
+
+    @staticmethod
+    def _scaled_functional_matrix(actor, functional_point_id=0):
+        matrix = np.asarray(
+            actor.config["functional_matrix"][functional_point_id],
+            dtype=np.float64,
+        ).copy()
+        scale = np.asarray(
+            actor.config.get("scale", [1.0, 1.0, 1.0]), dtype=np.float64
+        )
+        if scale.ndim == 0:
+            scale = np.full((3,), float(scale), dtype=np.float64)
+        matrix[:3, 3] *= scale.reshape(3)
+        return matrix
+
+    def _rack_goal_local_matrix(self):
+        rack_functional = self._scaled_functional_matrix(self.rack)
+        terminal_offset = np.eye(4, dtype=np.float64)
+        terminal_offset[:3, 3] = [0.0, 0.0, -POSE_CORRECTION_FINAL_OFFSET_M]
+        return rack_functional @ terminal_offset
+
+    def pose_correction_goal_pose(self):
+        rack_functional = self.rack.get_functional_point(0, "pose")
+        rotation = t3d.quaternions.quat2mat(
+            np.asarray(rack_functional.q, dtype=np.float64)
+        )
+        position = np.asarray(rack_functional.p, dtype=np.float64) + rotation @ np.asarray(
+            [0.0, 0.0, -POSE_CORRECTION_FINAL_OFFSET_M], dtype=np.float64
+        )
+        return sapien.Pose(position, rack_functional.q)
+
+    def pose_correction_alignment(self):
+        from .placement_metrics import functional_pose_alignment_errors
+
+        current = self.mug.get_functional_point(0, "pose")
+        target = self.pose_correction_goal_pose()
+        errors = functional_pose_alignment_errors(
+            current.p, current.q, target.p, target.q
+        )
+        return {
+            "translation_m": float(errors["translation_error_norm_m"]),
+            "rotation_deg": float(errors["rotation_error_deg"]),
+        }
+
+    def get_pose_correction_spec(self):
+        return {
+            "target_pose": self.rack.get_functional_point(0),
+            "functional_point_id": 0,
+            "pre_dis": 0.05,
+            "final_dis": POSE_CORRECTION_FINAL_OFFSET_M,
+            "pre_dis_axis": "fp",
+            "constrain": "align",
+        }
+
+    def _relation_phase(self):
+        return float(bool(self.is_right_gripper_close()))
+
+    def get_obs(self):
+        observation = super().get_obs()
+        mug_functional = self._scaled_functional_matrix(self.mug)
+        rack_goal = self._rack_goal_local_matrix()
+        goal_a_from_b = mug_functional @ np.linalg.inv(rack_goal)
+        observation["task_state"] = {
+            "object_pose_A": self._pose7(self.mug),
+            "object_pose_B": self._pose7(self.rack),
+            "goal_T_A_from_B_oracle": goal_a_from_b.reshape(-1).astype(np.float32),
+            # The legacy name is a generic object-identity field in the current
+            # policy dataset contract. Keep an explicit alias for new code.
+            "shoe_id": np.asarray([self.mug_id], dtype=np.int64),
+            "object_id": np.asarray([self.mug_id], dtype=np.int64),
+            "relation_phase": np.asarray([self._relation_phase()], dtype=np.float32),
+        }
+        return observation
+
+    def prepare_policy_placement_phase(self):
+        """Run only the prerequisite handoff and return the active hanging arm."""
+
+        grasp_arm_tag = ArmTag("left")
+        hang_arm_tag = ArmTag("right")
+        self.move(
+            self.grasp_actor(
+                self.mug, arm_tag=grasp_arm_tag, pre_grasp_dis=0.05
+            )
+        )
+        self.move(self.move_by_displacement(arm_tag=grasp_arm_tag, z=0.08))
+        self.move(
+            self.place_actor(
+                self.mug,
+                arm_tag=grasp_arm_tag,
+                target_pose=self.middle_pos,
+                pre_dis=0.05,
+                dis=0.0,
+                constrain="free",
+            )
+        )
+        self.move(self.move_by_displacement(arm_tag=grasp_arm_tag, z=0.1))
+        self.move(
+            self.back_to_origin(grasp_arm_tag),
+            self.grasp_actor(
+                self.mug, arm_tag=hang_arm_tag, pre_grasp_dis=0.05
+            ),
+        )
+        self.move(
+            self.move_by_displacement(
+                arm_tag=hang_arm_tag,
+                z=0.1,
+                quat=GRASP_DIRECTION_DIC["front"],
+            )
+        )
+        return hang_arm_tag
 
     def play_once(self):
         grasp_arm_tag = ArmTag("left")

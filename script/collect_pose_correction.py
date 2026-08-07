@@ -118,6 +118,13 @@ def perturb_pose(
 
 
 def alignment(task) -> dict[str, float]:
+    task_alignment = getattr(task, "pose_correction_alignment", None)
+    if callable(task_alignment):
+        result = task_alignment()
+        return {
+            "translation_m": float(result["translation_m"]),
+            "rotation_deg": float(result["rotation_deg"]),
+        }
     from envs.placement_metrics import functional_pose_alignment_errors
 
     shoe = task.shoe.get_functional_point(0, "pose")
@@ -180,15 +187,30 @@ def prepare_perturbed_episode(task, level, generator):
     from envs.utils import ArmTag
 
     arm = ArmTag(str(task.prepare_policy_placement_phase()))
-    target_pose = task.target_block.get_functional_point(0)
+    task_spec = getattr(task, "get_pose_correction_spec", None)
+    spec = (
+        dict(task_spec())
+        if callable(task_spec)
+        else {
+            "target_pose": task.target_block.get_functional_point(0),
+            "functional_point_id": 0,
+            "pre_dis": 0.12,
+            "final_dis": 0.02,
+            "constrain": "align",
+        }
+    )
+    target_pose = spec.pop("target_pose")
+    functional_point_id = int(spec.pop("functional_point_id", 0))
+    pre_dis = float(spec.pop("pre_dis", 0.12))
+    final_dis = float(spec.pop("final_dis", 0.02))
     pre_pose = np.asarray(
         task.get_place_pose(
             task.shoe,
             arm,
             target_pose,
-            functional_point_id=0,
-            pre_dis=0.12,
-            constrain="align",
+            functional_point_id=functional_point_id,
+            pre_dis=pre_dis,
+            **spec,
         ),
         dtype=np.float64,
     )
@@ -197,9 +219,9 @@ def prepare_perturbed_episode(task, level, generator):
             task.shoe,
             arm,
             target_pose,
-            functional_point_id=0,
-            pre_dis=0.02,
-            constrain="align",
+            functional_point_id=functional_point_id,
+            pre_dis=final_dis,
+            **spec,
         ),
         dtype=np.float64,
     )
