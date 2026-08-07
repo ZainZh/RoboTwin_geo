@@ -73,6 +73,58 @@ The full model has lower final translation and rotation than the raw point
 baseline on 78.1% of the paired states.  Mean paired improvements are 0.670 cm
 and 5.120 degrees.
 
+## External paired closed loop: three policy seeds
+
+All three frozen policy seeds completed all 32 states for all six variants,
+with zero runtime errors.  Values after the three per-seed columns are mean ±
+sample standard deviation over policy seeds.  The same 32 snapshots are reused
+across seeds, so the pooled count is descriptive rather than 96 independent
+scene trials.
+
+| Condition | Seed 0 | Seed 1 | Seed 2 | Mean ± SD | Pooled successes |
+|---|---:|---:|---:|---:|---:|
+| Raw point tokens | 43.8% | 37.5% | 50.0% | 43.8 ± 6.2% | 42/96 |
+| Capacity-matched point tokens | 46.9% | 46.9% | 25.0% | 39.6 ± 12.6% | 38/96 |
+| Local relation tokens, no flow loss | 43.8% | 37.5% | 28.1% | 36.5 ± 7.9% | 35/96 |
+| Local relation tokens + flow loss | 40.6% | 34.4% | 50.0% | 41.7 ± 7.9% | 40/96 |
+| Local flow tokens + zero global token | 40.6% | 37.5% | 46.9% | 41.7 ± 4.8% | 40/96 |
+| Full two-level tokens | **84.4%** | **71.9%** | **71.9%** | **76.0 ± 7.2%** | **73/96** |
+
+The final-pose metrics show the same ranking and are unusually stable across
+policy seeds:
+
+| Condition | Final translation (cm) | Final rotation (deg) |
+|---|---:|---:|
+| Raw point tokens | 4.340 ± 0.043 | 14.529 ± 0.162 |
+| Capacity-matched point tokens | 4.454 ± 0.113 | 14.853 ± 0.190 |
+| Local relation tokens, no flow loss | 4.327 ± 0.071 | 14.852 ± 0.096 |
+| Local relation tokens + flow loss | 4.283 ± 0.095 | 13.954 ± 0.476 |
+| Local flow tokens + zero global token | 4.454 ± 0.022 | 14.772 ± 0.360 |
+| Full two-level tokens | **3.663 ± 0.045** | **9.753 ± 0.305** |
+
+### Cross-seed paired evidence
+
+The intervals below hierarchically resample both policy seeds and fixed
+snapshot episodes.  Scene-level sign tests first average the paired gain over
+the three policy seeds, then test only whether more non-tied scenes favor the
+full model.  This avoids treating the three policies on one stored scene as
+three independent scene observations.
+
+| Full model versus | Mean success gain | Hierarchical bootstrap 95% CI | Scene wins/losses/ties | Exact sign-test p |
+|---|---:|---:|---:|---:|
+| Raw point tokens | +32.3 pp | [+10.4, +52.1] pp | 18 / 4 / 10 | 0.00434 |
+| Capacity-matched point tokens | +36.5 pp | [+15.6, +58.3] pp | 21 / 5 / 6 | 0.00249 |
+| Local relation tokens, no flow loss | +39.6 pp | [+19.8, +59.4] pp | 19 / 3 / 10 | 0.00086 |
+| Local relation tokens + flow loss | +34.4 pp | [+10.4, +56.2] pp | 18 / 5 / 9 | 0.01062 |
+| Local flow tokens + zero global token | +34.4 pp | [+11.5, +56.2] pp | 18 / 5 / 9 | 0.01062 |
+
+All five comparisons favor the full model in every policy seed.  Individual
+32-state McNemar tests are significant for most seed/comparison pairs; the
+non-significant pairs are seed 2 versus raw points/local flow/zero-global and
+seed 1 versus capacity-matched points.  These small-sample exceptions do not
+reverse the effect, and the seed-aware intervals and scene-level tests remain
+positive for every comparison.
+
 ## Current conclusion
 
 The evidence supports the architecture direction, but not every originally
@@ -89,9 +141,13 @@ proposed component equally:
 4. The method still has a recoverability boundary.  Some failures occur under
    larger perturbations or grasp slip, and a few states are baseline-only wins.
 
-This is strong enough to justify completing policy seeds 1 and 2 and then
-moving to a new task/category gate.  It is not yet sufficient for a T-ASE claim:
-cross-seed closed-loop replication and cross-task evidence remain mandatory.
+The shoe-placement mechanistic claim is now closed across three policy seeds:
+the complete two-level representation is consistently better than raw points,
+a parameter-matched point model, either local-token construction, and the
+zero-global intervention.  This is sufficient to freeze the architecture for
+the next gate.  It is not yet sufficient for a T-ASE paper claim: a genuinely
+new task/category blind evaluation and replication in a mainstream policy
+backbone remain mandatory.
 
 ## Interrupted-evaluation robustness
 
@@ -100,5 +156,5 @@ It validates the frozen protocol and manifest identity, skips completed
 `(variant, episode)` pairs, and atomically continues an interrupted result.
 Checkpoint and estimator provenance are recorded for new/resumed outputs.
 
-At the time of this note, external seed 1 has 1/32 states saved and seed 2 has
-not started.  No partial result is used as cross-seed evidence.
+All three external policy-seed evaluations completed after resume validation;
+no partial result is included in the tables above.
