@@ -14,20 +14,35 @@ fi
 python_bin="${PYTHON_BIN:-/root/miniconda3/envs/RoboTwin/bin/python}"
 root="outputs/geometry_flow/hanging_mug_cross_task_v1"
 source_dataset="${root}/dev24_task_flow.npz"
+data_dir="${root}/dev24_nominal/data"
 frame_variant="${HANGING_MUG_FRAME_VARIANT:-pretrained}"
 case "${frame_variant}" in
   pretrained)
     frame_predictions="${root}/ndf_frame_pretrained_fold0/fold0_correct_frame_valtop2_p95.npz"
     dataset="${root}/dev24_task_flow_ndf_current_oracle_goal.npz"
     output_prefix="ndf_partial"
+    augment_mode="partial"
     ;;
   random)
     frame_predictions="${root}/ndf_frame_random_fold0/fold0_correct_frame_valtop2_p95.npz"
     dataset="${root}/dev24_task_flow_random_equivariant_current_oracle_goal.npz"
     output_prefix="ndf_random_partial"
+    augment_mode="partial"
+    ;;
+  camera_rotation)
+    frame_predictions="${root}/ndf_frame_random_fold0/fold0_correct_frame_valtop2_p95.npz"
+    dataset="${root}/dev24_task_flow_camera_rotation.npz"
+    output_prefix="camera_rotation"
+    augment_mode="camera_rotation"
+    ;;
+  camera_rotation_temporal)
+    frame_predictions="${root}/ndf_frame_random_fold0/fold0_correct_frame_valtop2_p95.npz"
+    dataset="${root}/dev24_task_flow_camera_rotation_temporal.npz"
+    output_prefix="camera_rotation_temporal"
+    augment_mode="camera_rotation_temporal"
     ;;
   *)
-    echo "HANGING_MUG_FRAME_VARIANT must be pretrained or random" >&2
+    echo "HANGING_MUG_FRAME_VARIANT must be pretrained, random, camera_rotation, or camera_rotation_temporal" >&2
     exit 2
     ;;
 esac
@@ -37,11 +52,29 @@ if [[ ! -f "${frame_predictions}" ]]; then
   exit 1
 fi
 if [[ ! -f "${dataset}" ]]; then
-  "${python_bin}" -m policy.GeometryFlow.augment_task_flow_with_ndf_full_frame \
-    --dataset "${source_dataset}" \
-    --frame-predictions "${frame_predictions}" \
-    --output "${dataset}" \
-    --fold 0
+  if [[ "${augment_mode}" == camera_rotation* ]]; then
+    temporal_args=()
+    if [[ "${augment_mode}" == "camera_rotation_temporal" ]]; then
+      temporal_args+=(--temporal-symmetry-stabilization)
+    fi
+    "${python_bin}" -m policy.GeometryFlow.augment_hanging_mug_with_camera_rotation \
+      --dataset "${source_dataset}" \
+      --data-dir "${data_dir}" \
+      --current-frame-predictions "${frame_predictions}" \
+      --output "${dataset}" \
+      --reference-episode 15 \
+      --train-ids 2 3 4 7 \
+      --validation-ids 1 6 \
+      --test-ids 0 5 \
+      --registration-points 512 \
+      "${temporal_args[@]}"
+  else
+    "${python_bin}" -m policy.GeometryFlow.augment_task_flow_with_ndf_full_frame \
+      --dataset "${source_dataset}" \
+      --frame-predictions "${frame_predictions}" \
+      --output "${dataset}" \
+      --fold 0
+  fi
 fi
 
 common_args=(

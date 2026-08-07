@@ -187,17 +187,100 @@ to the task.  We must not claim that category-mismatched NDF pretraining itself
 improves mug manipulation.  UTONIA remains a representation comparison, not a
 required component of the method.
 
+## Fully camera-derived rotation-token gate
+
+The rack/goal orientation was then removed from task-state inputs.  The
+deployable rotation-token path is:
+
+1. camera-A mug cloud -> task-trained vector-neuron frame ensemble;
+2. camera-B rack cloud -> trimmed ICP against one training reference rack;
+3. one goal-orientation label from reference episode 15 calibrates the rack
+   geometry to the task frame;
+4. predicted goal rotation times predicted current rotation inverse -> global
+   relative rotation token.
+
+Reference candidates came only from train IDs 2, 3, 4, and 7; the reference
+was selected using validation IDs 1 and 6.  Test IDs 0 and 5 were not used to
+select the reference, ICP settings, frame models, or confidence thresholds.
+The token translation is **exactly zero** in every sample, so no task-state
+translation can enter this gate.
+
+### Necessary failure ablation
+
+The first camera-only version used independent per-frame estimates.  Its test
+relation error was 8.587-degree mean, 4.294-degree median, and 8.191-degree
+p90, but it retained three near-180-degree frame flips (2.42%).  The resulting
+policy did not pass:
+
+| condition | endpoint rotation, mean +/- sample SD (deg) |
+|---|---:|
+| zero | 11.450 +/- 0.726 |
+| shuffled camera token | 11.454 +/- 0.688 |
+| camera token without symmetry stabilization | 11.469 +/- 0.508 |
+
+Predicted minus zero was slightly worse by 0.019 degrees on the mean and lost
+in seeds 1 and 2.  This failed result is retained; it shows that good median
+frame error is insufficient when the representation contains rare discrete
+axis flips.
+
+### Label-free symmetry stabilization
+
+Every vector-neuron frame has four determinant-positive axis-sign variants.
+Within each episode, the stabilized estimator keeps the first camera estimate
+and, at each later observation, selects the proper variant closest on SO(3) to
+the preceding stabilized frame.  Temporal confidence requires an observable
+step below 30 degrees and a best-versus-runner-up margin above 30 degrees.  No
+simulator pose, action target, or success label is used by this operation.
+
+On held-out test frames this changed exactly the three flipped rows and gave:
+
+| metric | independent frames | stabilized frames |
+|---|---:|---:|
+| current-frame mean error | 8.036 deg | **4.116 deg** |
+| current-frame p90 error | 7.407 deg | **7.198 deg** |
+| current-frame flips >=90 deg | 3 / 124 | **0 / 124** |
+| relative-token mean error | 8.587 deg | **4.666 deg** |
+| relative-token p90 error | 8.191 deg | **7.987 deg** |
+| relative-token maximum error | 175.300 deg | **14.796 deg** |
+| confidence acceptance | 85.5% | **98.4%** |
+
+### Three-seed policy result
+
+Endpoint rotation errors, lower is better:
+
+| seed | raw (deg) | zero (deg) | shuffled (deg) | camera predicted (deg) |
+|---:|---:|---:|---:|---:|
+| 0 | 12.333 | 12.102 | 11.774 | **11.643** |
+| 1 | 11.707 | 11.580 | 10.916 | **10.862** |
+| 2 | 12.519 | 10.668 | 11.221 | **10.375** |
+| mean +/- sample SD | 12.186 +/- 0.426 | 11.450 +/- 0.726 | 11.304 +/- 0.435 | **10.960 +/- 0.640** |
+
+The camera-predicted token beats exact zero in every seed by
+0.490 +/- 0.214 degrees and beats shuffled camera tokens in every seed by
+0.344 +/- 0.437 degrees.  It retains 75.3% of the oracle-versus-zero endpoint
+rotation gain even though its translation field is zero.  It also improves on
+raw points by 1.226 +/- 0.799 degrees.  Endpoint translation is
+1.445 +/- 0.075 cm versus 1.457 +/- 0.033 cm for zero, but loses seed 1 and is
+therefore not claimed as a consistent translation gain.
+
+This is the first offline gate in this task where the complete rotation token
+is camera-derived and both causal controls pass in all three seeds.  It does
+not yet establish closed-loop success, full camera SE(3), or new-rack
+generalization.  The held-out evidence is still only two mug identities, six
+episodes, and 124 temporally correlated action samples; the rack geometry is
+the same asset in every split.
+
 ## Next locked gate
 
-1. Estimate the rack/goal functional frame from camera-B points without task
-   state, using only development data for fitting and validation selection.
-2. Compose the camera mug frame and camera rack/goal frame into a fully
-   camera-derived relative SE(3) token.  Do not change policy capacity, action
-   targets, split, or early-stopping rule.
-3. Repeat exact-zero, shuffled, predicted, and oracle comparisons.  The full
-   camera token must retain a useful, seed-consistent fraction of the oracle
-   orientation gain.
-4. Freeze the representation and policy checkpoints, then run paired
-   closed-loop success evaluation on fixed initial states.  Only after this
-   gate passes should the method be replicated in ACT/DP3 and expanded to
-   blind identities.
+1. Freeze the camera-frame ensemble, reference episode, ICP parameters,
+   temporal thresholds, and the three selected policy checkpoints.
+2. Implement the identical stateful symmetry stabilization in runtime and run
+   paired closed-loop evaluation on fixed initial states for held-out mug IDs
+   0 and 5: raw, zero, shuffled, and camera-predicted.
+3. Report success, final SO(3), final translation, monotonic error reduction,
+   every estimator rejection, and every runtime failure.  Offline action error
+   alone cannot pass this gate.
+4. If held-out closed-loop success passes, evaluate blind mug IDs 8 and 9 and
+   then replicate the frozen token interface in ACT/DP3.  A learned camera
+   translation token is a later ablation; it is not required for the current
+   orientation claim and must not delay the paired success test.

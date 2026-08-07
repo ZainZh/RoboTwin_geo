@@ -85,7 +85,13 @@ The completed three-seed oracle gate and its limitations are recorded in
 - The current-mug camera-frame gate also passed offline: correctly aligned
   predicted tokens beat both zero and shuffled controls in all three seeds and
   retained 55.4% of the oracle orientation gain.
-- This is not yet a fully camera-only result because the rack/goal functional
-  frame is still supplied from task-state labels.
-- The next frozen intervention is to estimate camera-B rack/goal geometry and
-  rerun the same controls before any closed-loop or blind-identity claim.
+- That intermediate current-frame gate was not fully camera-only because its
+  rack/goal functional frame was still supplied from task-state labels.
+- The camera-B rotation intervention is now complete.  Per-frame prediction
+  failed because three rare proper-axis flips erased the downstream gain;
+  label-free within-episode SO(3) symmetry stabilization removed all three.
+- The stabilized, fully camera-derived rotation token (with translation
+  exactly zero) beats exact-zero and shuffled controls in all three policy
+  seeds and retains 75.3% of the oracle orientation gain.
+- The next frozen intervention is paired closed-loop evaluation on held-out
+  IDs 0 and 5.  No blind-identity or task-success claim is made before it.
