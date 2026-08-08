@@ -42,11 +42,14 @@ def axis_dataset(
         )
     if not axis_source.startswith("current_object_"):
         raise ValueError(f"unknown axis source {axis_source!r}")
-    axis_index = {"x": 0, "y": 1, "z": 2}[axis_source.rsplit("_", 1)[-1]]
+    suffix = axis_source.removeprefix("current_object_")
+    sign = -1.0 if suffix.startswith("neg_") else 1.0
+    axis_name = suffix.removeprefix("neg_")
+    axis_index = {"x": 0, "y": 1, "z": 2}[axis_name]
     rotation = pose9_rotation(payload["current_object_pose9"])
     return (
         np.asarray(payload["points_a"][..., :3], dtype=np.float32),
-        np.asarray(rotation[..., :, axis_index], dtype=np.float32),
+        np.asarray(sign * rotation[..., :, axis_index], dtype=np.float32),
         np.asarray(payload["shoe_id"], dtype=np.int64),
         np.asarray(payload["episode_id"], dtype=np.int64),
     )
@@ -312,6 +315,9 @@ def build_parser() -> argparse.ArgumentParser:
             "current_object_x",
             "current_object_y",
             "current_object_z",
+            "current_object_neg_x",
+            "current_object_neg_y",
+            "current_object_neg_z",
         ),
         default="grasp_approach",
         help=(

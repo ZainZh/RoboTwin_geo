@@ -271,6 +271,29 @@ def test_source_axis_relation_adapter_is_gated_and_zero_safe() -> None:
     )
 
 
+def test_source_axis_relation_adapter_supports_nonzero_gate_initialization() -> None:
+    model = InteractionFlowTokenPolicy(
+        horizon=3,
+        flow_steps=4,
+        num_anchors=6,
+        feature_dim=32,
+        heads=4,
+        layers=1,
+        point_channels=6,
+        source_axis_relation_adapter=True,
+        source_axis_gate_initial_value=0.5,
+    ).eval()
+    adapter = model.source_axis_relation_projection
+    assert adapter is not None
+    assert torch.allclose(torch.tanh(adapter.gate), torch.tanh(torch.tensor(0.5)))
+    delta = torch.randn(3, 6, 3)
+    zero_axis = torch.zeros(3, 3)
+    assert torch.equal(
+        adapter(zero_axis, delta, model.xyz_std),
+        torch.zeros(3, 6, 32),
+    )
+
+
 def test_target_axis_relation_adapter_is_incremental_and_zero_safe() -> None:
     model = InteractionFlowTokenPolicy(
         horizon=3,

@@ -538,6 +538,7 @@ def build_model(
     source_geometry_adapter: bool = False,
     shared_geometry_adapter: bool = False,
     source_axis_relation_adapter: bool = False,
+    source_axis_gate_initial_value: float = 0.0,
     target_axis_relation_adapter: bool = False,
     hand_object_frame_token: bool = False,
     diffusion_steps: int = 100,
@@ -577,6 +578,7 @@ def build_model(
             source_geometry_adapter=source_geometry_adapter,
             shared_geometry_adapter=shared_geometry_adapter,
             source_axis_relation_adapter=source_axis_relation_adapter,
+            source_axis_gate_initial_value=source_axis_gate_initial_value,
             target_axis_relation_adapter=target_axis_relation_adapter,
             condition_action_on_flow=condition == "interaction_flow_conditioned",
             functional_frame_token=condition in {
@@ -1238,6 +1240,16 @@ def parser() -> argparse.ArgumentParser:
         ),
     )
     result.add_argument(
+        "--source-axis-gate-initial-value",
+        type=float,
+        default=0.0,
+        help=(
+            "Initial pre-tanh gate for task-aligned source-axis relation tokens. "
+            "A positive value avoids starving the token projection while the "
+            "all-zero axis control remains an exact no-op."
+        ),
+    )
+    result.add_argument(
         "--target-axis-relation-adapter",
         action="store_true",
         help=(
@@ -1875,6 +1887,7 @@ def main() -> None:
                 source_geometry_adapter=args.source_geometry_adapter,
                 shared_geometry_adapter=args.shared_geometry_adapter,
                 source_axis_relation_adapter=args.source_axis_relation_adapter,
+                source_axis_gate_initial_value=args.source_axis_gate_initial_value,
                 target_axis_relation_adapter=args.target_axis_relation_adapter,
                 diffusion_steps=args.diffusion_steps,
                 diffusion_inference_steps=args.diffusion_inference_steps,
@@ -2554,6 +2567,9 @@ def main() -> None:
                     "shared_geometry_adapter": bool(args.shared_geometry_adapter),
                     "source_axis_relation_adapter": bool(
                         args.source_axis_relation_adapter
+                    ),
+                    "source_axis_gate_initial_value": float(
+                        args.source_axis_gate_initial_value
                     ),
                     "target_axis_relation_adapter": bool(
                         args.target_axis_relation_adapter

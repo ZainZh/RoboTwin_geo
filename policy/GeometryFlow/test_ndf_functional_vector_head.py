@@ -13,6 +13,23 @@ from .train_ndf_functional_vector_head import (
 )
 
 
+def test_negative_object_axis_source() -> None:
+    payload = {
+        "points_a": np.zeros((2, 4, 3), dtype=np.float32),
+        "current_object_pose9": np.asarray(
+            [[0, 0, 0, 1, 0, 0, 1, 0, 0], [0, 0, 0, 0, -1, 1, 0, 0, 0]],
+            dtype=np.float32,
+        ),
+        "shoe_id": np.asarray([0, 1]),
+        "episode_id": np.asarray([3, 4]),
+    }
+    _, axes, _, _ = axis_dataset(payload, "current_object_neg_y")
+    np.testing.assert_allclose(
+        axes,
+        np.asarray([[0, -1, 0], [1, 0, 0]], dtype=np.float32),
+    )
+
+
 class NdfFunctionalVectorHeadTest(unittest.TestCase):
     def test_cloud_normalization(self):
         points = np.asarray(

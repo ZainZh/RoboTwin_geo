@@ -118,7 +118,9 @@ class SourceGeometryAdapter(nn.Module):
 class SourceAxisRelationAdapter(nn.Module):
     """Couple a camera-frame functional axis to every A/B relation token."""
 
-    def __init__(self, feature_dim: int) -> None:
+    def __init__(
+        self, feature_dim: int, *, gate_initial_value: float = 0.0
+    ) -> None:
         super().__init__()
         self.projection = nn.Sequential(
             nn.Linear(7, feature_dim, bias=False),
@@ -126,7 +128,7 @@ class SourceAxisRelationAdapter(nn.Module):
             nn.SiLU(),
             nn.Linear(feature_dim, feature_dim, bias=False),
         )
-        self.gate = nn.Parameter(torch.zeros(()))
+        self.gate = nn.Parameter(torch.tensor(float(gate_initial_value)))
 
     def forward(
         self,
@@ -375,6 +377,7 @@ class InteractionFlowTokenPolicy(nn.Module):
         source_geometry_adapter: bool = False,
         shared_geometry_adapter: bool = False,
         source_axis_relation_adapter: bool = False,
+        source_axis_gate_initial_value: float = 0.0,
         target_axis_relation_adapter: bool = False,
         condition_action_on_flow: bool = False,
         functional_frame_token: bool = False,
@@ -547,7 +550,10 @@ class InteractionFlowTokenPolicy(nn.Module):
                 int(point_channels) - 3, feature_dim
             )
         self.source_axis_relation_projection = (
-            SourceAxisRelationAdapter(feature_dim)
+            SourceAxisRelationAdapter(
+                feature_dim,
+                gate_initial_value=float(source_axis_gate_initial_value),
+            )
             if self.source_axis_relation_adapter
             else None
         )
