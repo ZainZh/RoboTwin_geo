@@ -271,6 +271,11 @@ class DecoderInner(nn.Module):
         self.vector_feature_dim = int(vector_feature_dim)
         self.vector_basis = None
         self.fc_vec_alpha = None
+        # Optional second task-aligned coefficient head.  It is left as None
+        # for legacy checkpoints, so their state dict and output shape remain
+        # exactly unchanged.  Full-frame adapters attach the module after
+        # construction and receive two equivariant vectors per query.
+        self.fc_vec_beta = None
         if self.return_vector_features and self.vector_feature_dim > 0 and self.z_dim > 0:
             self.vector_basis = VNLinear(z_dim, self.vector_feature_dim)
             self.fc_vec_alpha = nn.Linear(hidden_size, self.vector_feature_dim)
@@ -358,6 +363,11 @@ class DecoderInner(nn.Module):
             alpha = self.fc_vec_alpha(self.actvn(last_act))
             vec_out = torch.einsum('btk,bkd->btd', alpha, z_basis)
             vec_out = F.normalize(vec_out, p=2, dim=-1)
+            if self.fc_vec_beta is not None:
+                beta = self.fc_vec_beta(self.actvn(last_act))
+                second = torch.einsum('btk,bkd->btd', beta, z_basis)
+                second = F.normalize(second, p=2, dim=-1)
+                vec_out = torch.stack((vec_out, second), dim=-2)
 
         if self.return_features:
             #acts = torch.cat(acts, dim=-1)

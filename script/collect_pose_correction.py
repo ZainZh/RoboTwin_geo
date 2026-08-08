@@ -269,9 +269,17 @@ def main() -> None:
     levels = parse_levels(args.levels)
     allowed = {int(item) for item in args.allowed_shoes.split(",") if item}
     environment = build_environment_args(args.task_name, args.task_config, args.output)
+    balanced_object_tasks = {
+        "place_container_plate",
+        "place_handled_mug_geometry_marker",
+    }
     if args.task_name == "place_container_plate":
         environment["container_geometry"] = {
             "allowed_categories": ["021_cup"],
+            "allowed_container_ids": sorted(allowed),
+        }
+    elif args.task_name == "place_handled_mug_geometry_marker":
+        environment["container_geometry"] = {
             "allowed_container_ids": sorted(allowed),
         }
     if not args.full_recording:
@@ -286,7 +294,7 @@ def main() -> None:
         if len(records) >= int(args.episodes):
             break
         episode = len(records)
-        if args.task_name == "place_container_plate":
+        if args.task_name in balanced_object_tasks:
             remaining = [
                 shoe_id
                 for shoe_id in sorted(allowed)
