@@ -111,6 +111,9 @@ class InteractionFlowRuntime:
         self.source_geometry_adapter = bool(
             payload.get("source_geometry_adapter", False)
         )
+        self.shared_geometry_adapter = bool(
+            payload.get("shared_geometry_adapter", False)
+        )
         self.source_axis_relation_adapter = bool(
             payload.get("source_axis_relation_adapter", False)
         )
@@ -357,6 +360,7 @@ class InteractionFlowRuntime:
             point_channels=self.point_channels,
             target_color_adapter=self.target_color_adapter,
             source_geometry_adapter=self.source_geometry_adapter,
+            shared_geometry_adapter=self.shared_geometry_adapter,
             source_axis_relation_adapter=self.source_axis_relation_adapter,
             target_axis_relation_adapter=self.target_axis_relation_adapter,
             hand_object_frame_token=self.hand_object_frame_token,

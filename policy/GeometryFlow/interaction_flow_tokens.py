@@ -255,22 +255,34 @@ class PointTokenActionPolicy(nn.Module):
         point_channels: int = 3,
         target_color_adapter: bool = False,
         source_geometry_adapter: bool = False,
+        shared_geometry_adapter: bool = False,
     ) -> None:
         super().__init__()
         self.target_color_adapter = bool(target_color_adapter)
         self.source_geometry_adapter = bool(source_geometry_adapter)
-        if self.target_color_adapter and self.source_geometry_adapter:
+        self.shared_geometry_adapter = bool(shared_geometry_adapter)
+        if self.source_geometry_adapter and self.shared_geometry_adapter:
+            raise ValueError(
+                "source_geometry_adapter and shared_geometry_adapter are mutually exclusive"
+            )
+        if self.target_color_adapter and (
+            self.source_geometry_adapter or self.shared_geometry_adapter
+        ):
             raise ValueError(
                 "target_color_adapter and source_geometry_adapter are mutually exclusive"
             )
         encoder_input = (
             3
-            if self.target_color_adapter or self.source_geometry_adapter
+            if (
+                self.target_color_adapter
+                or self.source_geometry_adapter
+                or self.shared_geometry_adapter
+            )
             else int(point_channels)
         )
         self.point_encoder = PointTokenEncoder(feature_dim, input_dim=encoder_input)
         self.source_geometry_projection = None
-        if self.source_geometry_adapter:
+        if self.source_geometry_adapter or self.shared_geometry_adapter:
             if int(point_channels) <= 3:
                 raise ValueError("source geometry adapter requires point_channels > 3")
             self.source_geometry_projection = SourceGeometryAdapter(
@@ -328,6 +340,10 @@ class PointTokenActionPolicy(nn.Module):
                 point_b = point_b + self.target_color_projection(points_b[..., 3:])
             if self.source_geometry_projection is not None:
                 point_a = point_a + self.source_geometry_projection(points_a[..., 3:])
+                if self.shared_geometry_adapter:
+                    point_b = point_b + self.source_geometry_projection(
+                        points_b[..., 3:]
+                    )
         point_a = point_a + self.type_embedding[0]
         point_b = point_b + self.type_embedding[1]
         memory = self.memory_encoder(torch.cat((point_a, point_b), dim=1))
@@ -357,6 +373,7 @@ class InteractionFlowTokenPolicy(nn.Module):
         point_channels: int = 3,
         target_color_adapter: bool = False,
         source_geometry_adapter: bool = False,
+        shared_geometry_adapter: bool = False,
         source_axis_relation_adapter: bool = False,
         target_axis_relation_adapter: bool = False,
         condition_action_on_flow: bool = False,
@@ -496,26 +513,34 @@ class InteractionFlowTokenPolicy(nn.Module):
             raise ValueError("action_std must be strictly positive")
         self.target_color_adapter = bool(target_color_adapter)
         self.source_geometry_adapter = bool(source_geometry_adapter)
+        self.shared_geometry_adapter = bool(shared_geometry_adapter)
+        if self.source_geometry_adapter and self.shared_geometry_adapter:
+            raise ValueError(
+                "source_geometry_adapter and shared_geometry_adapter are mutually exclusive"
+            )
         self.source_axis_relation_adapter = bool(source_axis_relation_adapter)
         self.target_axis_relation_adapter = bool(target_axis_relation_adapter)
         if self.target_axis_relation_adapter and not self.source_axis_relation_adapter:
             raise ValueError(
                 "target_axis_relation_adapter requires source_axis_relation_adapter"
             )
-        if self.target_color_adapter and self.source_geometry_adapter:
+        if self.target_color_adapter and (
+            self.source_geometry_adapter or self.shared_geometry_adapter
+        ):
             raise ValueError(
                 "target_color_adapter and source_geometry_adapter are mutually exclusive"
             )
         self.xyz_only_point_encoder = bool(
             self.target_color_adapter
             or self.source_geometry_adapter
+            or self.shared_geometry_adapter
             or self.source_axis_relation_adapter
             or self.target_axis_relation_adapter
         )
         encoder_input = 3 if self.xyz_only_point_encoder else int(point_channels)
         self.point_encoder = PointTokenEncoder(feature_dim, input_dim=encoder_input)
         self.source_geometry_projection = None
-        if self.source_geometry_adapter:
+        if self.source_geometry_adapter or self.shared_geometry_adapter:
             if int(point_channels) <= 3:
                 raise ValueError("source geometry adapter requires point_channels > 3")
             self.source_geometry_projection = SourceGeometryAdapter(
@@ -891,6 +916,10 @@ class InteractionFlowTokenPolicy(nn.Module):
                 features_a = features_a + self.source_geometry_projection(
                     points_a[..., 3:]
                 )
+                if self.shared_geometry_adapter:
+                    features_b = features_b + self.source_geometry_projection(
+                        points_b[..., 3:]
+                    )
         robot = self.state_encoder(batch["state"])
         pooled_a = features_a.mean(dim=1)
         pooled_b = features_b.mean(dim=1)

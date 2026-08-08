@@ -156,3 +156,35 @@ train a reliable closed-loop controller over the largest perturbations.  The
 next admission gate is a larger object-balanced cup dataset with denser state
 coverage, followed by the same raw/local pairing, then matched NDF and UTONIA
 descriptors through the unchanged local-token interface.
+
+## 100-demonstration scale check and first frozen-encoder gate
+
+The larger admitted dataset contains 100 demonstrations, exactly balanced over
+five object identities and four perturbation bands.  It produces 1,139
+six-step action samples.  At seed 0, raw and from-scratch local relations are
+effectively tied across folds 0/1/2: raw endpoint translation averages 0.914 cm
+and local relations average 0.920 cm.  More trajectories from the same small
+set of identities therefore do not replace a transferable point
+representation.
+
+The old descriptor adapter was then audited and found to inject features only
+on object A.  A shared, zero-start adapter now projects frozen point descriptors
+for both A and B before relation attention.  The first controlled fold-0 test
+uses public UTONIA stage-0 descriptors (54 dimensions) and identical-capacity
+zero and within-cloud-shuffled controls:
+
+| descriptor input | best epoch | endpoint translation | endpoint rotation |
+|---|---:|---:|---:|
+| correct UTONIA s0 | 81 | 0.541 cm | 3.590 deg |
+| all-zero descriptor | 42 | 0.479 cm | 3.396 deg |
+| pointwise-shuffled UTONIA s0 | 42 | 0.475 cm | 3.288 deg |
+
+The correct descriptor stream learns a nonzero gate (0.121), but it does not
+beat either causal control.  Thus the favorable absolute error relative to the
+earlier RGB runs must not be attributed to UTONIA; the main change is the safe
+XYZ-only fallback.  This result rejects UTONIA-s0 concatenation as current
+evidence for the paper claim, but does not reject the locked token architecture
+or a category-matched NDF.  The next encoder gate is a jointly trained
+cup/container-and-support NDF inserted through exactly this shared interface,
+again requiring correct features to beat both zero and shuffled controls before
+any closed-loop scaling.

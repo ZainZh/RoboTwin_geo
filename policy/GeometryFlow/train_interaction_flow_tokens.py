@@ -536,6 +536,7 @@ def build_model(
     point_channels: int = 3,
     target_color_adapter: bool = False,
     source_geometry_adapter: bool = False,
+    shared_geometry_adapter: bool = False,
     source_axis_relation_adapter: bool = False,
     target_axis_relation_adapter: bool = False,
     hand_object_frame_token: bool = False,
@@ -551,6 +552,7 @@ def build_model(
             point_channels=point_channels,
             target_color_adapter=target_color_adapter,
             source_geometry_adapter=source_geometry_adapter,
+            shared_geometry_adapter=shared_geometry_adapter,
         )
     if condition in CONDITIONS:
         # Keep the auxiliary head instantiated for all interaction conditions so
@@ -573,6 +575,7 @@ def build_model(
             point_channels=point_channels,
             target_color_adapter=target_color_adapter,
             source_geometry_adapter=source_geometry_adapter,
+            shared_geometry_adapter=shared_geometry_adapter,
             source_axis_relation_adapter=source_axis_relation_adapter,
             target_axis_relation_adapter=target_axis_relation_adapter,
             condition_action_on_flow=condition == "interaction_flow_conditioned",
@@ -1215,6 +1218,15 @@ def parser() -> argparse.ArgumentParser:
         help=(
             "Treat point channels after XYZ as source-object descriptors and "
             "inject them through a zero-start gated token adapter."
+        ),
+    )
+    result.add_argument(
+        "--shared-geometry-adapter",
+        action="store_true",
+        help=(
+            "Project frozen point descriptors for both A and B through one "
+            "zero-start gated adapter, so relation attention can compare them "
+            "in a shared feature space."
         ),
     )
     result.add_argument(
@@ -1861,6 +1873,7 @@ def main() -> None:
                 point_channels=point_channels,
                 target_color_adapter=args.target_color_adapter,
                 source_geometry_adapter=args.source_geometry_adapter,
+                shared_geometry_adapter=args.shared_geometry_adapter,
                 source_axis_relation_adapter=args.source_axis_relation_adapter,
                 target_axis_relation_adapter=args.target_axis_relation_adapter,
                 diffusion_steps=args.diffusion_steps,
@@ -2538,6 +2551,7 @@ def main() -> None:
                     "point_channels": int(point_channels),
                     "target_color_adapter": bool(args.target_color_adapter),
                     "source_geometry_adapter": bool(args.source_geometry_adapter),
+                    "shared_geometry_adapter": bool(args.shared_geometry_adapter),
                     "source_axis_relation_adapter": bool(
                         args.source_axis_relation_adapter
                     ),

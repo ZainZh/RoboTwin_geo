@@ -185,6 +185,41 @@ def test_source_geometry_and_target_color_adapters_are_exclusive() -> None:
         raise AssertionError("expected mutually-exclusive adapters to fail")
 
 
+def test_shared_geometry_adapter_is_noop_then_uses_both_objects() -> None:
+    model = InteractionFlowTokenPolicy(
+        horizon=3,
+        flow_steps=4,
+        num_anchors=6,
+        feature_dim=32,
+        heads=4,
+        layers=1,
+        point_channels=6,
+        shared_geometry_adapter=True,
+    ).eval()
+    first = batch()
+    first["points_a"] = torch.cat(
+        (first["points_a"], torch.randn(3, 24, 3)), dim=-1
+    )
+    first["points_b"] = torch.cat(
+        (first["points_b"], torch.randn(3, 20, 3)), dim=-1
+    )
+    changed_a = {key: value.clone() for key, value in first.items()}
+    changed_b = {key: value.clone() for key, value in first.items()}
+    changed_a["points_a"][..., 3:] = torch.randn_like(
+        changed_a["points_a"][..., 3:]
+    )
+    changed_b["points_b"][..., 3:] = torch.randn_like(
+        changed_b["points_b"][..., 3:]
+    )
+    original = model(first).action
+    assert torch.equal(original, model(changed_a).action)
+    assert torch.equal(original, model(changed_b).action)
+    with torch.no_grad():
+        model.source_geometry_projection.gate.fill_(0.25)
+    assert not torch.allclose(model(first).action, model(changed_a).action)
+    assert not torch.allclose(model(first).action, model(changed_b).action)
+
+
 def test_zero_source_descriptor_cannot_become_a_constant_residual() -> None:
     model = InteractionFlowTokenPolicy(
         horizon=3,
