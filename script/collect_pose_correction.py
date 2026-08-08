@@ -269,6 +269,11 @@ def main() -> None:
     levels = parse_levels(args.levels)
     allowed = {int(item) for item in args.allowed_shoes.split(",") if item}
     environment = build_environment_args(args.task_name, args.task_config, args.output)
+    if args.task_name == "place_container_plate":
+        environment["container_geometry"] = {
+            "allowed_categories": ["021_cup"],
+            "allowed_container_ids": sorted(allowed),
+        }
     if not args.full_recording:
         environment["data_type"].update(
             {"third_view": False, "pointcloud": False, "qpos": False}
@@ -281,6 +286,17 @@ def main() -> None:
         if len(records) >= int(args.episodes):
             break
         episode = len(records)
+        if args.task_name == "place_container_plate":
+            remaining = [
+                shoe_id
+                for shoe_id in sorted(allowed)
+                if shoe_counts.get(shoe_id, 0) < int(args.max_per_shoe)
+            ]
+            if not remaining:
+                break
+            environment["container_geometry"]["allowed_container_ids"] = [
+                remaining[episode % len(remaining)]
+            ]
         try:
             task.setup_demo(now_ep_num=episode, seed=scene_seed, **environment)
         except UnStableError:

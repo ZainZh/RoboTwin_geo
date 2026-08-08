@@ -42,9 +42,11 @@ def parser() -> argparse.ArgumentParser:
         metavar=("NAME", "PATH"),
         required=True,
     )
-    result.add_argument("--dense-frame-checkpoint", type=Path, action="append", required=True)
-    result.add_argument("--camera-metadata", type=Path, required=True)
-    result.add_argument("--ensemble-metadata", type=Path, required=True)
+    result.add_argument(
+        "--dense-frame-checkpoint", type=Path, action="append", default=[]
+    )
+    result.add_argument("--camera-metadata", type=Path)
+    result.add_argument("--ensemble-metadata", type=Path)
     result.add_argument("--output", type=Path, required=True)
     result.add_argument("--device", default="cuda:0")
     result.add_argument(
@@ -256,6 +258,7 @@ def _capture_task_state(task) -> dict:
         "left_cnt",
         "plan_success",
         "right_cnt",
+        "shoe_arm_name",
         "stage_success_tag",
         "step_lim",
         "take_action_cnt",
@@ -397,9 +400,13 @@ def _model_arguments(
         "interaction_flow_dense_frame_checkpoints": [
             str(path.resolve()) for path in args.dense_frame_checkpoint
         ],
-        "interaction_flow_dense_camera_metadata": str(args.camera_metadata.resolve()),
-        "interaction_flow_dense_ensemble_metadata": str(
-            args.ensemble_metadata.resolve()
+        "interaction_flow_dense_camera_metadata": (
+            "" if args.camera_metadata is None else str(args.camera_metadata.resolve())
+        ),
+        "interaction_flow_dense_ensemble_metadata": (
+            ""
+            if args.ensemble_metadata is None
+            else str(args.ensemble_metadata.resolve())
         ),
         "interaction_flow_dense_frame_mode": str(
             args.dense_frame_mode if dense_frame_mode is None else dense_frame_mode
@@ -791,6 +798,9 @@ def _run_paired_snapshot_evaluation(
                 is_test=bool(manifest.get("setup_is_test", True)),
                 **environment,
             )
+            # Task observations expose the active-arm identity.  Restore this
+            # semantic state before even the optional early target latch.
+            task.shoe_arm_name = str(source["arm"])
             early_observations = [
                 task.get_obs() for _ in range(int(args.target_latch_frames))
             ]
@@ -889,6 +899,11 @@ def _run_paired_snapshot_evaluation(
                         **environment,
                     )
                     _restore_task_state(variant_task, snapshot)
+                    # The active arm is semantic episode state rather than a
+                    # SAPIEN actor property.  Older portable manifests did not
+                    # serialize it, so restore it explicitly from the admitted
+                    # record before the first observation.
+                    variant_task.shoe_arm_name = str(arm)
                     for _ in range(int(args.snapshot_settle_steps)):
                         variant_task.scene.step()
                     variant_task.scene.update_render()
@@ -989,11 +1004,28 @@ def main() -> None:
         manifest, _integer_set(args.episodes), _integer_set(args.levels)
     )
     levels = parse_levels(str(manifest["levels"]))
+    dense_requested = any(
+        _checkpoint_uses_dense_camera_frame(Path(checkpoint))
+        for _name, checkpoint in args.checkpoint
+    )
+    if dense_requested and (
+        not args.dense_frame_checkpoint
+        or args.camera_metadata is None
+        or args.ensemble_metadata is None
+    ):
+        raise ValueError(
+            "dense functional-frame checkpoints require frame checkpoints, "
+            "camera metadata, and ensemble metadata"
+        )
+    optional_dense_paths = [
+        path
+        for path in (args.camera_metadata, args.ensemble_metadata)
+        if path is not None
+    ]
     for path in (
         args.manifest,
-        args.camera_metadata,
-        args.ensemble_metadata,
         *(Path(value[1]) for value in args.checkpoint),
+        *optional_dense_paths,
         *args.dense_frame_checkpoint,
     ):
         if not Path(path).is_file():
@@ -1001,6 +1033,12 @@ def main() -> None:
     environment = build_environment_args(
         str(manifest["task_name"]), str(manifest["task_config"]), args.output.parent
     )
+    if str(manifest["task_name"]) == "place_container_plate":
+        allowed_objects = [int(value) for value in manifest["allowed_shoes"]]
+        environment["container_geometry"] = {
+            "allowed_categories": ["021_cup"],
+            "allowed_container_ids": allowed_objects,
+        }
     environment["data_type"].update(
         {"third_view": False, "pointcloud": False, "qpos": False}
     )
@@ -1080,8 +1118,14 @@ def main() -> None:
         "dense_frame_checkpoint_sources": [
             str(path.resolve()) for path in args.dense_frame_checkpoint
         ],
-        "camera_metadata_source": str(args.camera_metadata.resolve()),
-        "ensemble_metadata_source": str(args.ensemble_metadata.resolve()),
+        "camera_metadata_source": (
+            None if args.camera_metadata is None else str(args.camera_metadata.resolve())
+        ),
+        "ensemble_metadata_source": (
+            None
+            if args.ensemble_metadata is None
+            else str(args.ensemble_metadata.resolve())
+        ),
         "results": {name: [] for name in models},
         "status": "in_progress",
     }

@@ -80,6 +80,7 @@ CONDITIONS = {
     "interaction_functional_grasp_adapter_flow",
     "interaction_functional_gated",
     "interaction_functional_gated_flow",
+    "interaction_functional_relative",
     "interaction_relative_flow",
     "interaction_diffusion",
     "interaction_relative_diffusion",
@@ -194,7 +195,17 @@ class InteractionFlowDataset(TaskFlowDataset):
                     self.wrong_episode[episode] = candidate
                     break
             if episode not in self.wrong_episode:
-                raise ValueError("wrong-flow control needs at least two shoe identities")
+                # Small object-disjoint pilots can contain one identity in a
+                # validation/test split but several independently perturbed
+                # episodes.  Prefer a cross-object corruption above; when that
+                # is impossible, use another episode of the same object rather
+                # than blocking every non-shuffled condition as well.
+                alternatives = [value for value in episodes if value != episode]
+                if not alternatives:
+                    raise ValueError(
+                        "wrong-flow control needs at least two episodes"
+                    )
+                self.wrong_episode[episode] = alternatives[0]
         self.wrong_frame_index: dict[int, int] = {}
         if "target_frame9" in payload:
             # A relative current-to-goal frame varies within an episode.  Match
@@ -224,7 +235,16 @@ class InteractionFlowDataset(TaskFlowDataset):
             for position, sample_index in enumerate(selected):
                 candidates = np.flatnonzero(selected_shoes != selected_shoes[position])
                 if not len(candidates):
-                    raise ValueError("wrong-frame control needs at least two shoe identities")
+                    selected_episodes = np.asarray(
+                        payload["episode_index"][selected], dtype=np.int64
+                    )
+                    candidates = np.flatnonzero(
+                        selected_episodes != selected_episodes[position]
+                    )
+                if not len(candidates):
+                    raise ValueError(
+                        "wrong-frame control needs at least two episodes"
+                    )
                 cost = np.abs(
                     (difficulty[candidates] - difficulty[position]) / scale
                 ).sum(axis=-1)
@@ -571,6 +591,7 @@ def build_model(
                 "interaction_functional_grasp_adapter_flow",
                 "interaction_functional_gated",
                 "interaction_functional_gated_flow",
+                "interaction_functional_relative",
                 "interaction_relative_flow",
                 "interaction_relative_diffusion",
             },
@@ -587,18 +608,21 @@ def build_model(
                 "interaction_functional_grasp_adapter_flow",
                 "interaction_functional_gated",
                 "interaction_functional_gated_flow",
+                "interaction_functional_relative",
                 "interaction_relative_flow",
                 "interaction_relative_diffusion",
             },
             functional_frame_gated_scene=condition in {
                 "interaction_functional_gated",
                 "interaction_functional_gated_flow",
+                "interaction_functional_relative",
                 "interaction_relative_flow",
                 "interaction_relative_diffusion",
             },
             functional_frame_as_memory=condition not in {
                 "interaction_functional_gated",
                 "interaction_functional_gated_flow",
+                "interaction_functional_relative",
                 "interaction_relative_flow",
                 "interaction_relative_diffusion",
             },
@@ -606,6 +630,7 @@ def build_model(
                 condition == "interaction_functional_dual_frame_flow"
             ),
             functional_relative_flow=condition in {
+                "interaction_functional_relative",
                 "interaction_relative_flow",
                 "interaction_relative_diffusion",
             },
@@ -2465,6 +2490,22 @@ def main() -> None:
                     torch.tanh(target_axis_adapter.gate.detach()).cpu()
                 )
             result["target_axis_relation_gate"] = target_axis_gate
+            functional_frame_gate = getattr(
+                model, "functional_frame_gate", None
+            )
+            result["functional_frame_gate"] = (
+                None
+                if functional_frame_gate is None
+                else float(torch.tanh(functional_frame_gate.detach()).cpu())
+            )
+            functional_relative_gate = getattr(
+                model, "functional_relative_gate", None
+            )
+            result["functional_relative_gate"] = (
+                None
+                if functional_relative_gate is None
+                else float(torch.tanh(functional_relative_gate.detach()).cpu())
+            )
             dual_frame_gate = getattr(
                 model, "dual_functional_frame_gate", None
             )
