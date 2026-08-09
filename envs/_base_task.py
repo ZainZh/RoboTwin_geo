@@ -1822,6 +1822,28 @@ class Base_Task(gym.Env):
 
             self.scene.step()
             self._update_render()
+
+            # Optional evaluation-only recorder.  Keeping the callback here
+            # captures the actual low-level motion produced by a learned EEF
+            # action, instead of only the sparse observations between policy
+            # calls.  It is deliberately inert unless an evaluator installs
+            # ``inference_video_callback`` on the task instance.
+            inference_video_callback = getattr(
+                self, "inference_video_callback", None
+            )
+            inference_video_frequency = max(
+                1,
+                int(getattr(self, "inference_video_control_frequency", 8)),
+            )
+            control_index = max(now_left_id, now_right_id)
+            if (
+                callable(inference_video_callback)
+                and control_index % inference_video_frequency == 0
+            ):
+                self.cameras.update_picture()
+                inference_video_callback(
+                    self.cameras.get_rgb()["head_camera"]["rgb"]
+                )
                 
             if self.check_success():
                 self.eval_success = True

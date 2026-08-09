@@ -19,7 +19,9 @@ import json
 from pathlib import Path
 import sys
 
+import imageio.v2 as imageio
 import numpy as np
+from PIL import Image, ImageDraw, ImageFont
 from scipy.spatial.transform import Rotation
 import torch
 
@@ -150,6 +152,21 @@ def parser() -> argparse.ArgumentParser:
             "used to rebuild contact solver state before measuring the paired "
             "initial condition."
         ),
+    )
+    result.add_argument(
+        "--video-dir",
+        type=Path,
+        help=(
+            "Optional directory for annotated head-camera inference videos. "
+            "One MP4 is written per evaluated (variant, episode)."
+        ),
+    )
+    result.add_argument("--video-fps", type=int, default=20)
+    result.add_argument(
+        "--video-control-frequency",
+        type=int,
+        default=8,
+        help="Record one frame per this many low-level controller steps.",
     )
     return result
 
@@ -516,6 +533,100 @@ def _pose_threshold_met(errors: dict[str, float], args: argparse.Namespace) -> b
     )
 
 
+class _InferenceVideoRecorder:
+    """Collect and write an annotated, evaluator-only inference rollout."""
+
+    def __init__(self, *, task_name: str, variant: str, episode: int):
+        self.task_name = str(task_name)
+        self.variant = str(variant)
+        self.episode = int(episode)
+        self.frames: list[np.ndarray] = []
+
+    def capture(self, rgb) -> None:
+        frame = np.asarray(rgb)
+        if frame.ndim != 3 or frame.shape[2] < 3:
+            raise ValueError(f"expected RGB frame, received {frame.shape}")
+        frame = frame[..., :3]
+        if frame.dtype != np.uint8:
+            if np.issubdtype(frame.dtype, np.floating) and frame.max() <= 1.0:
+                frame = frame * 255.0
+            frame = np.clip(frame, 0, 255).astype(np.uint8)
+        self.frames.append(np.ascontiguousarray(frame.copy()))
+
+    @staticmethod
+    def _font(size: int):
+        for candidate in (
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
+        ):
+            if Path(candidate).is_file():
+                return ImageFont.truetype(candidate, size=size)
+        return ImageFont.load_default()
+
+    def write(
+        self,
+        *,
+        directory: Path,
+        fps: int,
+        initial: dict[str, float],
+        final: dict[str, float],
+        success: bool,
+        first_success_call: int | None,
+    ) -> Path:
+        if not self.frames:
+            raise RuntimeError("inference video recorder has no frames")
+        outcome = "success" if success else "failure"
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / (
+            f"{self.task_name}__{self.variant}__episode{self.episode:03d}__"
+            f"{outcome}.mp4"
+        )
+        banner_height = 74
+        font = self._font(20)
+        small_font = self._font(16)
+        color = (45, 205, 105) if success else (245, 90, 85)
+        task_label = (
+            "shoe placement"
+            if "shoe" in self.task_name
+            else "handled-mug placement"
+        )
+        line1 = (
+            f"TAGRT | {task_label} | episode {self.episode} | "
+            f"{outcome.upper()}"
+        )
+        line2 = (
+            f"pose error: {float(initial['translation_m']) * 100.0:.2f} cm / "
+            f"{float(initial['rotation_deg']):.2f} deg  ->  "
+            f"{float(final['translation_m']) * 100.0:.2f} cm / "
+            f"{float(final['rotation_deg']):.2f} deg"
+        )
+        if first_success_call is not None:
+            line2 += f" | first success call: {int(first_success_call)}"
+        with imageio.get_writer(
+            path,
+            fps=max(int(fps), 1),
+            codec="libx264",
+            quality=8,
+            macro_block_size=2,
+        ) as writer:
+            for frame in self.frames:
+                canvas = Image.new(
+                    "RGB", (int(frame.shape[1]), int(frame.shape[0]) + banner_height)
+                )
+                canvas.paste(Image.fromarray(frame), (0, banner_height))
+                draw = ImageDraw.Draw(canvas)
+                draw.rectangle(
+                    (0, 0, int(frame.shape[1]), banner_height), fill=(18, 20, 26)
+                )
+                draw.text((12, 8), line1, fill=color, font=font)
+                draw.text((12, 42), line2, fill=(235, 238, 242), font=small_font)
+                writer.append_data(np.asarray(canvas))
+            # Make the final result legible without altering the rollout.
+            for _ in range(max(int(fps), 1)):
+                writer.append_data(np.asarray(canvas))
+        return path
+
+
 def _paired_summary(
     results: dict[str, list[dict]],
     *,
@@ -616,6 +727,7 @@ def _evaluate_current_snapshot(
     arm: str,
     initial: dict[str, float],
     args: argparse.Namespace,
+    video_recorder: _InferenceVideoRecorder | None = None,
 ) -> dict:
     """Run one policy from the task's current, already-restored state."""
 
@@ -629,6 +741,13 @@ def _evaluate_current_snapshot(
     grasp_relation_trajectory = [initial_grasp_relation]
     grasp_slip_trajectory = [{"translation_cm": 0.0, "rotation_deg": 0.0}]
     policy_metrics_trajectory = []
+    if video_recorder is not None:
+        initial_observation = task.get_obs()
+        video_recorder.capture(
+            initial_observation["observation"]["head_camera"]["rgb"]
+        )
+        task.inference_video_callback = video_recorder.capture
+        task.inference_video_control_frequency = int(args.video_control_frequency)
     for call_index in range(int(args.policy_calls)):
         if first_success_call is not None and not args.continue_after_success:
             break
@@ -649,6 +768,12 @@ def _evaluate_current_snapshot(
             first_success_call = int(call_index) + 1
             if not args.continue_after_success:
                 break
+    if video_recorder is not None:
+        final_observation = task.get_obs()
+        video_recorder.capture(
+            final_observation["observation"]["head_camera"]["rgb"]
+        )
+        task.inference_video_callback = None
     return {
         "status": "complete",
         "target_latch": target_latch,
@@ -943,16 +1068,36 @@ def _run_paired_snapshot_evaluation(
                             )
                         ),
                     }
-                    record.update(
-                        _evaluate_current_snapshot(
-                            variant_task,
-                            model,
-                            early_observations=early_observations,
-                            arm=str(arm),
-                            initial=replay_initial,
-                            args=args,
+                    video_recorder = (
+                        None
+                        if args.video_dir is None
+                        else _InferenceVideoRecorder(
+                            task_name=str(manifest["task_name"]),
+                            variant=str(name),
+                            episode=episode,
                         )
                     )
+                    evaluation = _evaluate_current_snapshot(
+                        variant_task,
+                        model,
+                        early_observations=early_observations,
+                        arm=str(arm),
+                        initial=replay_initial,
+                        args=args,
+                        video_recorder=video_recorder,
+                    )
+                    record.update(evaluation)
+                    if video_recorder is not None:
+                        success = _pose_threshold_met(record["final"], args)
+                        video_path = video_recorder.write(
+                            directory=args.video_dir,
+                            fps=int(args.video_fps),
+                            initial=record["initial"],
+                            final=record["final"],
+                            success=success,
+                            first_success_call=record["first_success_call"],
+                        )
+                        record["video"] = str(video_path.resolve())
                 except Exception as error:
                     record.update(
                         {
@@ -989,10 +1134,13 @@ def main() -> None:
         or int(args.execute_steps) < 1
         or int(args.target_latch_frames) < 1
         or int(args.snapshot_settle_steps) < 0
+        or int(args.video_fps) < 1
+        or int(args.video_control_frequency) < 1
     ):
         raise ValueError(
             "policy-calls, execute-steps, and target-latch-frames must be "
-            "positive; snapshot-settle-steps must be nonnegative"
+            "positive; snapshot-settle-steps must be nonnegative; video-fps "
+            "and video-control-frequency must be positive"
         )
     if args.resummarize_existing:
         if not args.output.is_file():
