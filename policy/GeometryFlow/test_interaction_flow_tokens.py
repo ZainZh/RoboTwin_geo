@@ -166,6 +166,42 @@ def test_source_geometry_adapter_is_noop_then_receives_gradient() -> None:
     assert not torch.allclose(model(first).action, model(second).action)
 
 
+def test_functional_coordinate_adapter_preserves_rgb_baseline_at_zero_gate() -> None:
+    model = InteractionFlowTokenPolicy(
+        horizon=3,
+        flow_steps=4,
+        num_anchors=6,
+        feature_dim=32,
+        heads=4,
+        layers=1,
+        point_channels=9,
+        functional_coordinate_adapter=True,
+    ).eval()
+    first = batch()
+    first["points_a"] = torch.cat(
+        (first["points_a"], torch.randn(3, 24, 6)), dim=-1
+    )
+    first["points_b"] = torch.cat(
+        (first["points_b"], torch.randn(3, 20, 6)), dim=-1
+    )
+    second = {key: value.clone() for key, value in first.items()}
+    second["points_a"][..., -3:] = torch.randn_like(
+        second["points_a"][..., -3:]
+    )
+    second["points_b"][..., -3:] = torch.randn_like(
+        second["points_b"][..., -3:]
+    )
+    assert model.point_encoder.network[0].in_features == 6
+    first_action = model(first).action
+    second_action = model(second).action
+    assert torch.equal(first_action, second_action)
+    first_action.square().mean().backward()
+    assert model.functional_coordinate_projection.gate.grad is not None
+    with torch.no_grad():
+        model.functional_coordinate_projection.gate.fill_(0.25)
+    assert not torch.allclose(model(first).action, model(second).action)
+
+
 def test_source_geometry_and_target_color_adapters_are_exclusive() -> None:
     try:
         InteractionFlowTokenPolicy(

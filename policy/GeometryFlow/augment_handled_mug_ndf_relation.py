@@ -24,6 +24,10 @@ from .augment_task_flow_with_camera_ndf_frame import (
     rotation_error_deg,
 )
 from .functional_action_frame import frame9_rotation, pose9_rotation
+from .augment_handled_mug_camera_goal import (
+    MARKER_TO_MUG_RAW_ROTATION,
+    PLACEMENT_CLEARANCE_M,
+)
 from .train_ndf_functional_frame_head import resolve_object_split
 
 
@@ -189,12 +193,23 @@ def main() -> None:
             "schema_version": max(int(metadata.get("schema_version", 1)), 9),
             "output": str(args.output.resolve()),
             "functional_frame_source": "camera-only NDF A frame plus camera T-marker goal",
+            "functional_frame_encoding": (
+                "camera_ndf_current_marker_goal_se3_columns_v1"
+            ),
             "deployable": True,
             "frame_predictions": str(args.frame_predictions.resolve()),
             "object_split": {name: list(ids) for name, ids in split.items()},
             "current_origin_offset_local3": raw_diagnostics[
                 "current_origin_offset_local3"
             ].tolist(),
+            "goal_position_offset_marker_local3": [
+                0.0,
+                0.0,
+                float(PLACEMENT_CLEARANCE_M),
+            ],
+            "goal_rotation_offset_marker_local9": (
+                MARKER_TO_MUG_RAW_ROTATION.tolist()
+            ),
             "camera_relative_error": diagnostics,
         }
     )

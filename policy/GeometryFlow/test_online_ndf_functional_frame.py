@@ -163,6 +163,27 @@ def test_ensemble_disagreement_exactly_masks_frame():
     assert estimate.combined_confidence == 0.0
 
 
+def test_medoid_aggregation_rejects_one_flipped_member():
+    rotations = [
+        Rotation.from_euler("z", value, degrees=True).as_matrix()
+        for value in (1.0, 3.0, 179.0)
+    ]
+    runtime = provider(
+        [StubFrameEncoder(value) for value in rotations],
+        aggregation="medoid",
+        confidence_threshold_deg=180.0,
+    )
+    current_cloud, target_cloud = clouds()
+    estimate = runtime.estimate(
+        current_point_cloud=current_cloud,
+        target_point_cloud=target_cloud,
+    )
+    angle = Rotation.from_matrix(estimate.source_rotation).as_euler(
+        "xyz", degrees=True
+    )[2]
+    assert abs(float(angle) - 3.0) < 1e-4
+
+
 def test_combined_confidence_masks_unreliable_marker():
     encoder = StubFrameEncoder(np.eye(3))
 
@@ -267,6 +288,9 @@ class OnlineNdfFunctionalFrameTest(unittest.TestCase):
 
     def test_disagreement_mask(self):
         test_ensemble_disagreement_exactly_masks_frame()
+
+    def test_medoid_aggregation(self):
+        test_medoid_aggregation_rejects_one_flipped_member()
 
     def test_inverse_relation(self):
         test_inverse_preserves_confidence_and_magnitude_but_reverses_relation()

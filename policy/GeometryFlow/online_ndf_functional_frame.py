@@ -25,6 +25,7 @@ import numpy as np
 from .ensemble_ndf_functional_frames import (
     maximum_pairwise_disagreement,
     project_rotation_mean,
+    rotation_medoid,
 )
 from .ndf_adapter import NdfFunctionalFrameAdapter
 from .target_frame import estimate_geometry_marker_frame, yellow_marker_mask
@@ -142,6 +143,7 @@ class OnlineNdfFunctionalFrameProvider:
         goal_position_offset_marker_local3: np.ndarray | Sequence[float],
         goal_rotation_offset_marker_local9: np.ndarray | Sequence[float],
         confidence_threshold_deg: float,
+        aggregation: str = "projected_mean",
         ndf_checkpoints: Sequence[str | Path] | None = None,
         frame_encoders: Sequence[FunctionalFrameEncoder] | None = None,
         device: str = "cpu",
@@ -173,6 +175,8 @@ class OnlineNdfFunctionalFrameProvider:
             raise ValueError("marker_min_points must be positive")
         if float(marker_max_fit_score_m2) < 0.0:
             raise ValueError("marker_max_fit_score_m2 must be nonnegative")
+        if aggregation not in {"projected_mean", "medoid"}:
+            raise ValueError("aggregation must be projected_mean or medoid")
         self.encoders = encoders
         self.current_origin_offset_local3 = _as_vector(
             current_origin_offset_local3, "current_origin_offset_local3"
@@ -186,6 +190,7 @@ class OnlineNdfFunctionalFrameProvider:
             "goal_rotation_offset_marker_local9",
         )
         self.confidence_threshold_deg = threshold
+        self.aggregation = str(aggregation)
         self.marker_frame_estimator = marker_frame_estimator
         self.marker_min_points = int(marker_min_points)
         self.marker_max_fit_score_m2 = float(marker_max_fit_score_m2)
@@ -271,6 +276,7 @@ class OnlineNdfFunctionalFrameProvider:
                 "goal_rotation_offset_marker_local9"
             ],
             confidence_threshold_deg=ensemble["confidence_threshold_deg"],
+            aggregation=str(ensemble.get("aggregation", "projected_mean")),
             device=device,
             allow_privileged_oracle=allow_privileged_oracle,
         )
@@ -353,7 +359,11 @@ class OnlineNdfFunctionalFrameProvider:
                 "NDF encoders must each return one [3,3] frame, got "
                 f"{rotations.shape}"
             )
-        source_rotation = project_rotation_mean(rotations[:, None])[0]
+        source_rotation = (
+            project_rotation_mean(rotations[:, None])[0]
+            if self.aggregation == "projected_mean"
+            else rotation_medoid(rotations[:, None])[0]
+        )
         disagreement = float(
             maximum_pairwise_disagreement(rotations[:, None])[0]
         )

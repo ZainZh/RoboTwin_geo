@@ -150,6 +150,115 @@ Not supported yet:
 - transfer to a second object category/task;
 - a T-ASE-level general claim.
 
-The next required experiment is matched closed-loop deployment of correct,
-zero, and shuffled two-level policies on blind mug IDs 8--9.  Offline
-architecture search should stop until that test is complete.
+## Online parity and closed-loop intervention result
+
+The deployment path now reconstructs the training-time functional point
+coordinates exactly.  It normalizes the base XYZ/RGB channels before appending
+the already-scaled local coordinates, uses the same SO(3) medoid ensemble as
+cross-fitting, and reads the marker-local target-frame calibration from the
+dataset metadata.  With the three real NDF checkpoints, the online current
+frame reproduces the stored offline NDF frame to `5.38e-6 deg`.  The remaining
+`0.071 cm / 1.138 deg` target-frame difference observed in a replay diagnostic
+comes from using the stored 128-point B cloud; deployment latches three full
+camera clouds and does not use this downsampled diagnostic input.
+
+A paired fresh-scene evaluation then restored the same post-perturbation
+physics snapshot for every policy, ran six receding-horizon calls, held the
+gripper closed, and used simulator object poses only for metrics.  The success
+threshold was `2.5 cm / 15 deg` on blind mug IDs 8--9.
+
+The original direct-concatenation two-level model failed its causal test:
+
+| Branch | Success | Final translation | Final rotation |
+|---|---:|---:|---:|
+| correct geometry | 2/3 | 1.670 cm | 8.165 deg |
+| same model, geometry zeroed online | 3/3 | 1.063 cm | 6.589 deg |
+| zero-trained policy | 3/3 | 1.272 cm | 6.805 deg |
+
+This falsifies direct per-point coordinate concatenation, despite its modest
+offline benefit.  NDF confidence was normal and grasp slip was shared across
+variants, so neither explains the regression.
+
+## Reliability-preserving geometry adapter
+
+The baseline XYZ/RGB point encoder is now preserved exactly.  Only the final
+three functional coordinates enter a shared zero-initialized scalar-gated
+adapter; the existing global SE(3) token also remains zero-start gated.  At
+initialization, or when geometry is absent, the architecture is an exact no-op
+rather than a corrupted baseline.
+
+Its seed-0 offline factorial result was:
+
+| Training relation | Endpoint translation | Endpoint rotation |
+|---|---:|---:|
+| correct | 0.775 cm | 6.451 deg |
+| zero | 0.825 cm | 6.907 deg |
+| shuffled | 0.905 cm | 7.990 deg |
+
+The adapter removed the direct-concatenation failure.  In the first three
+paired closed-loop episodes, correct geometry reached `1.399 cm / 5.809 deg`,
+the same checkpoint with geometry zeroed reached `1.471 cm / 5.691 deg`, and
+the zero-trained policy reached `1.507 cm / 5.606 deg`.  Correct geometry thus
+improved translation by 4.9% versus its online ablation and by 7.2% versus the
+zero-trained policy, but did not improve rotation.  This is a partial result,
+not a closed method claim.
+
+Increasing the deployed endpoint SO(3) action loss to 0.5 was rejected because
+shuffled geometry (`0.832 cm / 6.759 deg`) beat correct geometry
+(`0.899 cm / 6.958 deg`) offline.
+
+## Rotation supervision and identifiability diagnostic
+
+A separate lightweight SO(3) auxiliary head was added through the existing
+rotation supervision path, with weight 0.1.  It predicts the remaining rigid
+rotation during training but is not an inference input.  Offline seed 0 gave:
+
+| Training relation | Endpoint translation | Endpoint rotation |
+|---|---:|---:|
+| correct | 0.745 cm | 6.060 deg |
+| zero | 0.859 cm | 6.763 deg |
+| shuffled | 0.745 cm | 6.567 deg |
+
+However, strict online intervention again separated regularization from
+geometry use:
+
+| Branch | Success | Final translation | Final rotation |
+|---|---:|---:|---:|
+| correct geometry | 3/3 | 1.170 cm | 6.214 deg |
+| same model, geometry zeroed online | 3/3 | 1.123 cm | 5.978 deg |
+| zero-trained policy | 3/3 | 1.785 cm | 7.685 deg |
+
+The auxiliary task improved the shared policy, but the action decoder still
+did not causally use the geometry token.  This distinction is essential: the
+correct model may beat an independently trained zero baseline without beating
+its own inference-time geometry ablation.
+
+Finally, the zero-trained policy was frozen and only its 35,074 geometry
+adapter parameters were optimized.  Correct geometry produced
+`0.775 cm / 6.465 deg`, whereas shuffled geometry produced
+`0.743 cm / 6.411 deg`.  This rejects the hypothesis that freezing the baseline
+alone makes the task relation identifiable.
+
+## Revised claim boundary and next gate
+
+Supported now:
+
+- category-trained NDF and camera target frames are deployment-consistent;
+- the failure is in fusion/identifiability, not online NDF reproduction;
+- direct concatenation is unsafe;
+- a zero-start adapter prevents catastrophic degradation;
+- auxiliary SO(3) supervision improves the shared representation but does not
+  prove that actions use the task relation.
+
+Not supported yet:
+
+- a causal closed-loop advantage from the learned NDF tokens;
+- seed-scale expansion or a T-ASE-level method claim.
+
+The fixed marker goal makes the desired relation strongly redundant with the
+raw A/B clouds.  The next experiment must create relation-identifying training
+pairs: for one observed object state, sample multiple reachable target frames,
+transform the demonstrated remaining action consistently, and require the same
+policy to follow the counterfactual relation.  Correct/zero/shuffled online
+interventions remain the decision gate.  More encoder swaps, gate tuning, or
+seed expansion should not precede that test.

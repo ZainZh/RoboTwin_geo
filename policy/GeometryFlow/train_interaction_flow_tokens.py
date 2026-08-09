@@ -647,6 +647,7 @@ def build_model(
     target_color_adapter: bool = False,
     source_geometry_adapter: bool = False,
     shared_geometry_adapter: bool = False,
+    functional_coordinate_adapter: bool = False,
     source_axis_relation_adapter: bool = False,
     source_axis_gate_initial_value: float = 0.0,
     target_axis_relation_adapter: bool = False,
@@ -687,6 +688,7 @@ def build_model(
             target_color_adapter=target_color_adapter,
             source_geometry_adapter=source_geometry_adapter,
             shared_geometry_adapter=shared_geometry_adapter,
+            functional_coordinate_adapter=functional_coordinate_adapter,
             source_axis_relation_adapter=source_axis_relation_adapter,
             source_axis_gate_initial_value=source_axis_gate_initial_value,
             target_axis_relation_adapter=target_axis_relation_adapter,
@@ -1445,6 +1447,15 @@ def parser() -> argparse.ArgumentParser:
         ),
     )
     result.add_argument(
+        "--functional-coordinate-adapter",
+        action="store_true",
+        help=(
+            "Encode XYZ/RGB through the baseline point encoder and inject only "
+            "the final three functional coordinates through a shared zero-start "
+            "gated adapter. Requires --functional-point-coordinates."
+        ),
+    )
+    result.add_argument(
         "--zero-global-functional-frame-token",
         action="store_true",
         help=(
@@ -1590,6 +1601,11 @@ def main() -> None:
     if args.zero_global_functional_frame_token and not args.functional_point_coordinates:
         raise ValueError(
             "--zero-global-functional-frame-token requires "
+            "--functional-point-coordinates"
+        )
+    if args.functional_coordinate_adapter and not args.functional_point_coordinates:
+        raise ValueError(
+            "--functional-coordinate-adapter requires "
             "--functional-point-coordinates"
         )
     if float(args.endpoint_rotation_action_loss_weight) > 0.0 and any(
@@ -2052,6 +2068,7 @@ def main() -> None:
                 target_color_adapter=args.target_color_adapter,
                 source_geometry_adapter=args.source_geometry_adapter,
                 shared_geometry_adapter=args.shared_geometry_adapter,
+                functional_coordinate_adapter=args.functional_coordinate_adapter,
                 source_axis_relation_adapter=args.source_axis_relation_adapter,
                 source_axis_gate_initial_value=args.source_axis_gate_initial_value,
                 target_axis_relation_adapter=args.target_axis_relation_adapter,
@@ -2103,6 +2120,7 @@ def main() -> None:
                         name.startswith("functional_frame_")
                         or name.startswith("functional_relative_")
                         or name.startswith("source_geometry_projection.")
+                        or name.startswith("functional_coordinate_projection.")
                         or name.startswith("source_axis_relation_projection.")
                     )
                     if parameter.requires_grad:
@@ -2666,6 +2684,15 @@ def main() -> None:
                     torch.tanh(adapter.gate.detach()).cpu()
                 )
             result["source_geometry_gate"] = source_geometry_gate
+            functional_coordinate_gate = None
+            coordinate_adapter = getattr(
+                model, "functional_coordinate_projection", None
+            )
+            if coordinate_adapter is not None:
+                functional_coordinate_gate = float(
+                    torch.tanh(coordinate_adapter.gate.detach()).cpu()
+                )
+            result["functional_coordinate_gate"] = functional_coordinate_gate
             source_axis_gate = None
             axis_adapter = getattr(model, "source_axis_relation_projection", None)
             if axis_adapter is not None:
@@ -2731,6 +2758,9 @@ def main() -> None:
                     "target_color_adapter": bool(args.target_color_adapter),
                     "source_geometry_adapter": bool(args.source_geometry_adapter),
                     "shared_geometry_adapter": bool(args.shared_geometry_adapter),
+                    "functional_coordinate_adapter": bool(
+                        args.functional_coordinate_adapter
+                    ),
                     "source_axis_relation_adapter": bool(
                         args.source_axis_relation_adapter
                     ),
@@ -2830,6 +2860,12 @@ def main() -> None:
                     ),
                     "functional_frame_translation_mode": str(
                         functional_frame_translation_mode
+                    ),
+                    "functional_point_coordinates": bool(
+                        args.functional_point_coordinates
+                    ),
+                    "zero_global_functional_frame_token": bool(
+                        args.zero_global_functional_frame_token
                     ),
                     "functional_frame_encoding": (
                         "intended_goal_error_se3_columns_v3"

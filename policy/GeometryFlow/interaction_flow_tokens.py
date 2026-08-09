@@ -376,6 +376,7 @@ class InteractionFlowTokenPolicy(nn.Module):
         target_color_adapter: bool = False,
         source_geometry_adapter: bool = False,
         shared_geometry_adapter: bool = False,
+        functional_coordinate_adapter: bool = False,
         source_axis_relation_adapter: bool = False,
         source_axis_gate_initial_value: float = 0.0,
         target_axis_relation_adapter: bool = False,
@@ -517,9 +518,18 @@ class InteractionFlowTokenPolicy(nn.Module):
         self.target_color_adapter = bool(target_color_adapter)
         self.source_geometry_adapter = bool(source_geometry_adapter)
         self.shared_geometry_adapter = bool(shared_geometry_adapter)
-        if self.source_geometry_adapter and self.shared_geometry_adapter:
+        self.functional_coordinate_adapter = bool(functional_coordinate_adapter)
+        if sum(
+            bool(value)
+            for value in (
+                self.source_geometry_adapter,
+                self.shared_geometry_adapter,
+                self.functional_coordinate_adapter,
+            )
+        ) > 1:
             raise ValueError(
-                "source_geometry_adapter and shared_geometry_adapter are mutually exclusive"
+                "source, shared, and functional-coordinate adapters are "
+                "mutually exclusive"
             )
         self.source_axis_relation_adapter = bool(source_axis_relation_adapter)
         self.target_axis_relation_adapter = bool(target_axis_relation_adapter)
@@ -528,7 +538,9 @@ class InteractionFlowTokenPolicy(nn.Module):
                 "target_axis_relation_adapter requires source_axis_relation_adapter"
             )
         if self.target_color_adapter and (
-            self.source_geometry_adapter or self.shared_geometry_adapter
+            self.source_geometry_adapter
+            or self.shared_geometry_adapter
+            or self.functional_coordinate_adapter
         ):
             raise ValueError(
                 "target_color_adapter and source_geometry_adapter are mutually exclusive"
@@ -540,7 +552,15 @@ class InteractionFlowTokenPolicy(nn.Module):
             or self.source_axis_relation_adapter
             or self.target_axis_relation_adapter
         )
-        encoder_input = 3 if self.xyz_only_point_encoder else int(point_channels)
+        if self.functional_coordinate_adapter:
+            if int(point_channels) < 6:
+                raise ValueError(
+                    "functional-coordinate adapter requires base point channels "
+                    "plus three local coordinates"
+                )
+            encoder_input = int(point_channels) - 3
+        else:
+            encoder_input = 3 if self.xyz_only_point_encoder else int(point_channels)
         self.point_encoder = PointTokenEncoder(feature_dim, input_dim=encoder_input)
         self.source_geometry_projection = None
         if self.source_geometry_adapter or self.shared_geometry_adapter:
@@ -549,6 +569,11 @@ class InteractionFlowTokenPolicy(nn.Module):
             self.source_geometry_projection = SourceGeometryAdapter(
                 int(point_channels) - 3, feature_dim
             )
+        self.functional_coordinate_projection = (
+            SourceGeometryAdapter(3, feature_dim)
+            if self.functional_coordinate_adapter
+            else None
+        )
         self.source_axis_relation_projection = (
             SourceAxisRelationAdapter(
                 feature_dim,
@@ -908,7 +933,16 @@ class InteractionFlowTokenPolicy(nn.Module):
         points_b = batch["points_b"]
         xyz_a = points_a[..., :3]
         xyz_b = points_b[..., :3]
-        if not self.xyz_only_point_encoder:
+        if self.functional_coordinate_projection is not None:
+            features_a = self.point_encoder(points_a[..., :-3])
+            features_b = self.point_encoder(points_b[..., :-3])
+            features_a = features_a + self.functional_coordinate_projection(
+                points_a[..., -3:]
+            )
+            features_b = features_b + self.functional_coordinate_projection(
+                points_b[..., -3:]
+            )
+        elif not self.xyz_only_point_encoder:
             features_a = self.point_encoder(points_a)
             features_b = self.point_encoder(points_b)
         else:

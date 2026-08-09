@@ -115,6 +115,117 @@ def test_runtime_preserves_aligned_rgb_channels(tmp_path):
     assert runtime.model.point_encoder.network[0].in_features == 6
 
 
+def test_runtime_reconstructs_training_functional_point_coordinates(tmp_path):
+    from .train_interaction_flow_tokens import build_model
+
+    normalization = {
+        "state_mean": np.zeros(20, dtype=np.float32),
+        "state_std": np.ones(20, dtype=np.float32),
+        "action_mean": np.zeros(14, dtype=np.float32),
+        "action_std": np.ones(14, dtype=np.float32),
+        "xyz_mean": np.zeros(3, dtype=np.float32),
+        "xyz_std": np.ones(3, dtype=np.float32),
+        "point_feature_mean": np.zeros(3, dtype=np.float32),
+        "point_feature_std": np.ones(3, dtype=np.float32),
+    }
+    model = build_model(
+        "interaction_functional_gated_flow",
+        horizon=2,
+        flow_steps=2,
+        num_anchors=4,
+        feature_dim=32,
+        layers=1,
+        flow_parameterization="free",
+        xyz_std=normalization["xyz_std"],
+        point_channels=9,
+    )
+    checkpoint = tmp_path / "two_level.pt"
+    torch.save(
+        {
+            "model": model.state_dict(),
+            "condition": "interaction_functional_gated_flow",
+            "horizon": 2,
+            "flow_steps": 2,
+            "num_anchors": 4,
+            "feature_dim": 32,
+            "layers": 1,
+            "point_channels": 9,
+            "functional_point_coordinates": True,
+            "flow_parameterization": "free",
+            "functional_frame_encoding": "dataset_relative_se3_columns_v1",
+            "functional_frame_translation_mode": "delta",
+            "action_frame": "world",
+            "policy_frame": "goal_action",
+            "normalization": normalization,
+        },
+        checkpoint,
+    )
+
+    goal_transform = np.eye(4, dtype=np.float32)
+    goal_transform[:3, 3] = [1.0, 2.0, 3.0]
+    relative = np.asarray(
+        [0.5, 1.0, 1.5, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        dtype=np.float32,
+    )
+
+    class StubProvider:
+        def estimate(self, *, mode, **_kwargs):
+            assert mode == "clean"
+            return OnlineFunctionalFrameEstimate(
+                frame9_metric=relative.copy(),
+                combined_confidence=1.0,
+                source_confidence=1.0,
+                target_confidence=1.0,
+                source_disagreement_deg=0.0,
+                source_rotation=np.eye(3, dtype=np.float32),
+                goal_transform=goal_transform.copy(),
+                mode="clean",
+                target_latched=True,
+                marker_points=30,
+                marker_fit_score_m2=1e-6,
+            )
+
+        @staticmethod
+        def reset():
+            return None
+
+    runtime = InteractionFlowRuntime(
+        checkpoint,
+        device="cpu",
+        observation_points=128,
+        dense_frame_mode="clean",
+        dense_frame_provider=StubProvider(),
+    )
+
+    class CaptureModel:
+        def __init__(self):
+            self.batch = None
+
+        def __call__(self, batch):
+            self.batch = batch
+            return InteractionFlowOutput(action=torch.zeros((1, 2, 14)))
+
+    capture = CaptureModel()
+    runtime.model = capture
+    xyz_a = np.tile(np.asarray([[0.6, 1.2, 1.8]], dtype=np.float32), (128, 1))
+    xyz_b = np.tile(np.asarray([[1.1, 2.2, 3.3]], dtype=np.float32), (128, 1))
+    rgb = np.tile(np.asarray([[0.2, 0.3, 0.4]], dtype=np.float32), (128, 1))
+    runtime.predict(
+        operated_point_cloud=np.concatenate((xyz_a, rgb), axis=-1),
+        target_point_cloud=np.concatenate((xyz_b, rgb), axis=-1),
+        eef_state20=np.zeros(20, dtype=np.float32),
+    )
+    points_a = capture.batch["points_a"].cpu().numpy()[0]
+    points_b = capture.batch["points_b"].cpu().numpy()[0]
+    assert points_a.shape == (128, 9)
+    assert points_b.shape == (128, 9)
+    np.testing.assert_allclose(points_a[0, :6], [0.6, 1.2, 1.8, 0.2, 0.3, 0.4])
+    np.testing.assert_allclose(points_b[0, :6], [1.1, 2.2, 3.3, 0.2, 0.3, 0.4])
+    # source_position = goal_position - relative_translation = [0.5,1,1.5]
+    np.testing.assert_allclose(points_a[0, 6:], [0.1, 0.2, 0.3], atol=1e-6)
+    np.testing.assert_allclose(points_b[0, 6:], [0.1, 0.2, 0.3], atol=1e-6)
+
+
 def test_runtime_target_priority_retains_sparse_marker(tmp_path):
     from .train_interaction_flow_tokens import build_model
 

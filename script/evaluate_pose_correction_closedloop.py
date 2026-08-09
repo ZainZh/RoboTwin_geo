@@ -89,6 +89,14 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--policy-calls", type=int, default=6)
     result.add_argument("--execute-steps", type=int, default=1)
     result.add_argument(
+        "--continue-after-success",
+        action="store_true",
+        help=(
+            "Execute the same fixed number of policy calls for every paired "
+            "variant; still record the first threshold-crossing call."
+        ),
+    )
+    result.add_argument(
         "--target-latch-frames",
         type=int,
         default=3,
@@ -622,7 +630,7 @@ def _evaluate_current_snapshot(
     grasp_slip_trajectory = [{"translation_cm": 0.0, "rotation_deg": 0.0}]
     policy_metrics_trajectory = []
     for call_index in range(int(args.policy_calls)):
-        if first_success_call is not None:
+        if first_success_call is not None and not args.continue_after_success:
             break
         observation = task.get_obs()
         deploy_interaction_flow.eval(task, model, observation)
@@ -634,9 +642,13 @@ def _evaluate_current_snapshot(
             _grasp_relation_drift(initial_grasp_relation, current_grasp_relation)
         )
         policy_metrics_trajectory.append(dict(model.get_evaluation_metrics()))
-        if _pose_threshold_met(current_alignment, args):
+        if (
+            first_success_call is None
+            and _pose_threshold_met(current_alignment, args)
+        ):
             first_success_call = int(call_index) + 1
-            break
+            if not args.continue_after_success:
+                break
     return {
         "status": "complete",
         "target_latch": target_latch,
@@ -703,6 +715,7 @@ def _validate_resume_output(
         "manifest",
         "policy_calls",
         "execute_steps",
+        "continue_after_success",
         "target_latch_frames",
         "snapshot_settle_steps",
         "dense_frame_mode",
@@ -789,6 +802,11 @@ def _run_paired_snapshot_evaluation(
             "shoe_id": int(source["shoe_id"]),
             "level": level_index,
         }
+        episode_environment = deepcopy(environment)
+        if str(manifest["task_name"]) == "place_handled_mug_geometry_marker":
+            episode_environment["container_geometry"] = {
+                "allowed_container_ids": [int(source["shoe_id"])]
+            }
         task = preparation_task
         preparation_error = None
         try:
@@ -796,7 +814,7 @@ def _run_paired_snapshot_evaluation(
                 now_ep_num=episode,
                 seed=scene_seed,
                 is_test=bool(manifest.get("setup_is_test", True)),
-                **environment,
+                **episode_environment,
             )
             # Task observations expose the active-arm identity.  Restore this
             # semantic state before even the optional early target latch.
@@ -896,7 +914,7 @@ def _run_paired_snapshot_evaluation(
                         now_ep_num=episode,
                         seed=scene_seed,
                         is_test=bool(manifest.get("setup_is_test", True)),
-                        **environment,
+                        **episode_environment,
                     )
                     _restore_task_state(variant_task, snapshot)
                     # The active arm is semantic episode state rather than a
@@ -1039,6 +1057,12 @@ def main() -> None:
             "allowed_categories": ["021_cup"],
             "allowed_container_ids": allowed_objects,
         }
+    elif str(manifest["task_name"]) == "place_handled_mug_geometry_marker":
+        environment["container_geometry"] = {
+            "allowed_container_ids": [
+                int(value) for value in manifest["allowed_shoes"]
+            ]
+        }
     environment["data_type"].update(
         {"third_view": False, "pointcloud": False, "qpos": False}
     )
@@ -1087,6 +1111,7 @@ def main() -> None:
         "manifest": str(args.manifest.resolve()),
         "policy_calls": int(args.policy_calls),
         "execute_steps": int(args.execute_steps),
+        "continue_after_success": bool(args.continue_after_success),
         "target_latch_frames": int(args.target_latch_frames),
         "snapshot_settle_steps": int(args.snapshot_settle_steps),
         "dense_frame_mode": str(args.dense_frame_mode),
@@ -1194,12 +1219,17 @@ def main() -> None:
                 "shoe_id": int(source["shoe_id"]),
                 "level": level_index,
             }
+            episode_environment = deepcopy(environment)
+            if str(manifest["task_name"]) == "place_handled_mug_geometry_marker":
+                episode_environment["container_geometry"] = {
+                    "allowed_container_ids": [int(source["shoe_id"])]
+                }
             try:
                 task.setup_demo(
                     now_ep_num=episode,
                     seed=scene_seed,
                     is_test=bool(manifest.get("setup_is_test", True)),
-                    **environment,
+                    **episode_environment,
                 )
                 # Match training: cache the stationary target from the first
                 # three task observations, before the nominal demonstration can
@@ -1274,7 +1304,10 @@ def main() -> None:
                 ]
                 policy_metrics_trajectory = []
                 for call_index in range(int(args.policy_calls)):
-                    if first_success_call is not None:
+                    if (
+                        first_success_call is not None
+                        and not args.continue_after_success
+                    ):
                         break
                     observation = task.get_obs()
                     deploy_interaction_flow.eval(task, model, observation)
@@ -1290,9 +1323,13 @@ def main() -> None:
                     policy_metrics_trajectory.append(
                         dict(model.get_evaluation_metrics())
                     )
-                    if _pose_threshold_met(current_alignment, args):
+                    if (
+                        first_success_call is None
+                        and _pose_threshold_met(current_alignment, args)
+                    ):
                         first_success_call = int(call_index) + 1
-                        break
+                        if not args.continue_after_success:
+                            break
                 record.update(
                     {
                         "status": "complete",

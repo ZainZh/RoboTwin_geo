@@ -23,7 +23,10 @@ from .interaction_flow_runtime import InteractionFlowRuntime
 from .online_hanging_mug_camera_rotation import (
     OnlineHangingMugCameraRotationProvider,
 )
-from .online_ndf_functional_frame import relative_frame9_metric
+from .online_ndf_functional_frame import (
+    OnlineNdfFunctionalFrameProvider,
+    relative_frame9_metric,
+)
 
 
 def _path_list(value) -> list[str]:
@@ -112,6 +115,20 @@ def get_model(usr_args):
                 calibration=calibration_path,
                 ensemble_metadata=Path(str(dense_ensemble_metadata)).expanduser(),
                 device=str(usr_args.get("interaction_flow_device", "cuda:0")),
+            )
+        else:
+            dense_provider = OnlineNdfFunctionalFrameProvider.from_metadata(
+                ndf_checkpoints=dense_checkpoints,
+                camera_metadata=calibration_path,
+                ensemble_metadata=Path(
+                    str(dense_ensemble_metadata)
+                ).expanduser(),
+                device=str(usr_args.get("interaction_flow_device", "cuda:0")),
+                allow_privileged_oracle=_bool(
+                    usr_args.get(
+                        "interaction_flow_allow_privileged_oracle", False
+                    )
+                ),
             )
     model = SimpleNamespace(
         action_policy=InteractionFlowRuntime(

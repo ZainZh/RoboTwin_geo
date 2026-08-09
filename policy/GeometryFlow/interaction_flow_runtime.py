@@ -24,7 +24,10 @@ from .hand_object_frame import (
 from .ndf_adapter import NdfPointwiseAdapter
 from .online_ndf_functional_frame import OnlineNdfFunctionalFrameProvider
 from .target_frame import estimate_geometry_marker_frame
-from .train_interaction_flow_tokens import build_model
+from .train_interaction_flow_tokens import (
+    build_model,
+    task_aligned_point_coordinates,
+)
 from .train_task_flow_benchmark import Normalization, normalize_point_features
 
 
@@ -105,6 +108,19 @@ class InteractionFlowRuntime:
         self.feature_dim = int(payload["feature_dim"])
         self.layers = int(payload["layers"])
         self.point_channels = int(payload.get("point_channels", 3))
+        # Checkpoints produced before this flag was persisted can be identified
+        # unambiguously by their 9-D XYZRGB+functional-coordinate input.
+        self.functional_point_coordinates = bool(
+            payload.get("functional_point_coordinates", self.point_channels == 9)
+        )
+        self.base_point_channels = self.point_channels - (
+            3 if self.functional_point_coordinates else 0
+        )
+        if self.functional_point_coordinates and self.base_point_channels not in {3, 6}:
+            raise ValueError(
+                "functional point-coordinate checkpoints must contain XYZ or "
+                "XYZRGB plus three local coordinates"
+            )
         self.target_color_adapter = bool(
             payload.get("target_color_adapter", False)
         )
@@ -113,6 +129,9 @@ class InteractionFlowRuntime:
         )
         self.shared_geometry_adapter = bool(
             payload.get("shared_geometry_adapter", False)
+        )
+        self.functional_coordinate_adapter = bool(
+            payload.get("functional_coordinate_adapter", False)
         )
         self.source_axis_relation_adapter = bool(
             payload.get("source_axis_relation_adapter", False)
@@ -303,7 +322,7 @@ class InteractionFlowRuntime:
             if target_color_priority is None
             else bool(target_color_priority)
         )
-        if self.target_color_priority and self.point_channels < 6:
+        if self.target_color_priority and self.base_point_channels < 6:
             raise ValueError(
                 "target color priority requires an XYZRGB checkpoint"
             )
@@ -361,6 +380,7 @@ class InteractionFlowRuntime:
             target_color_adapter=self.target_color_adapter,
             source_geometry_adapter=self.source_geometry_adapter,
             shared_geometry_adapter=self.shared_geometry_adapter,
+            functional_coordinate_adapter=self.functional_coordinate_adapter,
             source_axis_relation_adapter=self.source_axis_relation_adapter,
             target_axis_relation_adapter=self.target_axis_relation_adapter,
             hand_object_frame_token=self.hand_object_frame_token,
@@ -422,8 +442,8 @@ class InteractionFlowRuntime:
         self, point_cloud: np.ndarray, *, target: bool = False
     ) -> np.ndarray:
         raw = np.asarray(point_cloud, dtype=np.float32)
-        keep = np.all(np.isfinite(raw[:, : self.point_channels]), axis=1)
-        points = raw[keep, : self.point_channels]
+        keep = np.all(np.isfinite(raw[:, : self.base_point_channels]), axis=1)
+        points = raw[keep, : self.base_point_channels]
         if len(points) == 0:
             raise ValueError("interaction-flow policy received an empty point cloud")
         priority = np.empty((0,), dtype=np.int64)
@@ -453,9 +473,32 @@ class InteractionFlowRuntime:
             indices = np.concatenate((priority, selected_background))
         else:
             indices = priority
-        if self.point_channels == 3:
+        if self.base_point_channels == 3:
             return points[indices, :3]
         return points[indices]
+
+    def _normalized_points(
+        self,
+        base_points: np.ndarray,
+        functional_coordinates: np.ndarray | None,
+    ) -> np.ndarray:
+        """Match dataset ordering: normalize camera channels, then append locals."""
+
+        normalized = normalize_point_features(base_points, self.normalization)
+        if not self.functional_point_coordinates:
+            return normalized
+        if functional_coordinates is None:
+            raise RuntimeError("functional point coordinates were not constructed")
+        result = np.concatenate(
+            (normalized, np.asarray(functional_coordinates, dtype=np.float32)),
+            axis=-1,
+        ).astype(np.float32)
+        if result.shape[-1] != self.point_channels:
+            raise RuntimeError(
+                f"runtime constructed {result.shape[-1]} point channels, "
+                f"checkpoint expects {self.point_channels}"
+            )
+        return result
 
     @torch.no_grad()
     def predict(
@@ -485,6 +528,8 @@ class InteractionFlowRuntime:
         dense_latency_ms = 0.0
         target_axis = np.zeros(3, dtype=np.float32)
         hand_object_frame = None
+        source_functional_coordinates = None
+        target_functional_coordinates = None
         if (
             self.functional_frame_token
             or self.action_frame == "target"
@@ -502,7 +547,7 @@ class InteractionFlowRuntime:
                     ),
                 }
                 goal_estimate = None
-                if self.policy_frame != "world":
+                if self.policy_frame != "world" or self.functional_point_coordinates:
                     # The goal coordinate system is observable from B even for
                     # zero/oracle relation-token interventions.  Keep that basis
                     # fixed while changing only the relative geometry condition.
@@ -671,6 +716,35 @@ class InteractionFlowRuntime:
                     extra_batch["target_axis3"] = torch.from_numpy(target_axis)[None].to(
                         self.device
                     )
+        if self.functional_point_coordinates:
+            if goal_frame9_metric is None or frame9_metric is None:
+                raise RuntimeError(
+                    "functional point coordinates require online goal and relative frames"
+                )
+            if (
+                dense_estimate is None
+                or dense_estimate.combined_confidence <= 0.0
+                or self.dense_frame_mode == "zero"
+            ):
+                source_functional_coordinates = np.zeros(
+                    (len(points_a), 3), dtype=np.float32
+                )
+                target_functional_coordinates = np.zeros(
+                    (len(points_b), 3), dtype=np.float32
+                )
+            else:
+                (
+                    source_functional_coordinates,
+                    target_functional_coordinates,
+                ) = task_aligned_point_coordinates(
+                    points_a,
+                    points_b,
+                    goal_frame9_metric,
+                    frame9_metric,
+                    scale_m=float(
+                        np.asarray(norm.xyz_std, dtype=np.float32).mean()
+                    ),
+                )
         if self.hand_object_frame_token:
             if dense_estimate is None or dense_estimate.source_rotation is None:
                 raise RuntimeError(
@@ -719,10 +793,14 @@ class InteractionFlowRuntime:
             )
         batch = {
             "points_a": torch.from_numpy(
-                normalize_point_features(points_a, norm)
+                self._normalized_points(
+                    points_a, source_functional_coordinates
+                )
             )[None].to(self.device),
             "points_b": torch.from_numpy(
-                normalize_point_features(points_b, norm)
+                self._normalized_points(
+                    points_b, target_functional_coordinates
+                )
             )[None].to(self.device),
             "state": torch.from_numpy(
                 ((state - norm.state_mean) / norm.state_std).astype(np.float32)
