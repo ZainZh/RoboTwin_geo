@@ -26,6 +26,7 @@ from .ensemble_ndf_functional_frames import (
     maximum_pairwise_disagreement,
     project_rotation_mean,
     rotation_medoid,
+    stabilize_rotation_against_previous,
 )
 from .ndf_adapter import NdfFunctionalFrameAdapter
 from .target_frame import estimate_geometry_marker_frame, yellow_marker_mask
@@ -58,6 +59,9 @@ class OnlineFunctionalFrameEstimate:
     target_latched: bool
     marker_points: int | None
     marker_fit_score_m2: float | None
+    source_temporal_ambiguous: bool = False
+    source_temporal_corrected: bool = False
+    source_temporal_jump_deg: float | None = None
 
     def policy_frame9(self, xyz_std: np.ndarray | Sequence[float]) -> np.ndarray:
         """Return the tensor value consumed by a trained policy.
@@ -151,6 +155,9 @@ class OnlineNdfFunctionalFrameProvider:
         marker_min_points: int = 20,
         marker_max_fit_score_m2: float = 2.0e-5,
         allow_privileged_oracle: bool = False,
+        temporal_stabilization: bool = False,
+        temporal_jump_trigger_deg: float = 120.0,
+        temporal_alternative_accept_deg: float = 45.0,
     ) -> None:
         if (ndf_checkpoints is None) == (frame_encoders is None):
             raise ValueError(
@@ -195,10 +202,23 @@ class OnlineNdfFunctionalFrameProvider:
         self.marker_min_points = int(marker_min_points)
         self.marker_max_fit_score_m2 = float(marker_max_fit_score_m2)
         self.allow_privileged_oracle = bool(allow_privileged_oracle)
+        self.temporal_stabilization = bool(temporal_stabilization)
+        self.temporal_jump_trigger_deg = float(temporal_jump_trigger_deg)
+        self.temporal_alternative_accept_deg = float(
+            temporal_alternative_accept_deg
+        )
+        if self.temporal_stabilization:
+            stabilize_rotation_against_previous(
+                np.eye(3, dtype=np.float32),
+                np.eye(3, dtype=np.float32),
+                jump_trigger_deg=self.temporal_jump_trigger_deg,
+                alternative_accept_deg=self.temporal_alternative_accept_deg,
+            )
         self._cached_target_cloud: np.ndarray | None = None
         self._cached_marker_frame: np.ndarray | None = None
         self._cached_marker_diagnostic: dict | None = None
         self._cached_target_confidence: float | None = None
+        self._previous_source_rotation: np.ndarray | None = None
 
     @classmethod
     def from_metadata(
@@ -250,7 +270,12 @@ class OnlineNdfFunctionalFrameProvider:
             declared_member_counts.append(
                 ("selection_top_k", int(ensemble["selection_top_k"]))
             )
-        for key in ("frame_predictions", "selected_seeds", "selected_result_jsons"):
+        for key in (
+            "frame_predictions",
+            "full_frame_predictions",
+            "selected_seeds",
+            "selected_result_jsons",
+        ):
             value = ensemble.get(key)
             if isinstance(value, list):
                 declared_member_counts.append((key, len(value)))
@@ -279,6 +304,15 @@ class OnlineNdfFunctionalFrameProvider:
             aggregation=str(ensemble.get("aggregation", "projected_mean")),
             device=device,
             allow_privileged_oracle=allow_privileged_oracle,
+            temporal_stabilization=bool(
+                ensemble.get("temporal_stabilization", False)
+            ),
+            temporal_jump_trigger_deg=float(
+                ensemble.get("temporal_jump_trigger_deg", 120.0)
+            ),
+            temporal_alternative_accept_deg=float(
+                ensemble.get("temporal_alternative_accept_deg", 45.0)
+            ),
         )
 
     @property
@@ -296,6 +330,7 @@ class OnlineNdfFunctionalFrameProvider:
         self._cached_marker_frame = None
         self._cached_marker_diagnostic = None
         self._cached_target_confidence = None
+        self._previous_source_rotation = None
 
     def latch_target(self, target_point_cloud: np.ndarray) -> None:
         """Latch one early B observation (or a caller-concatenated early stack)."""
@@ -367,7 +402,26 @@ class OnlineNdfFunctionalFrameProvider:
         disagreement = float(
             maximum_pairwise_disagreement(rotations[:, None])[0]
         )
-        source_confidence = float(disagreement <= self.confidence_threshold_deg)
+        temporal_ambiguous = False
+        temporal_corrected = False
+        temporal_jump = None
+        if self.temporal_stabilization:
+            source_rotation, temporal_ambiguous, temporal_corrected, temporal_jump = (
+                stabilize_rotation_against_previous(
+                    source_rotation,
+                    self._previous_source_rotation,
+                    jump_trigger_deg=self.temporal_jump_trigger_deg,
+                    alternative_accept_deg=self.temporal_alternative_accept_deg,
+                )
+            )
+        epistemic_reliable = bool(disagreement <= self.confidence_threshold_deg)
+        source_confidence = float(epistemic_reliable and not temporal_ambiguous)
+        if self.temporal_stabilization and (
+            self._previous_source_rotation is None
+            or source_confidence > 0.0
+            or temporal_corrected
+        ):
+            self._previous_source_rotation = source_rotation.copy()
         target_confidence = float(self._cached_target_confidence)
         marker_frame = np.asarray(self._cached_marker_frame, dtype=np.float32)
         current_position = (
@@ -412,6 +466,11 @@ class OnlineNdfFunctionalFrameProvider:
             ),
             marker_fit_score_m2=(
                 None if fit_score is None else float(fit_score)
+            ),
+            source_temporal_ambiguous=bool(temporal_ambiguous),
+            source_temporal_corrected=bool(temporal_corrected),
+            source_temporal_jump_deg=(
+                None if temporal_jump is None else float(temporal_jump)
             ),
         )
 

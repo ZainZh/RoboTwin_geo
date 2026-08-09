@@ -9,6 +9,8 @@ from .ensemble_ndf_functional_frames import (
     maximum_pairwise_disagreement,
     project_rotation_mean,
     rotation_medoid,
+    stabilize_rotation_against_previous,
+    stabilize_rotation_sequences,
 )
 
 
@@ -39,6 +41,35 @@ class NdfFunctionalFrameEnsembleTest(unittest.TestCase):
             rotation_medoid(np.zeros((3, 3, 3)))
         with self.assertRaisesRegex(ValueError, "at least two"):
             rotation_medoid(np.eye(3)[None, None])
+
+    def test_causal_stabilizer_corrects_and_masks_axis_sign_jump(self):
+        previous = Rotation.from_euler("z", 2.0, degrees=True).as_matrix()
+        flipped = Rotation.from_euler("z", 179.0, degrees=True).as_matrix()
+        selected, ambiguous, corrected, jump = stabilize_rotation_against_previous(
+            flipped,
+            previous,
+            jump_trigger_deg=120.0,
+            alternative_accept_deg=45.0,
+        )
+        residual = Rotation.from_matrix(selected @ previous.T).magnitude()
+        self.assertTrue(ambiguous)
+        self.assertTrue(corrected)
+        self.assertGreater(float(jump), 170.0)
+        self.assertLess(float(np.rad2deg(residual)), 5.0)
+
+    def test_sequence_stabilizer_resets_at_episode_boundary(self):
+        rotations = Rotation.from_euler(
+            "z", [0.0, 179.0, 179.0], degrees=True
+        ).as_matrix()
+        output, ambiguous, corrected = stabilize_rotation_sequences(
+            rotations,
+            episode_id=np.asarray([0, 0, 1]),
+            frame_index=np.asarray([0, 1, 0]),
+        )
+        self.assertTrue(bool(ambiguous[1]))
+        self.assertTrue(bool(corrected[1]))
+        self.assertFalse(bool(ambiguous[2]))
+        np.testing.assert_allclose(output[2], rotations[2], atol=1e-6)
 
 
 if __name__ == "__main__":

@@ -17,6 +17,17 @@ from scipy.spatial.transform import Rotation
 from .train_ndf_functional_frame_head import resolve_object_split
 
 
+_PROPER_AXIS_SIGN_BRANCHES = np.asarray(
+    (
+        np.diag((1.0, 1.0, 1.0)),
+        np.diag((1.0, -1.0, -1.0)),
+        np.diag((-1.0, 1.0, -1.0)),
+        np.diag((-1.0, -1.0, 1.0)),
+    ),
+    dtype=np.float32,
+)
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--dataset", type=Path, required=True)
@@ -88,6 +99,87 @@ def rotation_medoid(frames: np.ndarray) -> np.ndarray:
             score[second] += distance
     winner = np.argmin(score, axis=0)
     return value[winner, np.arange(value.shape[1])].astype(np.float32)
+
+
+def stabilize_rotation_against_previous(
+    rotation: np.ndarray,
+    previous: np.ndarray | None,
+    *,
+    jump_trigger_deg: float = 120.0,
+    alternative_accept_deg: float = 45.0,
+) -> tuple[np.ndarray, bool, bool, float | None]:
+    """Track a signed SO(3) branch using only the preceding camera estimate.
+
+    The four candidates are the proper rotations obtained by flipping zero or
+    two local axes.  A jump larger than ``jump_trigger_deg`` is always marked
+    ambiguous.  When a sign-equivalent branch is within
+    ``alternative_accept_deg`` of the previous estimate, that continuous
+    branch is returned but remains confidence-masked for the current frame.
+    No simulator pose or future frame is consulted.
+    """
+
+    current = np.asarray(rotation, dtype=np.float32).reshape(3, 3)
+    if previous is None:
+        return current.copy(), False, False, None
+    reference = np.asarray(previous, dtype=np.float32).reshape(3, 3)
+    trigger = float(jump_trigger_deg)
+    acceptance = float(alternative_accept_deg)
+    if not 0.0 < acceptance < trigger < 180.0:
+        raise ValueError(
+            "temporal thresholds must satisfy 0 < alternative < trigger < 180"
+        )
+    raw_jump = float(geodesic_deg(current[None], reference[None])[0])
+    if raw_jump <= trigger:
+        return current.copy(), False, False, raw_jump
+    candidates = np.einsum(
+        "ij,kjl->kil", current, _PROPER_AXIS_SIGN_BRANCHES
+    ).astype(np.float32)
+    distances = geodesic_deg(candidates, np.broadcast_to(reference, candidates.shape))
+    winner = int(np.argmin(distances))
+    corrected = bool(winner != 0 and float(distances[winner]) < acceptance)
+    selected = candidates[winner] if corrected else current
+    return selected.astype(np.float32), True, corrected, raw_jump
+
+
+def stabilize_rotation_sequences(
+    rotations: np.ndarray,
+    episode_id: np.ndarray,
+    frame_index: np.ndarray,
+    *,
+    jump_trigger_deg: float = 120.0,
+    alternative_accept_deg: float = 45.0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Apply causal branch tracking independently inside every episode."""
+
+    values = np.asarray(rotations, dtype=np.float32)
+    episodes = np.asarray(episode_id, dtype=np.int64).reshape(-1)
+    frames = np.asarray(frame_index, dtype=np.int64).reshape(-1)
+    if values.shape != (len(episodes), 3, 3) or len(frames) != len(episodes):
+        raise ValueError("rotations, episode_id, and frame_index are misaligned")
+    output = values.copy()
+    ambiguous = np.zeros(len(values), dtype=bool)
+    corrected = np.zeros(len(values), dtype=bool)
+    for episode in np.unique(episodes):
+        rows = np.flatnonzero(episodes == int(episode))
+        rows = rows[np.argsort(frames[rows], kind="stable")]
+        previous = None
+        for row in rows:
+            selected, is_ambiguous, was_corrected, _jump = (
+                stabilize_rotation_against_previous(
+                    values[row],
+                    previous,
+                    jump_trigger_deg=jump_trigger_deg,
+                    alternative_accept_deg=alternative_accept_deg,
+                )
+            )
+            output[row] = selected
+            ambiguous[row] = is_ambiguous
+            corrected[row] = was_corrected
+            # A corrected signed branch is continuous and can safely anchor
+            # the next observation.  An unexplained large jump cannot.
+            if not is_ambiguous or was_corrected:
+                previous = selected
+    return output, ambiguous, corrected
 
 
 def main() -> None:

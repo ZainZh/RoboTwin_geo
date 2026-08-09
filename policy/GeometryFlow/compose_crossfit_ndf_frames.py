@@ -19,6 +19,7 @@ from .ensemble_ndf_functional_frames import (
     maximum_pairwise_disagreement,
     project_rotation_mean,
     rotation_medoid,
+    stabilize_rotation_sequences,
 )
 from .functional_action_frame import pose9_rotation
 from .train_ndf_functional_frame_head import resolve_object_split
@@ -102,6 +103,11 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--validation-ids", nargs="+", type=int, required=True)
     result.add_argument("--test-ids", nargs="+", type=int, required=True)
     result.add_argument("--confidence-percentile", type=float, default=99.0)
+    result.add_argument("--temporal-stabilization", action="store_true")
+    result.add_argument("--temporal-jump-trigger-deg", type=float, default=120.0)
+    result.add_argument(
+        "--temporal-alternative-accept-deg", type=float, default=45.0
+    )
     result.add_argument(
         "--aggregation",
         choices=("projected_mean", "medoid"),
@@ -227,14 +233,42 @@ def main() -> None:
         confidence_percentile=args.confidence_percentile,
         aggregation=args.aggregation,
     )
+    temporal_ambiguous = np.zeros(len(shoe_id), dtype=bool)
+    temporal_corrected = np.zeros(len(shoe_id), dtype=bool)
+    if args.temporal_stabilization:
+        if "frame_index" not in payload:
+            raise KeyError("temporal stabilization requires frame_index")
+        frames, temporal_ambiguous, temporal_corrected = (
+            stabilize_rotation_sequences(
+                frames,
+                episode_id,
+                np.asarray(payload["frame_index"], dtype=np.int64),
+                jump_trigger_deg=float(args.temporal_jump_trigger_deg),
+                alternative_accept_deg=float(
+                    args.temporal_alternative_accept_deg
+                ),
+            )
+        )
+        confidence[temporal_ambiguous] = 0.0
     true_rotation = pose9_rotation(payload["current_object_pose9"])
     frame_error = rotation_error_deg(frames, true_rotation)
     diagnostics = {}
     for name, ids in split.items():
         keep = np.isin(shoe_id, np.asarray(ids, dtype=np.int64))
+        confident = keep & (confidence >= 0.5)
+        rejected = keep & ~confident
         diagnostics[name] = {
             "samples": int(keep.sum()),
             "rotation_error_deg": _summary(frame_error[keep]),
+            "confident_samples": int(confident.sum()),
+            "confident_rotation_error_deg": _summary(frame_error[confident]),
+            "confident_flip_over_90_count": int(
+                np.sum(frame_error[confident] > 90.0)
+            ),
+            "rejected_samples": int(rejected.sum()),
+            "rejected_flip_over_90_count": int(
+                np.sum(frame_error[rejected] > 90.0)
+            ),
             "ensemble_disagreement_deg": _summary(disagreement[keep]),
             "confidence_acceptance": float(confidence[keep].mean()),
         }
@@ -244,6 +278,8 @@ def main() -> None:
         frames=frames.astype(np.float32),
         frame_confidence=confidence,
         frame_disagreement_deg=disagreement.astype(np.float32),
+        frame_temporal_ambiguous=temporal_ambiguous.astype(np.float32),
+        frame_temporal_corrected=temporal_corrected.astype(np.float32),
         confidence_threshold_deg=np.asarray(threshold, dtype=np.float32),
         shoe_id=shoe_id,
         episode_id=episode_id,
@@ -260,6 +296,14 @@ def main() -> None:
         "confidence_calibration": "cross-fitted training-object disagreement only",
         "confidence_percentile": float(args.confidence_percentile),
         "confidence_threshold_deg": threshold,
+        "fold": int(args.fold),
+        "temporal_stabilization": bool(args.temporal_stabilization),
+        "temporal_jump_trigger_deg": float(args.temporal_jump_trigger_deg),
+        "temporal_alternative_accept_deg": float(
+            args.temporal_alternative_accept_deg
+        ),
+        "temporal_ambiguous_samples": int(temporal_ambiguous.sum()),
+        "temporal_corrected_samples": int(temporal_corrected.sum()),
         "object_split": {name: list(ids) for name, ids in split.items()},
         "full_frame_predictions": [
             str(path.resolve()) for path in args.full_frame_predictions

@@ -22,6 +22,18 @@ class StubFrameEncoder:
         return self.rotation.copy()
 
 
+class SequenceFrameEncoder:
+    def __init__(self, rotations: list[np.ndarray]) -> None:
+        self.rotations = [np.asarray(value, dtype=np.float32) for value in rotations]
+        self.calls = 0
+
+    def encode_frame(self, support_points_world: np.ndarray) -> np.ndarray:
+        assert support_points_world.shape[-1] == 3
+        value = self.rotations[min(self.calls, len(self.rotations) - 1)]
+        self.calls += 1
+        return value.copy()
+
+
 def marker_estimator(rotation: np.ndarray, position: np.ndarray):
     transform = np.eye(4, dtype=np.float32)
     transform[:3, :3] = np.asarray(rotation, dtype=np.float32)
@@ -184,6 +196,34 @@ def test_medoid_aggregation_rejects_one_flipped_member():
     assert abs(float(angle) - 3.0) < 1e-4
 
 
+def test_temporal_sign_jump_is_corrected_but_confidence_masked():
+    sequence = [
+        np.eye(3),
+        Rotation.from_euler("z", 179.0, degrees=True).as_matrix(),
+    ]
+    runtime = provider(
+        [SequenceFrameEncoder(sequence), SequenceFrameEncoder(sequence)],
+        aggregation="medoid",
+        confidence_threshold_deg=180.0,
+        temporal_stabilization=True,
+    )
+    current, target = clouds()
+    first = runtime.estimate(
+        current_point_cloud=current, target_point_cloud=target
+    )
+    second = runtime.estimate(
+        current_point_cloud=current, target_point_cloud=target
+    )
+    assert first.source_confidence == 1.0
+    assert second.source_confidence == 0.0
+    assert second.source_temporal_ambiguous
+    assert second.source_temporal_corrected
+    angle = Rotation.from_matrix(second.source_rotation).magnitude()
+    assert float(np.rad2deg(angle)) < 5.0
+    runtime.reset()
+    assert runtime._previous_source_rotation is None
+
+
 def test_combined_confidence_masks_unreliable_marker():
     encoder = StubFrameEncoder(np.eye(3))
 
@@ -291,6 +331,9 @@ class OnlineNdfFunctionalFrameTest(unittest.TestCase):
 
     def test_medoid_aggregation(self):
         test_medoid_aggregation_rejects_one_flipped_member()
+
+    def test_temporal_sign_jump(self):
+        test_temporal_sign_jump_is_corrected_but_confidence_masked()
 
     def test_inverse_relation(self):
         test_inverse_preserves_confidence_and_magnitude_but_reverses_relation()
