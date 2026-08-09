@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build physically consistent multi-goal pairs for relation-identifiable BC.
 
-Each source row keeps its current mug cloud, robot state, and NDF-estimated
+Each source row keeps its current object cloud, robot state, and NDF-estimated
 current functional frame.  It is paired with several real camera target clouds
 from the same object-disjoint split.  Label-only simulator poses construct a
 smooth rigid-grasp expert trajectory to the paired goal.  They are never
@@ -36,6 +36,30 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--test-ids", nargs="+", type=int, required=True)
     result.add_argument("--goals-per-source", type=int, default=4)
     result.add_argument("--flow-steps", type=int, default=16)
+    result.add_argument(
+        "--relation-only",
+        action="store_true",
+        help="Use only post-grasp relation-phase source rows.",
+    )
+    result.add_argument(
+        "--max-sources-per-episode",
+        type=int,
+        default=0,
+        help=(
+            "Uniformly subsample at most this many source rows per episode; "
+            "zero keeps every eligible row."
+        ),
+    )
+    result.add_argument(
+        "--maximum-relation-translation-cm",
+        type=float,
+        help="Keep source and donor goals within this short-horizon distance.",
+    )
+    result.add_argument(
+        "--maximum-relation-rotation-deg",
+        type=float,
+        help="Keep source and donor goals within this short-horizon angle.",
+    )
     result.add_argument("--overwrite", action="store_true")
     return result
 
@@ -206,6 +230,8 @@ def select_goal_rows(
     source_index: int,
     candidate_rows: np.ndarray,
     count: int,
+    maximum_translation_cm: float | None = None,
+    maximum_rotation_deg: float | None = None,
 ) -> list[int]:
     """Select the original goal plus maximally separated real camera goals."""
 
@@ -221,14 +247,23 @@ def select_goal_rows(
     scored = []
     for row in candidate_rows:
         row = int(row)
+        goal = matrix_from_frame9(payload["goal_frame9"][row])
+        translation_m = float(np.linalg.norm(goal[:3, 3] - current[:3, 3]))
+        rotation_rad = float(Rotation.from_matrix(
+            goal[:3, :3] @ current[:3, :3].T
+        ).magnitude())
+        if maximum_translation_cm is not None and (
+            translation_m * 100.0 > float(maximum_translation_cm)
+        ):
+            continue
+        if maximum_rotation_deg is not None and (
+            np.rad2deg(rotation_rad) > float(maximum_rotation_deg)
+        ):
+            continue
         if row == original:
             continue
-        goal = matrix_from_frame9(payload["goal_frame9"][row])
-        translation = np.linalg.norm(goal[:3, 3] - current[:3, 3]) / 0.03
-        rotation = Rotation.from_matrix(
-            goal[:3, :3] @ current[:3, :3].T
-        ).magnitude() / np.deg2rad(30.0)
-        scored.append((float(translation + rotation), row))
+        score = translation_m / 0.03 + rotation_rad / np.deg2rad(30.0)
+        scored.append((float(score), row))
     scored.sort(key=lambda value: (-value[0], value[1]))
     selected = [original] + [row for _score, row in scored[: int(count) - 1]]
     if len(selected) != int(count):
@@ -236,6 +271,59 @@ def select_goal_rows(
             f"requested {count} goals but split provides only {len(selected)}"
         )
     return selected
+
+
+def select_source_rows(
+    payload: dict[str, np.ndarray],
+    *,
+    relation_only: bool,
+    max_sources_per_episode: int,
+    maximum_translation_cm: float | None = None,
+    maximum_rotation_deg: float | None = None,
+) -> np.ndarray:
+    """Select balanced source observations without crossing episode bounds."""
+
+    maximum = int(max_sources_per_episode)
+    if maximum < 0:
+        raise ValueError("max_sources_per_episode must be nonnegative")
+    rows = np.arange(len(payload["shoe_id"]), dtype=np.int64)
+    if bool(relation_only):
+        if "relation_phase" not in payload:
+            raise KeyError("relation-only selection requires relation_phase")
+        rows = rows[np.asarray(payload["relation_phase"])[rows] >= 0.5]
+    if maximum_translation_cm is not None:
+        if float(maximum_translation_cm) <= 0.0:
+            raise ValueError("maximum relation translation must be positive")
+        if "goal_translation_error_xyz_m" not in payload:
+            raise KeyError("translation-limited selection requires goal labels")
+        translation_cm = np.linalg.norm(
+            np.asarray(payload["goal_translation_error_xyz_m"])[rows], axis=-1
+        ) * 100.0
+        rows = rows[translation_cm <= float(maximum_translation_cm)]
+    if maximum_rotation_deg is not None:
+        if float(maximum_rotation_deg) <= 0.0:
+            raise ValueError("maximum relation rotation must be positive")
+        if "goal_rotation_error_rotvec" not in payload:
+            raise KeyError("rotation-limited selection requires goal labels")
+        rotation_deg = np.linalg.norm(
+            np.asarray(payload["goal_rotation_error_rotvec"])[rows], axis=-1
+        ) * (180.0 / np.pi)
+        rows = rows[rotation_deg <= float(maximum_rotation_deg)]
+    if not len(rows):
+        raise ValueError("source selection produced no eligible rows")
+    if maximum == 0:
+        return rows
+    selected = []
+    episode_index = np.asarray(payload["episode_index"], dtype=np.int64)
+    for episode in np.unique(episode_index[rows]):
+        episode_rows = rows[episode_index[rows] == int(episode)]
+        if len(episode_rows) > maximum:
+            positions = np.linspace(
+                0, len(episode_rows) - 1, maximum, dtype=np.int64
+            )
+            episode_rows = episode_rows[positions]
+        selected.append(episode_rows)
+    return np.concatenate(selected).astype(np.int64, copy=False)
 
 
 def build_multigoal_payload(
@@ -246,12 +334,17 @@ def build_multigoal_payload(
     test_ids: list[int],
     goals_per_source: int,
     flow_steps: int,
+    source_indices: np.ndarray | None = None,
+    maximum_relation_translation_cm: float | None = None,
+    maximum_relation_rotation_deg: float | None = None,
 ) -> tuple[dict[str, np.ndarray], dict]:
     required = {
         "points_a", "points_b", "state", "action", "current_anchors",
-        "current_object_pose9", "current_eef_pose7", "active_arm_right",
-        "episode_index", "shoe_id", "goal_frame9", "target_frame9",
-        "source_frame6_columns",
+        "current_object_pose9", "current_eef_pose7", "future_eef_pose7",
+        "active_arm_right", "episode_index", "shoe_id", "frame_index",
+        "relation_phase", "goal_frame9", "target_frame9",
+        "source_frame6_columns", "goal_translation_error_xyz_m",
+        "goal_rotation_error_rotvec",
     }
     missing = sorted(required - set(payload))
     if missing:
@@ -260,6 +353,18 @@ def build_multigoal_payload(
     unknown = sorted(set(np.asarray(payload["shoe_id"], dtype=int)) - set(split_for_id))
     if unknown:
         raise ValueError(f"dataset contains object IDs outside split: {unknown}")
+    if source_indices is None:
+        selected_sources = np.arange(len(payload["shoe_id"]), dtype=np.int64)
+    else:
+        selected_sources = np.asarray(source_indices, dtype=np.int64).reshape(-1)
+        if not len(selected_sources):
+            raise ValueError("source_indices must be nonempty")
+        if np.any(selected_sources < 0) or np.any(
+            selected_sources >= len(payload["shoe_id"])
+        ):
+            raise IndexError("source_indices contains an out-of-range row")
+        if len(np.unique(selected_sources)) != len(selected_sources):
+            raise ValueError("source_indices must be duplicate-free")
 
     episode_rows = {}
     for episode in np.unique(payload["episode_index"]):
@@ -288,10 +393,16 @@ def build_multigoal_payload(
     source_sample = []
     action_horizon = int(payload["action"].shape[1])
 
-    for source in range(len(payload["shoe_id"])):
+    for source_value in selected_sources:
+        source = int(source_value)
         split_name = split_for_id[int(payload["shoe_id"][source])]
         donors = select_goal_rows(
-            payload, source, split_goal_rows[split_name], int(goals_per_source)
+            payload,
+            source,
+            split_goal_rows[split_name],
+            int(goals_per_source),
+            maximum_translation_cm=maximum_relation_translation_cm,
+            maximum_rotation_deg=maximum_relation_rotation_deg,
         )
         true_current = matrix_from_pose9(payload["current_object_pose9"][source])
         predicted_current = predicted_current_frame(
@@ -324,11 +435,14 @@ def build_multigoal_payload(
                 values["episode_id"][-1] = np.asarray(output_index, dtype=np.int64)
             values["frame_index"][-1] = np.asarray(0, dtype=np.int64)
             values["relation_phase"][-1] = np.asarray(1.0, dtype=np.float32)
-            values["goal_aligned"][-1] = np.asarray(0.0, dtype=np.float32)
-            values["steps_to_release"][-1] = np.asarray(
-                float(action_horizon), dtype=np.float32
-            )
-            values["stop_phase"][-1] = np.asarray(0.0, dtype=np.float32)
+            if "goal_aligned" in values:
+                values["goal_aligned"][-1] = np.asarray(0.0, dtype=np.float32)
+            if "steps_to_release" in values:
+                values["steps_to_release"][-1] = np.asarray(
+                    float(action_horizon), dtype=np.float32
+                )
+            if "stop_phase" in values:
+                values["stop_phase"][-1] = np.asarray(0.0, dtype=np.float32)
 
             true_relation = relative_frame9(goal, true_current)
             predicted_relation = relative_frame9(goal, predicted_current)
@@ -371,9 +485,20 @@ def build_multigoal_payload(
         "schema_version": 1,
         "method": "real-camera-target pairing with label-only rigid-grasp expert",
         "samples": int(len(episode_flow)),
-        "source_samples": int(len(payload["shoe_id"])),
+        "source_samples": int(len(selected_sources)),
+        "source_dataset_samples": int(len(payload["shoe_id"])),
         "goals_per_source": int(goals_per_source),
         "flow_steps": int(flow_steps),
+        "maximum_relation_translation_cm": (
+            None
+            if maximum_relation_translation_cm is None
+            else float(maximum_relation_translation_cm)
+        ),
+        "maximum_relation_rotation_deg": (
+            None
+            if maximum_relation_rotation_deg is None
+            else float(maximum_relation_rotation_deg)
+        ),
         "object_split": {
             "train": [int(v) for v in train_ids],
             "validation": [int(v) for v in validation_ids],
@@ -391,6 +516,13 @@ def main() -> None:
         raise FileExistsError(args.output)
     with np.load(args.dataset, allow_pickle=False) as archive:
         payload = {key: np.asarray(archive[key]) for key in archive.files}
+    source_indices = select_source_rows(
+        payload,
+        relation_only=bool(args.relation_only),
+        max_sources_per_episode=int(args.max_sources_per_episode),
+        maximum_translation_cm=args.maximum_relation_translation_cm,
+        maximum_rotation_deg=args.maximum_relation_rotation_deg,
+    )
     output, metadata = build_multigoal_payload(
         payload,
         train_ids=args.train_ids,
@@ -398,7 +530,14 @@ def main() -> None:
         test_ids=args.test_ids,
         goals_per_source=args.goals_per_source,
         flow_steps=args.flow_steps,
+        source_indices=source_indices,
+        maximum_relation_translation_cm=args.maximum_relation_translation_cm,
+        maximum_relation_rotation_deg=args.maximum_relation_rotation_deg,
     )
+    metadata["source_selection"] = {
+        "relation_only": bool(args.relation_only),
+        "max_sources_per_episode": int(args.max_sources_per_episode),
+    }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(args.output, **output)
     source_metadata = args.dataset.with_suffix(".json")

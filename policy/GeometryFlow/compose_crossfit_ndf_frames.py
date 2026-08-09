@@ -78,13 +78,25 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument(
         "--full-frame-predictions", action="append", type=Path, required=True
     )
-    result.add_argument("--crossfit-root", type=Path, required=True)
+    result.add_argument("--crossfit-root", type=Path)
     result.add_argument(
         "--crossfit-directory-template",
         default="ndf_two_axis_crossfit_holdout{object_id}_v1",
         help="Directory name below crossfit-root; must contain {object_id}.",
     )
     result.add_argument("--seeds", nargs="+", type=int, default=[0, 1, 2])
+    result.add_argument(
+        "--crossfit-object-predictions",
+        action="append",
+        nargs="+",
+        default=[],
+        metavar="VALUE",
+        help=(
+            "Explicit OBJECT_ID FRAME_PATH FRAME_PATH [...] mapping. Repeat "
+            "once per training object when held-out predictions come from "
+            "different folds."
+        ),
+    )
     result.add_argument("--fold", type=int, default=0)
     result.add_argument("--train-ids", nargs="+", type=int, required=True)
     result.add_argument("--validation-ids", nargs="+", type=int, required=True)
@@ -124,6 +136,32 @@ def _load_members(
     return np.stack(values, axis=0)
 
 
+def parse_object_prediction_groups(
+    groups: list[list[str]], train_ids: tuple[int, ...]
+) -> dict[int, list[Path]]:
+    """Validate explicit per-object cross-fold frame member paths."""
+
+    parsed: dict[int, list[Path]] = {}
+    for group in groups:
+        if len(group) < 3:
+            raise ValueError(
+                "each crossfit-object-predictions group needs an object ID "
+                "and at least two frame archives"
+            )
+        object_id = int(group[0])
+        if object_id in parsed:
+            raise ValueError(f"duplicate explicit predictions for object {object_id}")
+        parsed[object_id] = [Path(value) for value in group[1:]]
+    expected = {int(value) for value in train_ids}
+    actual = set(parsed)
+    if actual != expected:
+        raise ValueError(
+            "explicit crossfit object IDs must exactly match training IDs; "
+            f"missing={sorted(expected - actual)}, extra={sorted(actual - expected)}"
+        )
+    return parsed
+
+
 def _summary(values: np.ndarray) -> dict[str, float]:
     array = np.asarray(values, dtype=np.float64)
     return {
@@ -153,17 +191,30 @@ def main() -> None:
     )
     crossfit_members = {}
     crossfit_paths = {}
-    if "{object_id}" not in args.crossfit_directory_template:
-        raise ValueError(
-            "crossfit-directory-template must contain the {object_id} placeholder"
+    if args.crossfit_object_predictions:
+        explicit_paths = parse_object_prediction_groups(
+            args.crossfit_object_predictions, split["train"]
         )
+    else:
+        if args.crossfit_root is None:
+            raise ValueError(
+                "provide crossfit-root or explicit crossfit-object-predictions"
+            )
+        if "{object_id}" not in args.crossfit_directory_template:
+            raise ValueError(
+                "crossfit-directory-template must contain the {object_id} placeholder"
+            )
+        explicit_paths = {
+            int(object_id): [
+                args.crossfit_root
+                / args.crossfit_directory_template.format(object_id=object_id)
+                / f"fold{args.fold}_correct_frame_seed{seed}_frames.npz"
+                for seed in args.seeds
+            ]
+            for object_id in split["train"]
+        }
     for object_id in split["train"]:
-        paths = [
-            args.crossfit_root
-            / args.crossfit_directory_template.format(object_id=object_id)
-            / f"fold{args.fold}_correct_frame_seed{seed}_frames.npz"
-            for seed in args.seeds
-        ]
+        paths = explicit_paths[int(object_id)]
         crossfit_members[int(object_id)] = _load_members(
             paths, shoe_id, episode_id
         )
