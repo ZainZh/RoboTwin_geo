@@ -12,6 +12,7 @@ import pdb
 import hydra
 import torch
 import dill
+import json
 from collections import OrderedDict
 from omegaconf import OmegaConf
 import pathlib
@@ -105,12 +106,121 @@ class TrainDP3Workspace:
         RUN_ROLLOUT = False
         RUN_VALIDATION = True  # reduce time cost
 
-        # resume training
-        if cfg.training.resume:
+        # Resume from an explicitly selected scientific checkpoint when supplied.
+        # This is checked before the Hydra-local latest checkpoint so interrupted
+        # multi-stage experiments do not silently restart from scratch.
+        resumed_from_epoch_checkpoint = False
+        resume_checkpoint = OmegaConf.select(
+            cfg, "training.resume_checkpoint", default=None
+        )
+        init_checkpoint = OmegaConf.select(
+            cfg, "training.init_checkpoint", default=None
+        )
+        if resume_checkpoint and init_checkpoint:
+            raise ValueError(
+                "training.resume_checkpoint and training.init_checkpoint are mutually exclusive"
+            )
+        if resume_checkpoint:
+            resume_checkpoint = pathlib.Path(str(resume_checkpoint)).expanduser().resolve()
+            if not resume_checkpoint.is_file():
+                raise FileNotFoundError(
+                    f"training.resume_checkpoint does not exist: {resume_checkpoint}"
+                )
+            print(f"Resuming from explicit checkpoint {resume_checkpoint}")
+            self.load_checkpoint(path=resume_checkpoint)
+            resumed_from_epoch_checkpoint = True
+        elif cfg.training.resume:
             lastest_ckpt_path = self.get_checkpoint_path()
             if lastest_ckpt_path.is_file():
                 print(f"Resuming from checkpoint {lastest_ckpt_path}")
                 self.load_checkpoint(path=lastest_ckpt_path)
+                resumed_from_epoch_checkpoint = True
+
+        if init_checkpoint:
+            init_checkpoint = pathlib.Path(str(init_checkpoint)).expanduser().resolve()
+            if not init_checkpoint.is_file():
+                raise FileNotFoundError(
+                    f"training.init_checkpoint does not exist: {init_checkpoint}"
+                )
+            payload = torch.load(
+                init_checkpoint.open("rb"), pickle_module=dill, map_location="cpu"
+            )
+            for key in ("model", "ema_model"):
+                module = getattr(self, key)
+                state = payload["state_dicts"].get(key)
+                if module is None or state is None:
+                    continue
+                state = self._upgrade_legacy_model_state_dict(state)
+                incompatible = module.load_state_dict(state, strict=False)
+                unexpected = list(incompatible.unexpected_keys)
+                missing = list(incompatible.missing_keys)
+                if unexpected or any(
+                    not name.startswith("binary_gripper_head.") for name in missing
+                ):
+                    raise RuntimeError(
+                        "init checkpoint architecture mismatch: "
+                        f"missing={missing}, unexpected={unexpected}"
+                    )
+                print(
+                    f"Initialized {key} from {init_checkpoint}; "
+                    f"new parameters={missing}"
+                )
+
+        if resumed_from_epoch_checkpoint:
+            # Epoch checkpoints are written after the final optimizer/EMA update
+            # of an epoch but before the bookkeeping increments below. Advance to
+            # the next epoch/step so resume neither repeats data nor shifts the LR
+            # schedule. ``training.num_epochs`` remains the target total epoch.
+            self.epoch += 1
+            self.global_step += 1
+
+        geometry_adapter_only = bool(
+            OmegaConf.select(cfg, "training.geometry_adapter_only", default=False)
+        )
+        if geometry_adapter_only:
+            self.model.freeze_base_for_geometry()
+            if self.ema_model is not None:
+                self.ema_model.freeze_base_for_geometry()
+            trainable = [
+                parameter for parameter in self.model.parameters()
+                if parameter.requires_grad
+            ]
+            print(
+                "Geometry-adapter-only training: "
+                f"{sum(parameter.numel() for parameter in trainable)} trainable parameters"
+            )
+        binary_gripper_head_only = bool(
+            OmegaConf.select(
+                cfg, "training.binary_gripper_head_only", default=False
+            )
+        )
+        if geometry_adapter_only and binary_gripper_head_only:
+            raise ValueError(
+                "geometry_adapter_only and binary_gripper_head_only are mutually exclusive"
+            )
+        if binary_gripper_head_only:
+            self.model.freeze_base_for_binary_gripper()
+            if self.ema_model is not None:
+                self.ema_model.freeze_base_for_binary_gripper()
+            trainable = [
+                parameter for parameter in self.model.parameters()
+                if parameter.requires_grad
+            ]
+            print(
+                "Binary-gripper-head-only training: "
+                f"{sum(parameter.numel() for parameter in trainable)} trainable parameters"
+            )
+
+        reset_optimizer = bool(
+            OmegaConf.select(cfg, "training.reset_optimizer_on_resume", default=False)
+        )
+        if reset_optimizer:
+            parameters = [
+                parameter for parameter in self.model.parameters()
+                if parameter.requires_grad
+            ]
+            self.optimizer = hydra.utils.instantiate(cfg.optimizer, params=parameters)
+            print("Reset optimizer for resumed training stage")
 
         # configure dataset
         dataset: BaseDataset
@@ -129,21 +239,32 @@ class TrainDP3Workspace:
             self.ema_model.set_normalizer(normalizer)
 
         # configure lr scheduler
+        scheduler_training_epochs = int(cfg.training.num_epochs)
+        scheduler_last_epoch = self.global_step - 1
+        if reset_optimizer:
+            scheduler_training_epochs = max(
+                1, int(cfg.training.num_epochs) - int(self.epoch)
+            )
+            scheduler_last_epoch = -1
         lr_scheduler = get_scheduler(
             cfg.training.lr_scheduler,
             optimizer=self.optimizer,
             num_warmup_steps=cfg.training.lr_warmup_steps,
-            num_training_steps=(len(train_dataloader) * cfg.training.num_epochs) //
+            num_training_steps=(len(train_dataloader) * scheduler_training_epochs) //
             cfg.training.gradient_accumulate_every,
             # pytorch assumes stepping LRScheduler every epoch
             # however huggingface diffusers steps it every batch
-            last_epoch=self.global_step - 1,
+            last_epoch=scheduler_last_epoch,
         )
 
         # configure ema
         ema: EMAModel = None
         if cfg.training.use_ema:
             ema = hydra.utils.instantiate(cfg.ema, model=self.ema_model)
+            if resumed_from_epoch_checkpoint:
+                # EMA is updated once per batch, which matches global_step after
+                # the checkpoint-boundary adjustment above.
+                ema.optimization_step = int(self.global_step)
 
         env_runner = None
 
@@ -180,7 +301,13 @@ class TrainDP3Workspace:
 
         # training loop
         log_path = os.path.join(self.output_dir, "logs.json.txt")
-        for local_epoch_idx in range(cfg.training.num_epochs):
+        remaining_epochs = max(0, int(cfg.training.num_epochs) - int(self.epoch))
+        if resumed_from_epoch_checkpoint:
+            print(
+                f"Resume state: next_epoch={self.epoch}, "
+                f"global_step={self.global_step}, remaining_epochs={remaining_epochs}"
+            )
+        for local_epoch_idx in range(remaining_epochs):
             step_log = dict()
             # ========= train for this epoch ==========
             train_losses = list()
@@ -281,9 +408,18 @@ class TrainDP3Workspace:
                         step_log["val_loss"] = val_loss
 
             # checkpoint
+            saved_checkpoint_path = None
             if ((self.epoch + 1) % cfg.training.checkpoint_every) == 0 and cfg.checkpoint.save_ckpt:
-
-                if not cfg.policy.use_pc_color:
+                checkpoint_root = OmegaConf.select(
+                    cfg, "training.checkpoint_dir", default=None
+                )
+                if checkpoint_root:
+                    save_path = str(
+                        pathlib.Path(str(checkpoint_root)).expanduser().resolve()
+                        / f"{self.cfg.task.name}_{cfg.training.seed}"
+                        / f"{self.epoch + 1}.ckpt"
+                    )
+                elif not cfg.policy.use_pc_color:
                     if not os.path.exists(f"checkpoints/{self.cfg.task.name}_{cfg.training.seed}"):
                         os.makedirs(f"checkpoints/{self.cfg.task.name}_{cfg.training.seed}")
                     save_path = f"checkpoints/{self.cfg.task.name}_{cfg.training.seed}/{self.epoch + 1}.ckpt"
@@ -292,7 +428,7 @@ class TrainDP3Workspace:
                         os.makedirs(f"checkpoints/{self.cfg.task.name}_w_rgb_{cfg.training.seed}")
                     save_path = f"checkpoints/{self.cfg.task.name}_w_rgb_{cfg.training.seed}/{self.epoch + 1}.ckpt"
 
-                self.save_checkpoint(save_path)
+                saved_checkpoint_path = self.save_checkpoint(save_path)
 
             # ========= eval end for this epoch ==========
             policy.train()
@@ -301,6 +437,12 @@ class TrainDP3Workspace:
             # log of last step is combined with validation and rollout
             if WANDB:
                 wandb_run.log(step_log, step=self.global_step)
+            persistent_log = dict(step_log)
+            persistent_log["completed_epoch"] = int(self.epoch + 1)
+            persistent_log["global_step"] = int(self.global_step)
+            persistent_log["checkpoint_path"] = saved_checkpoint_path
+            with open(log_path, "a", encoding="utf-8") as log_file:
+                log_file.write(json.dumps(persistent_log, sort_keys=True) + "\n")
             self.global_step += 1
             self.epoch += 1
             del step_log
@@ -365,7 +507,7 @@ class TrainDP3Workspace:
         if include_keys is None:
             include_keys = tuple(self.include_keys) + ("_output_dir", )
 
-        path.parent.mkdir(parents=False, exist_ok=True)
+        path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"cfg": self.cfg, "state_dicts": dict(), "pickles": dict()}
 
         for key, value in self.__dict__.items():

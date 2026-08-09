@@ -56,6 +56,34 @@ policy:
   use_pc_color: false
   pointnet_type: "pointnet"
 
+  # Optional safe geometry route. When enabled, geometry is excluded from the
+  # base observation encoder and added through a zero-initialized adapter.
+  geometry_key: null
+  geometry_confidence_key: null
+  geometry_encoder_output_dim: 64
+  geometry_dropout: 0.0
+  geometry_force_zero: false
+  global_geometry_key: null
+  global_geometry_confidence_key: null
+  global_geometry_hidden_dim: 64
+  global_geometry_dropout: 0.0
+  global_geometry_force_zero: false
+
+  # GAP-style label-only future geometry prediction. The selected observation
+  # is removed from policy conditioning and used only as an auxiliary target.
+  aux_geometry_key: null
+  aux_geometry_loss_weight: 0.0
+  aux_geometry_hidden_dim: 256
+  aux_geometry_target_mode: endpoint_displacement
+
+  # Optional learned hybrid-action route. Cartesian motion remains diffusion;
+  # binary gripper commands use a geometry-conditioned classification head.
+  binary_gripper_indices: []
+  binary_gripper_hidden_dim: 128
+  binary_gripper_loss_weight: 0.0
+  binary_gripper_positive_weight: 3.0
+  binary_gripper_threshold: 0.5
+
   pointcloud_encoder_cfg:
     in_channels: 3
     out_channels: ${policy.encoder_output_dim}
@@ -94,6 +122,7 @@ optimizer:
 
 training:
   device: "cuda:0"
+  checkpoint_dir: null
   seed: 42
   debug: False
   resume: True

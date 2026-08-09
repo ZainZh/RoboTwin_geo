@@ -18,7 +18,149 @@ from diffusion_policy_3d.model.diffusion.conditional_unet1d import ConditionalUn
 from diffusion_policy_3d.model.diffusion.mask_generator import LowdimMaskGenerator
 from diffusion_policy_3d.common.pytorch_util import dict_apply
 from diffusion_policy_3d.common.model_util import print_params
-from diffusion_policy_3d.model.vision.pointnet_extractor import DP3Encoder
+from diffusion_policy_3d.model.vision.pointnet_extractor import (
+    DP3Encoder,
+    PointNetEncoderXYZRGB,
+)
+
+
+class ZeroInitGeometryAdapter(nn.Module):
+    """Map geometric point-flow tokens into a safe additive policy condition."""
+
+    def __init__(
+        self,
+        in_channels: int,
+        geometry_dim: int,
+        output_dim: int,
+        dropout: float = 0.0,
+        force_zero: bool = False,
+    ):
+        super().__init__()
+        self.encoder = PointNetEncoderXYZRGB(
+            in_channels=int(in_channels),
+            out_channels=int(geometry_dim),
+            use_layernorm=True,
+            final_norm="layernorm",
+        )
+        self.projection = nn.Linear(int(geometry_dim), int(output_dim))
+        nn.init.zeros_(self.projection.weight)
+        nn.init.zeros_(self.projection.bias)
+        self.dropout = float(dropout)
+        self.force_zero = bool(force_zero)
+        self.output_dim = int(output_dim)
+
+    def forward(
+        self,
+        points: torch.Tensor,
+        confidence: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if self.force_zero:
+            return torch.zeros(
+                (points.shape[0], self.output_dim),
+                dtype=points.dtype,
+                device=points.device,
+            )
+        residual = self.projection(self.encoder(points))
+        if confidence is not None:
+            residual = residual * confidence.reshape(confidence.shape[0], -1).mean(
+                dim=-1, keepdim=True
+            ).clamp(0.0, 1.0)
+        if self.training and self.dropout > 0.0:
+            keep = (
+                torch.rand(
+                    (residual.shape[0], 1),
+                    dtype=residual.dtype,
+                    device=residual.device,
+                )
+                >= self.dropout
+            )
+            residual = residual * keep
+        return residual
+
+
+class ZeroInitGlobalGeometryAdapter(nn.Module):
+    """Safe global SE(3)-relation route paired with the local point adapter."""
+
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dim: int,
+        output_dim: int,
+        dropout: float = 0.0,
+        force_zero: bool = False,
+    ):
+        super().__init__()
+        self.encoder = nn.Sequential(
+            nn.LayerNorm(int(input_dim)),
+            nn.Linear(int(input_dim), int(hidden_dim)),
+            nn.Mish(),
+        )
+        self.projection = nn.Linear(int(hidden_dim), int(output_dim))
+        nn.init.zeros_(self.projection.weight)
+        nn.init.zeros_(self.projection.bias)
+        self.dropout = float(dropout)
+        self.force_zero = bool(force_zero)
+        self.output_dim = int(output_dim)
+
+    def forward(
+        self,
+        relation: torch.Tensor,
+        confidence: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if self.force_zero:
+            return torch.zeros(
+                (relation.shape[0], self.output_dim),
+                dtype=relation.dtype,
+                device=relation.device,
+            )
+        residual = self.projection(self.encoder(relation))
+        if confidence is not None:
+            residual = residual * confidence.reshape(confidence.shape[0], -1).mean(
+                dim=-1, keepdim=True
+            ).clamp(0.0, 1.0)
+        if self.training and self.dropout > 0.0:
+            keep = (
+                torch.rand(
+                    (residual.shape[0], 1),
+                    dtype=residual.dtype,
+                    device=residual.device,
+                )
+                >= self.dropout
+            )
+            residual = residual * keep
+        return residual
+
+
+class FutureGeometryHead(nn.Module):
+    """Predict a future object-flow endpoint from the shared policy context."""
+
+    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int):
+        super().__init__()
+        self.network = nn.Sequential(
+            nn.LayerNorm(int(input_dim)),
+            nn.Linear(int(input_dim), int(hidden_dim)),
+            nn.Mish(),
+            nn.Linear(int(hidden_dim), int(output_dim)),
+        )
+
+    def forward(self, context: torch.Tensor) -> torch.Tensor:
+        return self.network(context)
+
+
+class BinaryGripperHead(nn.Module):
+    """Predict future open/closed commands from the shared policy context."""
+
+    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int):
+        super().__init__()
+        self.network = nn.Sequential(
+            nn.LayerNorm(int(input_dim)),
+            nn.Linear(int(input_dim), int(hidden_dim)),
+            nn.Mish(),
+            nn.Linear(int(hidden_dim), int(output_dim)),
+        )
+
+    def forward(self, context: torch.Tensor) -> torch.Tensor:
+        return self.network(context)
 
 
 class DP3(BasePolicy):
@@ -45,6 +187,25 @@ class DP3(BasePolicy):
         use_pc_color=False,
         pointnet_type="pointnet",
         pointcloud_encoder_cfg=None,
+        geometry_key=None,
+        geometry_confidence_key=None,
+        geometry_encoder_output_dim=64,
+        geometry_dropout=0.0,
+        geometry_force_zero=False,
+        global_geometry_key=None,
+        global_geometry_confidence_key=None,
+        global_geometry_hidden_dim=64,
+        global_geometry_dropout=0.0,
+        global_geometry_force_zero=False,
+        aux_geometry_key=None,
+        aux_geometry_loss_weight=0.0,
+        aux_geometry_hidden_dim=256,
+        aux_geometry_target_mode="endpoint_displacement",
+        binary_gripper_indices=(),
+        binary_gripper_hidden_dim=128,
+        binary_gripper_loss_weight=0.0,
+        binary_gripper_positive_weight=3.0,
+        binary_gripper_threshold=0.5,
         # parameters passed to step
         **kwargs,
     ):
@@ -65,6 +226,99 @@ class DP3(BasePolicy):
         obs_shape_meta = shape_meta["obs"]
         obs_dict = dict_apply(obs_shape_meta, lambda x: x["shape"])
 
+        self.geometry_key = geometry_key
+        self.geometry_confidence_key = geometry_confidence_key
+        self.global_geometry_key = global_geometry_key
+        self.global_geometry_confidence_key = global_geometry_confidence_key
+        self.aux_geometry_key = aux_geometry_key
+        self.aux_geometry_loss_weight = float(aux_geometry_loss_weight)
+        self.aux_geometry_target_mode = str(aux_geometry_target_mode)
+        self.binary_gripper_indices = tuple(
+            int(index) for index in (binary_gripper_indices or ())
+        )
+        self.binary_gripper_loss_weight = float(binary_gripper_loss_weight)
+        self.binary_gripper_positive_weight = float(
+            binary_gripper_positive_weight
+        )
+        self.binary_gripper_threshold = float(binary_gripper_threshold)
+        if len(set(self.binary_gripper_indices)) != len(
+            self.binary_gripper_indices
+        ):
+            raise ValueError("binary_gripper_indices must be unique")
+        if any(index < 0 or index >= action_dim for index in self.binary_gripper_indices):
+            raise ValueError("binary_gripper_indices are outside the action shape")
+        if self.binary_gripper_indices and not obs_as_global_cond:
+            raise ValueError("binary gripper head currently requires obs_as_global_cond")
+        if self.geometry_key is not None and self.aux_geometry_key is not None:
+            raise ValueError(
+                "geometry_key and aux_geometry_key are mutually exclusive: "
+                "geometry cannot be both an inference condition and a label-only target"
+            )
+        geometry_shape = None
+        if self.geometry_key is not None:
+            if self.geometry_key not in obs_dict:
+                raise KeyError(
+                    f"geometry_key {self.geometry_key!r} is missing from shape_meta"
+                )
+            geometry_shape = tuple(obs_dict.pop(self.geometry_key))
+            if len(geometry_shape) != 2:
+                raise ValueError(
+                    f"geometry observation must be [points, channels], got {geometry_shape}"
+                )
+        if self.geometry_confidence_key is not None:
+            if self.geometry_confidence_key not in obs_dict:
+                raise KeyError(
+                    f"geometry_confidence_key {self.geometry_confidence_key!r} is missing from shape_meta"
+                )
+            obs_dict.pop(self.geometry_confidence_key)
+
+        global_geometry_shape = None
+        if self.global_geometry_key is not None:
+            if self.global_geometry_key not in obs_dict:
+                raise KeyError(
+                    f"global_geometry_key {self.global_geometry_key!r} is missing from shape_meta"
+                )
+            global_geometry_shape = tuple(obs_dict.pop(self.global_geometry_key))
+            if len(global_geometry_shape) != 1:
+                raise ValueError(
+                    "global geometry observation must be [features], got "
+                    f"{global_geometry_shape}"
+                )
+        if self.global_geometry_confidence_key is not None:
+            if self.global_geometry_confidence_key not in obs_shape_meta:
+                raise KeyError(
+                    "global_geometry_confidence_key "
+                    f"{self.global_geometry_confidence_key!r} is missing from shape_meta"
+                )
+            if self.global_geometry_confidence_key != self.geometry_confidence_key:
+                obs_dict.pop(self.global_geometry_confidence_key)
+
+        aux_geometry_shape = None
+        if self.aux_geometry_key is not None:
+            if self.aux_geometry_key not in obs_dict:
+                raise KeyError(
+                    f"aux_geometry_key {self.aux_geometry_key!r} is missing from shape_meta"
+                )
+            aux_geometry_shape = tuple(obs_dict.pop(self.aux_geometry_key))
+            if self.aux_geometry_target_mode == "endpoint_displacement":
+                if len(aux_geometry_shape) != 2 or aux_geometry_shape[-1] < 3:
+                    raise ValueError(
+                        "endpoint-displacement geometry must be "
+                        f"[points, channels>=3], got {aux_geometry_shape}"
+                    )
+            elif self.aux_geometry_target_mode == "vector":
+                if len(aux_geometry_shape) != 1:
+                    raise ValueError(
+                        f"vector auxiliary geometry must be [features], got {aux_geometry_shape}"
+                    )
+            else:
+                raise ValueError(
+                    "aux_geometry_target_mode must be 'endpoint_displacement' "
+                    f"or 'vector', got {self.aux_geometry_target_mode!r}"
+                )
+            if self.aux_geometry_loss_weight < 0.0:
+                raise ValueError("aux_geometry_loss_weight must be non-negative")
+
         obs_encoder = DP3Encoder(
             observation_space=obs_dict,
             img_crop_shape=crop_shape,
@@ -76,6 +330,67 @@ class DP3(BasePolicy):
 
         # create diffusion model
         obs_feature_dim = obs_encoder.output_shape()
+        geometry_adapter = None
+        if geometry_shape is not None:
+            geometry_adapter = ZeroInitGeometryAdapter(
+                in_channels=int(geometry_shape[-1]),
+                geometry_dim=int(geometry_encoder_output_dim),
+                output_dim=int(obs_feature_dim),
+                dropout=float(geometry_dropout),
+                force_zero=bool(geometry_force_zero),
+            )
+            cprint(
+                "[DP3] zero-init geometry adapter: "
+                f"key={self.geometry_key}, shape={geometry_shape}, "
+                f"output_dim={obs_feature_dim}, force_zero={geometry_force_zero}",
+                "yellow",
+            )
+        global_geometry_adapter = None
+        if global_geometry_shape is not None:
+            global_geometry_adapter = ZeroInitGlobalGeometryAdapter(
+                input_dim=int(global_geometry_shape[-1]),
+                hidden_dim=int(global_geometry_hidden_dim),
+                output_dim=int(obs_feature_dim),
+                dropout=float(global_geometry_dropout),
+                force_zero=bool(global_geometry_force_zero),
+            )
+            cprint(
+                "[DP3] zero-init global geometry adapter: "
+                f"key={self.global_geometry_key}, shape={global_geometry_shape}, "
+                f"output_dim={obs_feature_dim}, force_zero={global_geometry_force_zero}",
+                "yellow",
+            )
+        aux_geometry_head = None
+        if aux_geometry_shape is not None:
+            if self.aux_geometry_target_mode == "endpoint_displacement":
+                aux_geometry_dim = int(aux_geometry_shape[0]) * 3
+            else:
+                aux_geometry_dim = int(aux_geometry_shape[0])
+            aux_geometry_head = FutureGeometryHead(
+                input_dim=int(obs_feature_dim) * int(n_obs_steps),
+                hidden_dim=int(aux_geometry_hidden_dim),
+                output_dim=aux_geometry_dim,
+            )
+            cprint(
+                "[DP3] future-geometry auxiliary head: "
+                f"key={self.aux_geometry_key}, target={self.aux_geometry_target_mode}, "
+                f"output_dim={aux_geometry_dim}, weight={self.aux_geometry_loss_weight}",
+                "yellow",
+            )
+        binary_gripper_head = None
+        if self.binary_gripper_indices:
+            binary_gripper_head = BinaryGripperHead(
+                input_dim=int(obs_feature_dim) * int(n_obs_steps),
+                hidden_dim=int(binary_gripper_hidden_dim),
+                output_dim=int(n_action_steps)
+                * len(self.binary_gripper_indices),
+            )
+            cprint(
+                "[DP3] learned binary gripper head: "
+                f"indices={self.binary_gripper_indices}, "
+                f"steps={n_action_steps}, weight={self.binary_gripper_loss_weight}",
+                "yellow",
+            )
         input_dim = action_dim + obs_feature_dim
         global_cond_dim = None
         if obs_as_global_cond:
@@ -111,6 +426,11 @@ class DP3(BasePolicy):
         )
 
         self.obs_encoder = obs_encoder
+        self.geometry_adapter = geometry_adapter
+        self.global_geometry_adapter = global_geometry_adapter
+        self.aux_geometry_head = aux_geometry_head
+        self.binary_gripper_head = binary_gripper_head
+        self.aux_geometry_shape = aux_geometry_shape
         self.model = model
         self.noise_scheduler = noise_scheduler
 
@@ -149,7 +469,89 @@ class DP3(BasePolicy):
                 )
             if nobs[key].shape[-1] > expected_channels:
                 nobs[key] = nobs[key][..., :expected_channels]
+        if self.geometry_adapter is not None:
+            value = nobs[self.geometry_key]
+            expected_channels = self.geometry_adapter.encoder.mlp[0].in_features
+            if value.shape[-1] != expected_channels:
+                raise RuntimeError(
+                    f"Geometry observation {self.geometry_key!r} has "
+                    f"{value.shape[-1]} channels, expected {expected_channels}."
+                )
         return nobs
+
+    def _encode_observations(self, observations: Dict[str, torch.Tensor]) -> torch.Tensor:
+        features = self.obs_encoder(observations)
+        if self.geometry_adapter is not None:
+            confidence = None
+            if self.geometry_confidence_key is not None:
+                confidence = observations[self.geometry_confidence_key]
+            features = features + self.geometry_adapter(
+                observations[self.geometry_key], confidence=confidence
+            )
+        if self.global_geometry_adapter is not None:
+            confidence = None
+            if self.global_geometry_confidence_key is not None:
+                confidence = observations[self.global_geometry_confidence_key]
+            features = features + self.global_geometry_adapter(
+                observations[self.global_geometry_key], confidence=confidence
+            )
+        return features
+
+    def freeze_base_for_geometry(self) -> None:
+        if self.geometry_adapter is None and self.global_geometry_adapter is None:
+            raise RuntimeError("Cannot freeze for geometry: geometry adapters are disabled")
+        for parameter in self.parameters():
+            parameter.requires_grad_(False)
+        for adapter in (self.geometry_adapter, self.global_geometry_adapter):
+            if adapter is not None:
+                for parameter in adapter.parameters():
+                    parameter.requires_grad_(True)
+
+    def geometry_adapter_parameters(self):
+        result = []
+        for adapter in (self.geometry_adapter, self.global_geometry_adapter):
+            if adapter is not None:
+                result.extend(adapter.parameters())
+        return list(result)
+
+    def freeze_base_for_binary_gripper(self) -> None:
+        if self.binary_gripper_head is None:
+            raise RuntimeError("Cannot freeze for gripper: binary head is disabled")
+        for parameter in self.parameters():
+            parameter.requires_grad_(False)
+        for parameter in self.binary_gripper_head.parameters():
+            parameter.requires_grad_(True)
+
+    def _predict_aux_geometry(
+        self, observation_features: torch.Tensor, batch_size: int
+    ) -> torch.Tensor | None:
+        if self.aux_geometry_head is None:
+            return None
+        context = observation_features.reshape(int(batch_size), -1)
+        prediction = self.aux_geometry_head(context)
+        if self.aux_geometry_target_mode == "endpoint_displacement":
+            return prediction.reshape(
+                int(batch_size), int(self.aux_geometry_shape[0]), 3
+            )
+        return prediction.reshape(int(batch_size), int(self.aux_geometry_shape[0]))
+
+    def _unnormalize_aux_geometry(self, normalized: torch.Tensor) -> torch.Tensor:
+        if self.aux_geometry_key is None:
+            raise RuntimeError("auxiliary geometry prediction is disabled")
+        params = self.normalizer.params_dict[self.aux_geometry_key]
+        if self.aux_geometry_target_mode == "endpoint_displacement":
+            scale = params["scale"][-3:]
+            offset = params["offset"][-3:]
+        else:
+            scale = params["scale"]
+            offset = params["offset"]
+        return (normalized - offset) / scale
+
+    def _aux_geometry_target(self, normalized_observations: Dict[str, torch.Tensor]):
+        value = normalized_observations[self.aux_geometry_key][:, -1]
+        if self.aux_geometry_target_mode == "endpoint_displacement":
+            return value[..., -3:]
+        return value
 
     # ========= inference  ============
     def conditional_sample(
@@ -222,10 +624,16 @@ class DP3(BasePolicy):
         # handle different ways of passing observation
         local_cond = None
         global_cond = None
+        binary_gripper_logits = None
         if self.obs_as_global_cond:
             # condition through global feature
             this_nobs = dict_apply(nobs, lambda x: x[:, :To, ...].reshape(-1, *x.shape[2:]))
-            nobs_features = self.obs_encoder(this_nobs)
+            nobs_features = self._encode_observations(this_nobs)
+            aux_geometry_pred = self._predict_aux_geometry(nobs_features, B)
+            if self.binary_gripper_head is not None:
+                binary_gripper_logits = self.binary_gripper_head(
+                    nobs_features.reshape(B, -1)
+                ).reshape(B, self.n_action_steps, -1)
             if "cross_attention" in self.condition_type:
                 # treat as a sequence
                 global_cond = nobs_features.reshape(B, self.n_obs_steps, -1)
@@ -238,7 +646,8 @@ class DP3(BasePolicy):
         else:
             # condition through impainting
             this_nobs = dict_apply(nobs, lambda x: x[:, :To, ...].reshape(-1, *x.shape[2:]))
-            nobs_features = self.obs_encoder(this_nobs)
+            nobs_features = self._encode_observations(this_nobs)
+            aux_geometry_pred = self._predict_aux_geometry(nobs_features, B)
             # reshape back to B, T, Do
             nobs_features = nobs_features.reshape(B, To, -1)
             cond_data = torch.zeros(size=(B, T, Da + Do), device=device, dtype=dtype)
@@ -263,12 +672,31 @@ class DP3(BasePolicy):
         start = To - 1
         end = start + self.n_action_steps
         action = action_pred[:, start:end]
+        binary_gripper_probability = None
+        if binary_gripper_logits is not None:
+            binary_gripper_probability = torch.sigmoid(binary_gripper_logits)
+            action = action.clone()
+            command = torch.where(
+                binary_gripper_probability >= self.binary_gripper_threshold,
+                torch.zeros_like(binary_gripper_probability),
+                torch.ones_like(binary_gripper_probability),
+            )
+            action[:, :, list(self.binary_gripper_indices)] = command
 
         # get prediction
         result = {
             "action": action,
             "action_pred": action_pred,
         }
+        if aux_geometry_pred is not None:
+            result["aux_geometry_pred_normalized"] = aux_geometry_pred
+            result["aux_geometry_pred"] = self._unnormalize_aux_geometry(
+                aux_geometry_pred
+            )
+        if binary_gripper_probability is not None:
+            result["binary_gripper_closed_probability"] = (
+                binary_gripper_probability
+            )
 
         return result
 
@@ -290,13 +718,21 @@ class DP3(BasePolicy):
         # handle different ways of passing observation
         local_cond = None
         global_cond = None
+        binary_gripper_logits = None
         trajectory = nactions
         cond_data = trajectory
 
         if self.obs_as_global_cond:
             # reshape B, T, ... to B*T
             this_nobs = dict_apply(nobs, lambda x: x[:, :self.n_obs_steps, ...].reshape(-1, *x.shape[2:]))
-            nobs_features = self.obs_encoder(this_nobs)
+            nobs_features = self._encode_observations(this_nobs)
+            aux_geometry_pred = self._predict_aux_geometry(
+                nobs_features, batch_size
+            )
+            if self.binary_gripper_head is not None:
+                binary_gripper_logits = self.binary_gripper_head(
+                    nobs_features.reshape(batch_size, -1)
+                ).reshape(batch_size, self.n_action_steps, -1)
 
             if "cross_attention" in self.condition_type:
                 # treat as a sequence
@@ -307,7 +743,10 @@ class DP3(BasePolicy):
         else:
             # reshape B, T, ... to B*T
             this_nobs = dict_apply(nobs, lambda x: x.reshape(-1, *x.shape[2:]))
-            nobs_features = self.obs_encoder(this_nobs)
+            nobs_features = self._encode_observations(this_nobs)
+            aux_geometry_pred = self._predict_aux_geometry(
+                nobs_features[:, : self.n_obs_steps], batch_size
+            )
             # reshape back to B, T, Do
             nobs_features = nobs_features.reshape(batch_size, horizon, -1)
             cond_data = torch.cat([nactions, nobs_features], dim=-1)
@@ -370,14 +809,50 @@ class DP3(BasePolicy):
         else:
             raise ValueError(f"Unsupported prediction type {pred_type}")
 
-        loss = F.mse_loss(pred, target, reduction="none")
-        loss = loss * loss_mask.type(loss.dtype)
-        loss = reduce(loss, "b ... -> b (...)", "mean")
-        loss = loss.mean()
+        action_loss = F.mse_loss(pred, target, reduction="none")
+        action_loss = action_loss * loss_mask.type(action_loss.dtype)
+        action_loss = reduce(action_loss, "b ... -> b (...)", "mean")
+        action_loss = action_loss.mean()
 
         loss_dict = {
-            "bc_loss": loss.item(),
+            "bc_loss": action_loss.item(),
         }
+
+        loss = action_loss
+        if aux_geometry_pred is not None:
+            # Match GAP's future-latent objective: predict the geometry at the
+            # final frame in the sampled action horizon from only observed
+            # frames. The flow value is label-only and never enters the policy
+            # condition or inference path.
+            aux_geometry_target = self._aux_geometry_target(nobs)
+            geometry_loss = F.mse_loss(
+                aux_geometry_pred, aux_geometry_target, reduction="mean"
+            )
+            loss = action_loss + self.aux_geometry_loss_weight * geometry_loss
+            loss_dict["aux_geometry_loss"] = geometry_loss.item()
+            loss_dict["total_loss"] = loss.item()
+        if binary_gripper_logits is not None:
+            start = self.n_obs_steps - 1
+            gripper_commands = batch["action"][
+                :, start : start + self.n_action_steps, list(self.binary_gripper_indices)
+            ]
+            closed_target = (gripper_commands < 0.5).to(
+                binary_gripper_logits.dtype
+            )
+            positive_weight = torch.full(
+                (len(self.binary_gripper_indices),),
+                self.binary_gripper_positive_weight,
+                device=binary_gripper_logits.device,
+                dtype=binary_gripper_logits.dtype,
+            )
+            gripper_loss = F.binary_cross_entropy_with_logits(
+                binary_gripper_logits,
+                closed_target,
+                pos_weight=positive_weight,
+            )
+            loss = loss + self.binary_gripper_loss_weight * gripper_loss
+            loss_dict["binary_gripper_loss"] = gripper_loss.item()
+            loss_dict["total_loss"] = loss.item()
 
         # print(f"t2-t1: {t2-t1:.3f}")
         # print(f"t3-t2: {t3-t2:.3f}")

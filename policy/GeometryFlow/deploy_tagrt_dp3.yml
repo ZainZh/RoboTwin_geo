@@ -1,0 +1,23 @@
+policy_name: GeometryFlow.deploy_tagrt_dp3
+task_name: place_shoe_geometry_marker
+task_config: demo_clean_3d_object_pc_geometry_marker_unseen05
+ckpt_setting: tagrt-fulltask-temporal-v1-hybridgripper-seed0
+seed: 0
+instruction_type: unseen
+test_num: 2
+expert_data_num: 50
+checkpoint_num: 120
+policy_start_phase: full_task
+eval_video_log: true
+
+tagrt_dp3_checkpoint: /shared2/sz/TAGRT-v1/models/dp3/place_shoe_geometry_marker-tagrt_fulltask_temporal_v1_hybridgripper_seed0-8880_0/50.ckpt
+tagrt_dp3_dataset: outputs/geometry_flow/shoe_multigoal_relation_v1/task_flow_fold0_strict_crossfit_ndf_camera.npz
+tagrt_dp3_frame_checkpoints: outputs/geometry_flow/ndf_pretraining_ablation_local50_fold0_full_seeds012/fold0_correct_frame_seed1_checkpoint.pth,outputs/geometry_flow/ndf_pretraining_ablation_local50_fold0_full_seeds012/fold0_correct_frame_seed0_checkpoint.pth
+tagrt_dp3_camera_metadata: outputs/geometry_flow/shoe_multigoal_relation_v1/task_flow_fold0_strict_crossfit_ndf_camera.json
+tagrt_dp3_ensemble_metadata: outputs/geometry_flow/goal_policy_frame_fold0_v1/fold0_correct_frame_valtop2_p99.json
+tagrt_dp3_condition: correct
+tagrt_dp3_device: cuda:0
+tagrt_dp3_execute_steps: 6
+tagrt_dp3_max_policy_steps: 300
+max_eef_translation_delta_m: 0.08
+max_eef_rotation_delta_rad: 0.5
