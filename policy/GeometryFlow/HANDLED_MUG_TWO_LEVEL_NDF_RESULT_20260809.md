@@ -381,3 +381,36 @@ goals and perturbation levels, then one second category/task with its own
 category-specific NDF.  Those experiments should reuse the frozen method and
 factorial controls; they should not add stage prediction, grasp tokens,
 analytic action priors, or residual planning.
+
+## Expanded blind perturbation stress test
+
+Seed 0 was subsequently evaluated on all nine remaining blind-object episodes,
+covering perturbation levels 0--3.  The historical manifest replay tolerance
+was set to `0.5 cm / 2 deg` because one scene differed from the recorded setup
+by `0.256 cm / 1.430 deg`; this tolerance only admits a scene to evaluation.
+Every compared policy is still restored from the same in-process snapshot,
+and the success threshold remains unchanged at `2.5 cm / 15 deg`.
+
+The stress set starts at a mean `9.383 cm / 22.016 deg`, substantially harder
+than the first three paired scenes:
+
+| Branch | Final success | Final translation | Final rotation |
+|---|---:|---:|---:|
+| correct geometry | **3/9** | **3.404 cm** | **11.853 deg** |
+| same checkpoint, geometry zeroed | 1/9 | 4.016 cm | 18.350 deg |
+| zero-trained policy | 1/9 | 3.798 cm | 20.681 deg |
+
+Correct geometry reduces final error by 15.3% / 35.4% against its same-model
+ablation and by 10.4% / 42.7% against zero training.  Over all 12 seed-0
+paired episodes, it reaches 6/12 success and `2.922 cm / 11.089 deg`, compared
+with 3/12 and `3.903 cm / 18.461 deg` for the same-model geometry ablation.
+
+The per-call curves identify the remaining failure mode.  On the six stress
+episodes that miss the final threshold, correct-geometry translation error is
+still decreasing at call six.  For example, level-2 episode 28 decreases
+monotonically from `12.59` to `4.82 cm`, while rotation falls from `27.07` to
+`12.19 deg`; zeroing geometry ends at `7.39 cm / 34.49 deg`.  Thus the stronger
+scenes expose the finite six-call correction range, not a loss of geometric
+direction.  A future action-budget curve may quantify this range, but the
+paper method should keep the fixed-budget result and must not hide the stress
+failures by changing its success threshold.
