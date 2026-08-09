@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from .train_task_flow_benchmark import FOLDS
+from .train_ndf_functional_frame_head import resolve_object_split
 
 
 def parser() -> argparse.ArgumentParser:
@@ -25,6 +25,9 @@ def parser() -> argparse.ArgumentParser:
     )
     result.add_argument("--output", type=Path, required=True)
     result.add_argument("--fold", type=int, required=True)
+    result.add_argument("--train-ids", nargs="+", type=int)
+    result.add_argument("--validation-ids", nargs="+", type=int)
+    result.add_argument("--test-ids", nargs="+", type=int)
     result.add_argument("--confidence-percentile", type=float, default=95.0)
     result.add_argument(
         "--aggregation",
@@ -89,8 +92,12 @@ def rotation_medoid(frames: np.ndarray) -> np.ndarray:
 
 def main() -> None:
     args = parser().parse_args()
-    if args.fold < 0 or args.fold >= len(FOLDS):
-        raise ValueError(f"fold must lie in [0,{len(FOLDS) - 1}]")
+    object_split = resolve_object_split(
+        int(args.fold),
+        train_ids=args.train_ids,
+        validation_ids=args.validation_ids,
+        test_ids=args.test_ids,
+    )
     if not 0.0 < args.confidence_percentile < 100.0:
         raise ValueError("confidence percentile must lie strictly between 0 and 100")
     if args.output.exists() and not args.overwrite:
@@ -120,7 +127,7 @@ def main() -> None:
     disagreement = maximum_pairwise_disagreement(stacked)
     train_mask = np.isin(
         shoe_id,
-        np.asarray(FOLDS[int(args.fold)]["train"], dtype=np.int64),
+        np.asarray(object_split["train"], dtype=np.int64),
     )
     threshold = float(
         np.percentile(disagreement[train_mask], args.confidence_percentile)
@@ -151,8 +158,9 @@ def main() -> None:
                     np.isin(shoe_id, np.asarray(ids, dtype=np.int64))
                 ].mean()
             )
-            for split, ids in FOLDS[int(args.fold)].items()
+            for split, ids in object_split.items()
         },
+        "object_split": {name: list(ids) for name, ids in object_split.items()},
     }
     args.output.with_suffix(".json").write_text(
         json.dumps(metadata, indent=2) + "\n", encoding="utf-8"

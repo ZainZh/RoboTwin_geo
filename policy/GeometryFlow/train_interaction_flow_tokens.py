@@ -87,6 +87,38 @@ CONDITIONS = {
 }
 
 
+def resolve_policy_object_split(
+    train_ids: list[int] | tuple[int, ...] | None,
+    validation_ids: list[int] | tuple[int, ...] | None,
+    test_ids: list[int] | tuple[int, ...] | None,
+) -> dict[str, tuple[int, ...]] | None:
+    """Validate an optional explicit object-disjoint policy split."""
+
+    values = (train_ids, validation_ids, test_ids)
+    if all(value is None for value in values):
+        return None
+    if any(value is None for value in values):
+        raise ValueError(
+            "train-ids, validation-ids, and test-ids must be supplied together"
+        )
+    result = {
+        "train": tuple(int(value) for value in train_ids),
+        "validation": tuple(int(value) for value in validation_ids),
+        "test": tuple(int(value) for value in test_ids),
+    }
+    sets = {name: set(ids) for name, ids in result.items()}
+    for name, ids in result.items():
+        if not ids or len(ids) != len(sets[name]):
+            raise ValueError(f"{name} object IDs must be nonempty and unique")
+    if (
+        sets["train"] & sets["validation"]
+        or sets["train"] & sets["test"]
+        or sets["validation"] & sets["test"]
+    ):
+        raise ValueError("train, validation, and test object IDs must be disjoint")
+    return result
+
+
 def policy_phase_keep_mask(
     payload: dict[str, np.ndarray], policy_phase: str
 ) -> np.ndarray:
@@ -120,6 +152,45 @@ def policy_phase_keep_mask(
     raise ValueError(f"unknown policy phase {policy_phase!r}")
 
 
+def task_aligned_point_coordinates(
+    points_a: np.ndarray,
+    points_b: np.ndarray,
+    goal_frame9: np.ndarray,
+    relative_frame9: np.ndarray,
+    *,
+    scale_m: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Express A/B points in their paired functional object frames.
+
+    ``relative_frame9`` encodes goal_R @ current_R.T and goal-current
+    translation.  It therefore reconstructs the predicted current frame from
+    the camera goal without any simulator pose at inference.
+    """
+
+    if float(scale_m) <= 0.0:
+        raise ValueError("scale_m must be positive")
+    source = np.asarray(points_a, dtype=np.float64)
+    target = np.asarray(points_b, dtype=np.float64)
+    goal = np.asarray(goal_frame9, dtype=np.float64)
+    relative = np.asarray(relative_frame9, dtype=np.float64)
+    if source.ndim != 2 or source.shape[1] < 3:
+        raise ValueError(f"points_a must be [points,channels], got {source.shape}")
+    if target.ndim != 2 or target.shape[1] < 3:
+        raise ValueError(f"points_b must be [points,channels], got {target.shape}")
+    if goal.shape != (9,) or relative.shape != (9,):
+        raise ValueError("goal_frame9 and relative_frame9 must each have shape [9]")
+    goal_rotation = frame9_rotation(goal)
+    relative_rotation = frame9_rotation(relative)
+    source_rotation = relative_rotation.T @ goal_rotation
+    source_position = goal[:3] - relative[:3]
+    source_local = (source[:, :3] - source_position) @ source_rotation
+    target_local = (target[:, :3] - goal[:3]) @ goal_rotation
+    return (
+        (source_local / float(scale_m)).astype(np.float32),
+        (target_local / float(scale_m)).astype(np.float32),
+    )
+
+
 class InteractionFlowDataset(TaskFlowDataset):
     """Attach correct and deterministic wrong-episode future point-set labels."""
 
@@ -134,6 +205,8 @@ class InteractionFlowDataset(TaskFlowDataset):
         target_frame_mode: str = "normal",
         source_local_frame_mode: str = "normal",
         functional_frame_translation_mode: str = "absolute",
+        functional_point_coordinates: bool = False,
+        zero_global_functional_frame_token: bool = False,
     ) -> None:
         super().__init__(
             payload,
@@ -165,6 +238,16 @@ class InteractionFlowDataset(TaskFlowDataset):
         self.functional_frame_translation_mode = str(
             functional_frame_translation_mode
         )
+        self.functional_point_coordinates = bool(functional_point_coordinates)
+        self.zero_global_functional_frame_token = bool(
+            zero_global_functional_frame_token
+        )
+        if self.functional_point_coordinates and "goal_frame9" not in payload:
+            raise KeyError("functional point coordinates require goal_frame9")
+        if self.zero_global_functional_frame_token and not self.functional_point_coordinates:
+            raise ValueError(
+                "zeroing only the global token requires functional point coordinates"
+            )
         self.action_horizon = int(payload["action"].shape[1])
         self.episode_frames = {
             int(episode): int(payload["frame_index"][payload["episode_index"] == episode].max())
@@ -426,6 +509,33 @@ class InteractionFlowDataset(TaskFlowDataset):
             result["target_frame_confidence"] = torch.tensor(
                 frame_confidence, dtype=torch.float32
             )
+            if self.functional_point_coordinates:
+                if self.target_frame_mode == "zero" or frame_confidence <= 0.0:
+                    source_local = np.zeros(
+                        (len(self.payload["points_a"][index]), 3), dtype=np.float32
+                    )
+                    target_local = np.zeros(
+                        (len(self.payload["points_b"][index]), 3), dtype=np.float32
+                    )
+                else:
+                    source_local, target_local = task_aligned_point_coordinates(
+                        self.payload["points_a"][index],
+                        self.payload["points_b"][index],
+                        self.payload["goal_frame9"][index],
+                        frame_metric,
+                        scale_m=float(np.asarray(self.norm.xyz_std).mean()),
+                    )
+                result["points_a"] = torch.cat(
+                    (result["points_a"], torch.from_numpy(source_local)), dim=-1
+                )
+                result["points_b"] = torch.cat(
+                    (result["points_b"], torch.from_numpy(target_local)), dim=-1
+                )
+                if self.zero_global_functional_frame_token:
+                    result["target_frame9"] = torch.zeros(9, dtype=torch.float32)
+                    result["target_frame_confidence"] = torch.tensor(
+                        0.0, dtype=torch.float32
+                    )
             if "source_frame6_columns" in self.payload:
                 if self.source_local_frame_mode == "zero":
                     source_local_frame = np.zeros(9, dtype=np.float32)
@@ -1193,6 +1303,17 @@ def parser() -> argparse.ArgumentParser:
         ],
     )
     result.add_argument("--folds", nargs="+", type=int, default=list(range(5)))
+    result.add_argument(
+        "--train-ids",
+        nargs="+",
+        type=int,
+        help=(
+            "Explicit training object IDs. Requires validation-ids and test-ids; "
+            "use --folds 0 so output filenames remain deployment-compatible."
+        ),
+    )
+    result.add_argument("--validation-ids", nargs="+", type=int)
+    result.add_argument("--test-ids", nargs="+", type=int)
     result.add_argument("--seed", type=int, default=0)
     result.add_argument("--epochs", type=int, default=120)
     result.add_argument("--patience", type=int, default=18)
@@ -1313,6 +1434,23 @@ def parser() -> argparse.ArgumentParser:
         "--functional-frame-source",
         choices=("target_camera", "oracle_relative", "dataset_relative"),
         default="target_camera",
+    )
+    result.add_argument(
+        "--functional-point-coordinates",
+        action="store_true",
+        help=(
+            "Append per-point coordinates in the NDF current functional frame "
+            "for A and the camera goal frame for B. The explicit SE(3) token is "
+            "retained, yielding task-aligned local and global geometry levels."
+        ),
+    )
+    result.add_argument(
+        "--zero-global-functional-frame-token",
+        action="store_true",
+        help=(
+            "Keep task-aligned per-point coordinates but zero the global SE(3) "
+            "token. This is a paired two-level contribution ablation."
+        ),
     )
     result.add_argument(
         "--target-frame-mode",
@@ -1436,9 +1574,23 @@ def parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = parser().parse_args()
+    explicit_object_split = resolve_policy_object_split(
+        args.train_ids, args.validation_ids, args.test_ids
+    )
+    if explicit_object_split is not None and args.folds != [0]:
+        raise ValueError("an explicit object split requires exactly --folds 0")
     if float(args.endpoint_rotation_action_loss_weight) < 0.0:
         raise ValueError(
             "--endpoint-rotation-action-loss-weight must be nonnegative"
+        )
+    if args.functional_point_coordinates and args.functional_frame_source != "dataset_relative":
+        raise ValueError(
+            "functional point coordinates require --functional-frame-source=dataset_relative"
+        )
+    if args.zero_global_functional_frame_token and not args.functional_point_coordinates:
+        raise ValueError(
+            "--zero-global-functional-frame-token requires "
+            "--functional-point-coordinates"
         )
     if float(args.endpoint_rotation_action_loss_weight) > 0.0 and any(
         condition_uses_diffusion(condition) for condition in args.conditions
@@ -1717,12 +1869,18 @@ def main() -> None:
         sample_keep = np.asarray(payload[recovery_key]) >= 0.5
     sample_keep &= policy_phase_keep_mask(payload, args.policy_phase)
     horizon = int(payload["action"].shape[1])
-    point_channels = int(payload["points_a"].shape[-1])
+    point_channels = int(payload["points_a"].shape[-1]) + (
+        3 if args.functional_point_coordinates else 0
+    )
     device = torch.device(args.device)
     all_results = []
 
     for fold_index in args.folds:
-        fold = FOLDS[int(fold_index)]
+        fold = (
+            explicit_object_split
+            if explicit_object_split is not None
+            else FOLDS[int(fold_index)]
+        )
         masks = {
             split: np.flatnonzero(np.isin(shoe_ids, ids) & sample_keep)
             for split, ids in fold.items()
@@ -1793,6 +1951,10 @@ def main() -> None:
                 functional_frame_translation_mode=(
                     functional_frame_translation_mode
                 ),
+                functional_point_coordinates=args.functional_point_coordinates,
+                zero_global_functional_frame_token=(
+                    args.zero_global_functional_frame_token
+                ),
             )
             for split, indices in masks.items()
         }
@@ -1806,6 +1968,10 @@ def main() -> None:
                 target_frame_mode=args.target_frame_mode,
                 functional_frame_translation_mode=(
                     functional_frame_translation_mode
+                ),
+                functional_point_coordinates=args.functional_point_coordinates,
+                zero_global_functional_frame_token=(
+                    args.zero_global_functional_frame_token
                 ),
             )
         train_sampler = None

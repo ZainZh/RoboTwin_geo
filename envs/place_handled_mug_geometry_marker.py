@@ -190,9 +190,13 @@ class place_handled_mug_geometry_marker(place_container_plate):
         observation["task_state"].update(
             {
                 "source_handle_axis3_label_only": source[:3, 0].copy(),
-                "source_vertical_axis3_label_only": source[:3, 2].copy(),
+                # The placement frame points its third axis downward so that
+                # the legacy approach-distance convention moves above the
+                # support.  Expose the semantically natural upward body axis
+                # to representation supervision by negating that column.
+                "source_vertical_axis3_label_only": -source[:3, 2].copy(),
                 "target_handle_axis3_label_only": target[:3, 0].copy(),
-                "target_vertical_axis3_label_only": target[:3, 2].copy(),
+                "target_vertical_axis3_label_only": -target[:3, 2].copy(),
                 "anchor_geometry_params": np.asarray(
                     [self.marker_x, self.marker_y, self.marker_yaw], dtype=np.float32
                 ),
