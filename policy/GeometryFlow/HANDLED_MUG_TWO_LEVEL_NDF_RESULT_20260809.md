@@ -376,11 +376,12 @@ frame, the consistent per-point and SE(3) tokens condition a learned action
 decoder, and both offline intervention and paired closed-loop tests show that
 the decoder uses them.
 
-It is not yet a T-ASE-level general claim.  The remaining gates are more blind
-goals and perturbation levels, then one second category/task with its own
-category-specific NDF.  Those experiments should reuse the frozen method and
-factorial controls; they should not add stage prediction, grasp tokens,
-analytic action priors, or residual planning.
+At this checkpoint it was not yet a T-ASE-level general claim.  The subsequent
+strict cross-fit shoe experiment supplies the second category/task result; see
+`STRICT_CROSSFIT_MULTIGOAL_RESULT_20260809.md`.  The remaining gates are larger
+blind snapshot sets and complete matched factorial tables.  Those experiments
+must reuse the frozen method and controls; they must not add stage prediction,
+grasp tokens, analytic action priors, or residual planning.
 
 ## Expanded blind perturbation stress test
 
@@ -414,3 +415,48 @@ scenes expose the finite six-call correction range, not a loss of geometric
 direction.  A future action-budget curve may quantify this range, but the
 paper method should keep the fixed-budget result and must not hide the stress
 failures by changing its success threshold.
+
+## Three-seed blind stress replication
+
+The nine-episode level 0--3 stress set was then repeated for policy seeds 1
+and 2 without changing checkpoints, NDF models, success thresholds, replay
+tolerances, or the six-call budget.  Every episode completed for all six new
+paired branches with zero protocol errors.
+
+| Policy seed | Correct geometry | Same checkpoint, geometry zeroed | Zero-trained |
+|---:|---:|---:|---:|
+| 0 | 3/9, 3.404 cm / 11.853 deg | 1/9, 4.016 cm / 18.350 deg | 1/9, 3.798 cm / 20.681 deg |
+| 1 | 3/9, 3.224 cm / 10.798 deg | 2/9, 3.616 cm / 15.259 deg | 3/9, 3.682 cm / 17.086 deg |
+| 2 | 4/9, 3.582 cm / 10.981 deg | 1/9, 3.923 cm / 16.351 deg | 1/9, 4.057 cm / 18.116 deg |
+| Mean +/- SD | **37.0 +/- 6.4%** | 14.8 +/- 6.4% | 18.5 +/- 12.8% |
+
+Correct geometry has the lowest final rotation in every seed.  Across seeds,
+its final pose is `3.403 +/- 0.179 cm / 11.211 +/- 0.563 deg`, versus `3.852
++/- 0.209 cm / 16.653 +/- 1.568 deg` for the same-checkpoint geometry
+ablation.  The effect therefore survives perturbations much larger than the
+training relation median, although the fixed six-call translation range still
+limits absolute success.
+
+Combining the original three paired scenes and the nine stress scenes gives
+12 blind scenes per policy seed:
+
+| Policy seed | Correct geometry | Same checkpoint, geometry zeroed | Zero-trained |
+|---:|---:|---:|---:|
+| 0 | 6/12 | 3/12 | 3/12 |
+| 1 | 6/12 | 4/12 | 5/12 |
+| 2 | 7/12 | 1/12 | 3/12 |
+| Mean +/- SD | **52.8 +/- 4.8%** | 22.2 +/- 12.7% | 30.6 +/- 9.6% |
+| Descriptive pooled count | **19/36** | 8/36 | 11/36 |
+
+On the complete 12-scene set, correct geometry reaches `2.939 +/- 0.133 cm /
+10.314 +/- 0.755 deg`, compared with `3.495 +/- 0.387 cm / 16.295 +/- 2.534
+deg` after zeroing geometry in the same checkpoint.  Averaging success within
+each scene over policy seeds, correct geometry beats the same-checkpoint
+ablation on seven scenes, loses on zero, and ties on five.  The two-sided exact
+sign-test value on the seven non-tied scenes is `0.015625`.  Against the
+independently trained zero policy the corresponding scene count is 5/0/7
+(`p=0.0625`), so the same-checkpoint intervention remains the primary causal
+comparison.
+
+Machine-readable replication result:
+`outputs/geometry_flow/handled_mug_marker_balanced60_camera_v1/closedloop_multigoal4_seed12_blind_remaining9_replaytol05cm2deg_factorial_v1.json`.
