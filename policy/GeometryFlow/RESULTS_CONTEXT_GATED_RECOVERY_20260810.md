@@ -202,3 +202,39 @@ Held-out shoe-5 results on the 0--18 degree cascade distribution are:
 Epoch 30 is the sole joint-SE(3) candidate promoted to the same seed-100003
 targeted diagnostic. No new blind cohort may be run until that diagnostic
 shows that offline paired-action consistency transfers to closed loop.
+
+## Joint-SE(3) targeted rollout: inconclusive because the gate never entered
+
+The epoch-30 joint candidate was evaluated for 90 policy steps on development
+seed 100003 on the isolated RTX-4090 host. The episode failed, ending at
+5.847 cm / 3.83 degrees, with a minimum translation error of 3.699 cm. This
+single failure is **not** evidence that the joint decoder itself fails online:
+the low-rotation joint head was active in 0/15 action chunks and therefore did
+not generate any executed action in this rollout.
+
+The trace explains why. At chunk 11, the high-rotation head was active at
+4.89 cm / 32.9 degrees camera-estimated error. The next camera observation was
+2.97 cm / 18.8 degrees, just outside the pre-registered joint-head support of
+at most 18 degrees. Nominal execution then drifted to 5.18 cm / 24.5 degrees,
+and the high-rotation head activated again in the final chunk. Privileged
+logging shows that final high-rotation action changed the true rotation from
+22.1 to 3.83 degrees, but the 90-step horizon ended before another observation
+and low-rotation correction could occur. The learned retention contract held:
+the active right gripper stayed closed for all 90 executed steps.
+
+Result log on the simulator host:
+`eval_result/place_shoe_geometry_marker/GeometryFlow.deploy_tagrt_dp3/demo_clean_3d_object_pc_geometry_marker_unseen05/tagrt-jointse3-anchorflow-epoch30-targeted-seed100003-remote4090-90/standard/2026-08-11 03:15:39/episodes.jsonl`
+
+Consequently, the current evidence supports three different decisions:
+
+1. Reject the factorized translation-only action override: it was activated
+   online twice and moved in the wrong task-space direction.
+2. Retain the explicit anchor-flow representation and paired joint-SE(3)
+   decoder as an offline-supported candidate, but do not claim an online gain:
+   the only promoted rollout never exercised that decoder.
+3. Do not open a 400xxx blind cohort or large-scale run yet. First close the
+   recovery-transition coverage on training shoes using actual on-policy
+   camera states, so that high-rotation recovery reliably hands a subsequent
+   observation to the learned low-rotation joint policy within the task
+   horizon. Simulator pose may label these training states and audit outcomes,
+   but it must remain absent from policy inputs.
