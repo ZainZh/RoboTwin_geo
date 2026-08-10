@@ -48,6 +48,45 @@ def _se3_frame_invariants(relation: torch.Tensor) -> torch.Tensor:
     return torch.cat((translation_norm, rotation_angle), dim=-1)
 
 
+def _frame9_rotation_rotvec(relation: torch.Tensor) -> torch.Tensor:
+    """Convert the two-axis frame9 rotation into a differentiable rotvec."""
+
+    if relation.shape[-1] < 9:
+        raise ValueError("frame9 rotation requires at least 9 values")
+    first_raw = relation[..., 3:6]
+    second_raw = relation[..., 6:9]
+    first_norm = torch.linalg.vector_norm(first_raw, dim=-1, keepdim=True)
+    first = F.normalize(first_raw, dim=-1, eps=1.0e-6)
+    second_orthogonal = second_raw - first * torch.sum(
+        first * second_raw, dim=-1, keepdim=True
+    )
+    second_norm = torch.linalg.vector_norm(
+        second_orthogonal, dim=-1, keepdim=True
+    )
+    second = F.normalize(second_orthogonal, dim=-1, eps=1.0e-6)
+    third = torch.cross(first, second, dim=-1)
+    trace = first[..., 0] + second[..., 1] + third[..., 2]
+    cosine = torch.clamp((trace - 1.0) * 0.5, -1.0 + 1.0e-6, 1.0)
+    angle = torch.acos(cosine)
+    skew = torch.stack(
+        (
+            second[..., 2] - third[..., 1],
+            third[..., 0] - first[..., 2],
+            first[..., 1] - second[..., 0],
+        ),
+        dim=-1,
+    )
+    sine = torch.sin(angle)
+    coefficient = torch.where(
+        torch.abs(sine) > 1.0e-4,
+        angle / (2.0 * sine),
+        torch.full_like(angle, 0.5),
+    )
+    rotvec = skew * coefficient.unsqueeze(-1)
+    valid = (first_norm[..., 0] > 0.5) & (second_norm[..., 0] > 0.5)
+    return torch.where(valid.unsqueeze(-1), rotvec, torch.zeros_like(rotvec))
+
+
 class ZeroInitGeometryAdapter(nn.Module):
     """Map geometric point-flow tokens into a safe additive policy condition."""
 
@@ -155,6 +194,97 @@ class ZeroInitGlobalGeometryAdapter(nn.Module):
         return residual
 
 
+class AnchorFlowTranslationHead(nn.Module):
+    """Decode a six-step EEF chunk from explicit per-anchor rigid flow."""
+
+    def __init__(
+        self,
+        in_channels: int,
+        hidden_dim: int,
+        global_dim: int,
+        confidence_dim: int,
+        output_dim: int,
+    ):
+        super().__init__()
+        hidden = int(hidden_dim)
+        self.point_mlp = nn.Sequential(
+            nn.Linear(int(in_channels), hidden),
+            nn.LayerNorm(hidden),
+            nn.Mish(),
+            nn.Linear(hidden, hidden),
+            nn.Mish(),
+        )
+        self.decoder = nn.Sequential(
+            nn.Linear(2 * hidden + int(global_dim) + int(confidence_dim), hidden),
+            nn.LayerNorm(hidden),
+            nn.Mish(),
+            nn.Linear(hidden, int(output_dim)),
+        )
+
+    def forward(
+        self,
+        tokens: torch.Tensor,
+        global_relation: torch.Tensor,
+        confidence: torch.Tensor,
+    ) -> torch.Tensor:
+        encoded = self.point_mlp(tokens)
+        pooled = torch.cat((encoded.mean(dim=1), encoded.max(dim=1).values), dim=-1)
+        return self.decoder(
+            torch.cat((pooled, global_relation, confidence), dim=-1)
+        )
+
+
+class FlowConsistentAnchorTranslationHead(nn.Module):
+    """Factor a chunk into a geometric endpoint and zero-sum timing residual."""
+
+    def __init__(
+        self,
+        in_channels: int,
+        hidden_dim: int,
+        global_dim: int,
+        confidence_dim: int,
+        action_steps: int,
+    ):
+        super().__init__()
+        self.action_steps = int(action_steps)
+        input_dim = 4 * int(in_channels) + int(global_dim) + int(confidence_dim)
+        hidden = int(hidden_dim)
+        self.trunk = nn.Sequential(
+            nn.LayerNorm(input_dim),
+            nn.Linear(input_dim, hidden),
+            nn.Mish(),
+            nn.Linear(hidden, hidden),
+            nn.Mish(),
+        )
+        self.endpoint = nn.Linear(hidden, 2 * 3)
+        self.temporal_residual = nn.Linear(hidden, self.action_steps * 2 * 3)
+
+    def forward(
+        self,
+        tokens: torch.Tensor,
+        global_relation: torch.Tensor,
+        confidence: torch.Tensor,
+    ) -> torch.Tensor:
+        raw_summary = torch.cat(
+            (
+                tokens.mean(dim=1),
+                tokens.std(dim=1, unbiased=False),
+                tokens.min(dim=1).values,
+                tokens.max(dim=1).values,
+                global_relation,
+                confidence,
+            ),
+            dim=-1,
+        )
+        feature = self.trunk(raw_summary)
+        endpoint = self.endpoint(feature).reshape(-1, 2, 3)
+        residual = self.temporal_residual(feature).reshape(
+            -1, self.action_steps, 2, 3
+        )
+        residual = residual - residual.mean(dim=1, keepdim=True)
+        return residual + endpoint[:, None] / float(self.action_steps)
+
+
 class FutureGeometryHead(nn.Module):
     """Predict a future object-flow endpoint from the shared policy context."""
 
@@ -185,6 +315,213 @@ class BinaryGripperHead(nn.Module):
 
     def forward(self, context: torch.Tensor) -> torch.Tensor:
         return self.network(context)
+
+
+class TaskAlignedRotationHead(nn.Module):
+    """Predict active-arm rotvec chunks from shared and signed TAGRT context."""
+
+    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int):
+        super().__init__()
+        self.network = nn.Sequential(
+            nn.LayerNorm(int(input_dim)),
+            nn.Linear(int(input_dim), int(hidden_dim)),
+            nn.Mish(),
+            nn.Linear(int(hidden_dim), int(output_dim)),
+        )
+
+    def forward(self, context: torch.Tensor) -> torch.Tensor:
+        return self.network(context)
+
+
+def _recovery_action_channel_weights(
+    is_recovery: torch.Tensor,
+    active_arm_right: torch.Tensor,
+    *,
+    horizon: int,
+    action_dim: int,
+    rotation_weight: float,
+) -> torch.Tensor:
+    """Mask synthetic recovery supervision to the active-arm rotation axes."""
+
+    if int(action_dim) != 14:
+        raise ValueError("rotation-only recovery currently requires 14D bimanual EEF actions")
+    recovery = is_recovery.reshape(-1) >= 0.5
+    active_right = active_arm_right.reshape(-1) >= 0.5
+    if recovery.shape != active_right.shape:
+        raise ValueError("recovery and active-arm labels must have matching shapes")
+    weights = torch.ones(
+        (len(recovery), int(horizon), int(action_dim)),
+        dtype=is_recovery.dtype,
+        device=is_recovery.device,
+    )
+    if not bool(torch.any(recovery)):
+        return weights
+    weights[recovery] = 0.0
+    left_recovery = recovery & ~active_right
+    right_recovery = recovery & active_right
+    weights[left_recovery, :, 3:6] = float(rotation_weight)
+    weights[right_recovery, :, 10:13] = float(rotation_weight)
+    return weights
+
+
+def _replace_closed_arm_rotations(
+    action: torch.Tensor,
+    rotation_prediction: torch.Tensor,
+    closed_arm_mask: torch.Tensor,
+) -> torch.Tensor:
+    """Replace only closed-arm rotvecs while preserving all other DP3 actions."""
+
+    if action.ndim != 3 or int(action.shape[-1]) != 14:
+        raise ValueError("rotation replacement requires [B, T, 14] actions")
+    expected = (int(action.shape[0]), int(action.shape[1]), 2, 3)
+    if tuple(rotation_prediction.shape) != expected:
+        raise ValueError(
+            "rotation prediction shape mismatch: "
+            f"expected {expected}, got {tuple(rotation_prediction.shape)}"
+        )
+    if tuple(closed_arm_mask.shape) != (int(action.shape[0]), 2):
+        raise ValueError("closed-arm mask must have shape [B, 2]")
+    result = action.clone()
+    left_mask = closed_arm_mask[:, None, 0, None]
+    right_mask = closed_arm_mask[:, None, 1, None]
+    result[..., 3:6] = torch.where(
+        left_mask, rotation_prediction[..., 0, :], result[..., 3:6]
+    )
+    result[..., 10:13] = torch.where(
+        right_mask, rotation_prediction[..., 1, :], result[..., 10:13]
+    )
+    return result
+
+
+def _replace_closed_arm_translations(
+    action: torch.Tensor,
+    translation_prediction: torch.Tensor,
+    closed_arm_mask: torch.Tensor,
+) -> torch.Tensor:
+    """Replace only gated active-arm translations and preserve other channels."""
+
+    if action.ndim != 3 or int(action.shape[-1]) != 14:
+        raise ValueError("translation replacement requires [B, T, 14] actions")
+    expected = (int(action.shape[0]), int(action.shape[1]), 2, 3)
+    if tuple(translation_prediction.shape) != expected:
+        raise ValueError(
+            "translation prediction shape mismatch: "
+            f"expected {expected}, got {tuple(translation_prediction.shape)}"
+        )
+    if tuple(closed_arm_mask.shape) != (int(action.shape[0]), 2):
+        raise ValueError("closed-arm mask must have shape [B, 2]")
+    result = action.clone()
+    result[..., :3] = torch.where(
+        closed_arm_mask[:, None, 0, None],
+        translation_prediction[..., 0, :],
+        result[..., :3],
+    )
+    result[..., 7:10] = torch.where(
+        closed_arm_mask[:, None, 1, None],
+        translation_prediction[..., 1, :],
+        result[..., 7:10],
+    )
+    return result
+
+
+def _active_translation_action_loss(
+    prediction: torch.Tensor,
+    target_action: torch.Tensor,
+    active_arm_right: torch.Tensor,
+    valid_mask: torch.Tensor,
+    endpoint_weight: float = 0.0,
+) -> torch.Tensor:
+    """Supervise only the gated active-arm Cartesian compensation."""
+
+    if prediction.ndim != 4 or tuple(prediction.shape[-2:]) != (2, 3):
+        raise ValueError("translation prediction must have shape [B, T, 2, 3]")
+    if target_action.ndim != 3 or int(target_action.shape[-1]) != 14:
+        raise ValueError("translation target requires [B, T, 14] actions")
+    target_translation = torch.stack(
+        (target_action[..., :3], target_action[..., 7:10]), dim=2
+    )
+    active_right = active_arm_right.reshape(-1).to(
+        device=prediction.device, dtype=torch.long
+    )
+    batch_indices = torch.arange(prediction.shape[0], device=prediction.device)
+    selected_prediction = prediction[batch_indices, :, active_right, :]
+    selected_target = target_translation[batch_indices, :, active_right, :]
+    per_sample = F.mse_loss(
+        selected_prediction, selected_target, reduction="none"
+    ).mean(dim=(1, 2))
+    if float(endpoint_weight) < 0.0:
+        raise ValueError("translation endpoint weight must be non-negative")
+    if float(endpoint_weight) > 0.0:
+        endpoint_loss = F.mse_loss(
+            selected_prediction.sum(dim=1),
+            selected_target.sum(dim=1),
+            reduction="none",
+        ).mean(dim=-1)
+        per_sample = per_sample + float(endpoint_weight) * endpoint_loss
+    valid = valid_mask.reshape(-1).to(
+        device=prediction.device, dtype=prediction.dtype
+    )
+    if int(valid.shape[0]) != int(prediction.shape[0]):
+        raise ValueError("translation validity labels must match batch size")
+    return torch.sum(per_sample * valid) / torch.sum(valid).clamp_min(1.0)
+
+
+def _active_rotation_action_loss(
+    prediction: torch.Tensor,
+    target_action: torch.Tensor,
+    active_arm_right: torch.Tensor,
+    is_recovery: torch.Tensor | None = None,
+    recovery_weight: float = 1.0,
+    valid_mask: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Supervise the task-active arm without leaking simulator pose at inference."""
+
+    if prediction.ndim != 4 or tuple(prediction.shape[-2:]) != (2, 3):
+        raise ValueError("rotation prediction must have shape [B, T, 2, 3]")
+    if target_action.ndim != 3 or int(target_action.shape[-1]) != 14:
+        raise ValueError("rotation target requires [B, T, 14] actions")
+    if tuple(prediction.shape[:2]) != tuple(target_action.shape[:2]):
+        raise ValueError("rotation prediction and action target horizons must match")
+    active_right = active_arm_right.reshape(-1).to(
+        device=prediction.device, dtype=torch.bool
+    )
+    if int(active_right.shape[0]) != int(prediction.shape[0]):
+        raise ValueError("active-arm labels must match the batch size")
+    target_rotation = torch.stack(
+        (target_action[..., 3:6], target_action[..., 10:13]), dim=2
+    )
+    batch_indices = torch.arange(prediction.shape[0], device=prediction.device)
+    arm_indices = active_right.to(dtype=torch.long)
+    selected_prediction = prediction[batch_indices, :, arm_indices, :]
+    selected_target = target_rotation[batch_indices, :, arm_indices, :]
+    per_sample = F.mse_loss(
+        selected_prediction, selected_target, reduction="none"
+    ).mean(dim=(1, 2))
+    sample_weight = torch.ones_like(per_sample)
+    if valid_mask is not None:
+        valid = valid_mask.reshape(-1).to(
+            device=prediction.device, dtype=prediction.dtype
+        )
+        if int(valid.shape[0]) != int(prediction.shape[0]):
+            raise ValueError("validity labels must match the batch size")
+        sample_weight = sample_weight * valid.clamp(0.0, 1.0)
+    if is_recovery is None:
+        return torch.sum(per_sample * sample_weight) / torch.sum(
+            sample_weight
+        ).clamp_min(1.0)
+    if float(recovery_weight) <= 0.0:
+        raise ValueError("recovery_weight must be positive")
+    recovery = is_recovery.reshape(-1).to(
+        device=prediction.device, dtype=prediction.dtype
+    )
+    if int(recovery.shape[0]) != int(prediction.shape[0]):
+        raise ValueError("recovery labels must match the batch size")
+    sample_weight = sample_weight * (
+        1.0 + (float(recovery_weight) - 1.0) * recovery.clamp(0.0, 1.0)
+    )
+    return torch.sum(per_sample * sample_weight) / torch.sum(
+        sample_weight
+    ).clamp_min(1.0)
 
 
 class DP3(BasePolicy):
@@ -238,6 +575,35 @@ class DP3(BasePolicy):
         binary_gripper_retention_closed_threshold=0.0,
         binary_gripper_retention_current_only=False,
         binary_gripper_retention_invariant=False,
+        recovery_rotation_only_loss=False,
+        recovery_rotation_loss_weight=4.0,
+        rotation_action_head_hidden_dim=0,
+        rotation_action_head_loss_weight=0.0,
+        rotation_action_head_recovery_weight=1.0,
+        rotation_action_head_axis_aligned=False,
+        rotation_action_head_geometry_only=False,
+        rotation_action_head_gated=False,
+        rotation_action_gate_geometry_only=None,
+        rotation_action_gate_loss_weight=0.0,
+        rotation_action_gate_positive_weight=8.0,
+        rotation_action_gate_threshold=0.5,
+        rotation_action_support_min_deg=0.0,
+        rotation_action_support_max_deg=180.0,
+        translation_recovery_support_min_m=0.0,
+        translation_recovery_support_max_m=0.0,
+        translation_recovery_rotation_max_deg=180.0,
+        translation_recovery_geometry_scale_m=1.0,
+        rotation_action_translation_head_hidden_dim=0,
+        rotation_action_translation_geometry_only=False,
+        rotation_action_translation_current_only=False,
+        rotation_action_translation_translation_only=False,
+        rotation_action_translation_apply_on_high_rotation=False,
+        rotation_action_translation_anchor_flow_key=None,
+        rotation_action_translation_flow_consistent=False,
+        rotation_action_translation_endpoint_loss_weight=0.0,
+        rotation_action_translation_loss_weight=0.0,
+        rotation_action_head_geometry_key=None,
+        rotation_action_head_geometry_confidence_key=None,
         # parameters passed to step
         **kwargs,
     ):
@@ -301,6 +667,161 @@ class DP3(BasePolicy):
         self.binary_gripper_retention_invariant = bool(
             binary_gripper_retention_invariant
         )
+        self.recovery_rotation_only_loss = bool(recovery_rotation_only_loss)
+        self.recovery_rotation_loss_weight = float(
+            recovery_rotation_loss_weight
+        )
+        if self.recovery_rotation_loss_weight <= 0.0:
+            raise ValueError("recovery_rotation_loss_weight must be positive")
+        self.rotation_action_head_hidden_dim = int(rotation_action_head_hidden_dim)
+        self.rotation_action_head_loss_weight = float(rotation_action_head_loss_weight)
+        self.rotation_action_head_recovery_weight = float(
+            rotation_action_head_recovery_weight
+        )
+        self.rotation_action_head_axis_aligned = bool(
+            rotation_action_head_axis_aligned
+        )
+        self.rotation_action_head_geometry_only = bool(
+            rotation_action_head_geometry_only
+        )
+        self.rotation_action_head_gated = bool(rotation_action_head_gated)
+        self.rotation_action_gate_geometry_only = bool(
+            self.rotation_action_head_geometry_only
+            if rotation_action_gate_geometry_only is None
+            else rotation_action_gate_geometry_only
+        )
+        self.rotation_action_gate_loss_weight = float(
+            rotation_action_gate_loss_weight
+        )
+        self.rotation_action_gate_positive_weight = float(
+            rotation_action_gate_positive_weight
+        )
+        self.rotation_action_gate_threshold = float(rotation_action_gate_threshold)
+        self.rotation_action_support_min_deg = float(
+            rotation_action_support_min_deg
+        )
+        self.rotation_action_support_max_deg = float(
+            rotation_action_support_max_deg
+        )
+        self.translation_recovery_support_min_m = float(
+            translation_recovery_support_min_m
+        )
+        self.translation_recovery_support_max_m = float(
+            translation_recovery_support_max_m
+        )
+        self.translation_recovery_rotation_max_deg = float(
+            translation_recovery_rotation_max_deg
+        )
+        self.translation_recovery_geometry_scale_m = float(
+            translation_recovery_geometry_scale_m
+        )
+        self.rotation_action_translation_head_hidden_dim = int(
+            rotation_action_translation_head_hidden_dim
+        )
+        self.rotation_action_translation_geometry_only = bool(
+            rotation_action_translation_geometry_only
+        )
+        self.rotation_action_translation_current_only = bool(
+            rotation_action_translation_current_only
+        )
+        self.rotation_action_translation_translation_only = bool(
+            rotation_action_translation_translation_only
+        )
+        self.rotation_action_translation_apply_on_high_rotation = bool(
+            rotation_action_translation_apply_on_high_rotation
+        )
+        self.rotation_action_translation_anchor_flow_key = (
+            rotation_action_translation_anchor_flow_key
+        )
+        self.rotation_action_translation_flow_consistent = bool(
+            rotation_action_translation_flow_consistent
+        )
+        self.rotation_action_translation_endpoint_loss_weight = float(
+            rotation_action_translation_endpoint_loss_weight
+        )
+        self.rotation_action_translation_loss_weight = float(
+            rotation_action_translation_loss_weight
+        )
+        self.rotation_action_head_geometry_key = rotation_action_head_geometry_key
+        self.rotation_action_head_geometry_confidence_key = (
+            rotation_action_head_geometry_confidence_key
+        )
+        if self.rotation_action_head_loss_weight < 0.0:
+            raise ValueError("rotation_action_head_loss_weight must be non-negative")
+        if self.rotation_action_head_recovery_weight <= 0.0:
+            raise ValueError("rotation_action_head_recovery_weight must be positive")
+        if self.rotation_action_gate_loss_weight < 0.0:
+            raise ValueError("rotation_action_gate_loss_weight must be non-negative")
+        if self.rotation_action_gate_positive_weight <= 0.0:
+            raise ValueError("rotation_action_gate_positive_weight must be positive")
+        if not 0.0 <= self.rotation_action_gate_threshold <= 1.0:
+            raise ValueError("rotation_action_gate_threshold must be in [0, 1]")
+        if not (
+            0.0
+            <= self.rotation_action_support_min_deg
+            <= self.rotation_action_support_max_deg
+            <= 180.0
+        ):
+            raise ValueError(
+                "rotation action support must satisfy 0 <= min <= max <= 180"
+            )
+        if not (
+            0.0
+            <= self.translation_recovery_support_min_m
+            <= self.translation_recovery_support_max_m
+        ):
+            raise ValueError(
+                "translation recovery support must satisfy 0 <= min <= max"
+            )
+        if not 0.0 <= self.translation_recovery_rotation_max_deg <= 180.0:
+            raise ValueError(
+                "translation recovery rotation maximum must be in [0, 180]"
+            )
+        if self.translation_recovery_geometry_scale_m <= 0.0:
+            raise ValueError(
+                "translation recovery geometry scale must be positive"
+            )
+        if self.rotation_action_translation_loss_weight < 0.0:
+            raise ValueError(
+                "rotation_action_translation_loss_weight must be non-negative"
+            )
+        if self.rotation_action_translation_endpoint_loss_weight < 0.0:
+            raise ValueError(
+                "rotation_action_translation_endpoint_loss_weight must be non-negative"
+            )
+        rotation_action_head_enabled = self.rotation_action_head_hidden_dim > 0
+        if rotation_action_head_enabled:
+            if not obs_as_global_cond:
+                raise ValueError("rotation action head requires obs_as_global_cond")
+            if not self.binary_gripper_retention_state_indices:
+                raise ValueError(
+                    "rotation action head requires closed-gripper routing state"
+                )
+            if self.rotation_action_head_geometry_key not in obs_shape_meta:
+                raise KeyError("rotation action head geometry key is missing")
+            if (
+                self.rotation_action_head_geometry_confidence_key is not None
+                and self.rotation_action_head_geometry_confidence_key
+                not in obs_shape_meta
+            ):
+                raise KeyError("rotation action head confidence key is missing")
+            if self.rotation_action_head_gated and not self.rotation_action_head_axis_aligned:
+                raise ValueError("gated rotation action head requires axis alignment")
+        elif self.rotation_action_head_gated:
+            raise ValueError("rotation action gating requires a rotation action head")
+        if self.rotation_action_translation_head_hidden_dim > 0 and not (
+            rotation_action_head_enabled and self.rotation_action_head_gated
+        ):
+            raise ValueError(
+                "translation compensation head requires a gated rotation action head"
+            )
+        if (
+            self.rotation_action_translation_translation_only
+            and not self.rotation_action_translation_geometry_only
+        ):
+            raise ValueError(
+                "translation-only recovery context requires geometry-only decoding"
+            )
         if len(set(self.binary_gripper_indices)) != len(
             self.binary_gripper_indices
         ):
@@ -411,6 +932,22 @@ class DP3(BasePolicy):
                 )
             if self.global_geometry_confidence_key != self.geometry_confidence_key:
                 obs_dict.pop(self.global_geometry_confidence_key)
+
+        anchor_flow_shape = None
+        if self.rotation_action_translation_anchor_flow_key is not None:
+            if self.rotation_action_translation_anchor_flow_key not in obs_dict:
+                raise KeyError(
+                    "translation anchor-flow key is missing from shape_meta: "
+                    f"{self.rotation_action_translation_anchor_flow_key!r}"
+                )
+            anchor_flow_shape = tuple(
+                obs_dict.pop(self.rotation_action_translation_anchor_flow_key)
+            )
+            if len(anchor_flow_shape) != 2:
+                raise ValueError(
+                    "translation anchor flow must be [points, channels], got "
+                    f"{anchor_flow_shape}"
+                )
 
         aux_geometry_shape = None
         if self.aux_geometry_key is not None:
@@ -540,6 +1077,169 @@ class DP3(BasePolicy):
                 f"retention_invariant={self.binary_gripper_retention_invariant}",
                 "yellow",
             )
+        rotation_action_head = None
+        rotation_action_gate = None
+        rotation_action_translation_head = None
+        if rotation_action_head_enabled:
+            rotation_geometry_shape = tuple(
+                obs_shape_meta[self.rotation_action_head_geometry_key]["shape"]
+            )
+            if len(rotation_geometry_shape) != 1:
+                raise ValueError("rotation action head geometry must be a vector")
+            if self.rotation_action_head_geometry_only:
+                # Translation plus signed rotvec, optionally with confidence.
+                rotation_step_dim = 6
+                if self.rotation_action_head_geometry_confidence_key is not None:
+                    rotation_step_dim += int(
+                        math.prod(
+                            obs_shape_meta[
+                                self.rotation_action_head_geometry_confidence_key
+                            ]["shape"]
+                        )
+                    )
+                rotation_context_dim = int(n_obs_steps) * rotation_step_dim
+            else:
+                rotation_context_dim = int(obs_feature_dim) * int(n_obs_steps)
+                rotation_context_dim += int(n_obs_steps) * int(
+                    math.prod(rotation_geometry_shape)
+                )
+                if self.rotation_action_head_geometry_confidence_key is not None:
+                    rotation_context_dim += int(n_obs_steps) * int(
+                        math.prod(
+                            obs_shape_meta[
+                                self.rotation_action_head_geometry_confidence_key
+                            ]["shape"]
+                        )
+                    )
+            rotation_action_head = TaskAlignedRotationHead(
+                input_dim=rotation_context_dim,
+                hidden_dim=self.rotation_action_head_hidden_dim,
+                output_dim=int(n_action_steps)
+                * (2 if self.rotation_action_head_axis_aligned else 6),
+            )
+            if self.rotation_action_head_gated:
+                gate_context_dim = rotation_context_dim
+                if (
+                    self.rotation_action_gate_geometry_only
+                    != self.rotation_action_head_geometry_only
+                ):
+                    if self.rotation_action_gate_geometry_only:
+                        gate_step_dim = 6
+                        if (
+                            self.rotation_action_head_geometry_confidence_key
+                            is not None
+                        ):
+                            gate_step_dim += int(
+                                math.prod(
+                                    obs_shape_meta[
+                                        self.rotation_action_head_geometry_confidence_key
+                                    ]["shape"]
+                                )
+                            )
+                        gate_context_dim = int(n_obs_steps) * gate_step_dim
+                    else:
+                        gate_context_dim = int(obs_feature_dim) * int(n_obs_steps)
+                        gate_context_dim += int(n_obs_steps) * int(
+                            math.prod(rotation_geometry_shape)
+                        )
+                        if (
+                            self.rotation_action_head_geometry_confidence_key
+                            is not None
+                        ):
+                            gate_context_dim += int(n_obs_steps) * int(
+                                math.prod(
+                                    obs_shape_meta[
+                                        self.rotation_action_head_geometry_confidence_key
+                                    ]["shape"]
+                                )
+                            )
+                rotation_action_gate = TaskAlignedRotationHead(
+                    input_dim=gate_context_dim,
+                    hidden_dim=min(self.rotation_action_head_hidden_dim, 64),
+                    output_dim=1,
+                )
+            if self.rotation_action_translation_head_hidden_dim > 0:
+                if anchor_flow_shape is not None:
+                    confidence_dim = 0
+                    if self.rotation_action_head_geometry_confidence_key is not None:
+                        confidence_dim = int(
+                            math.prod(
+                                obs_shape_meta[
+                                    self.rotation_action_head_geometry_confidence_key
+                                ]["shape"]
+                            )
+                        )
+                    if self.rotation_action_translation_flow_consistent:
+                        rotation_action_translation_head = (
+                            FlowConsistentAnchorTranslationHead(
+                                in_channels=int(anchor_flow_shape[-1]),
+                                hidden_dim=self.rotation_action_translation_head_hidden_dim,
+                                global_dim=int(math.prod(rotation_geometry_shape)),
+                                confidence_dim=confidence_dim,
+                                action_steps=int(n_action_steps),
+                            )
+                        )
+                    else:
+                        rotation_action_translation_head = AnchorFlowTranslationHead(
+                            in_channels=int(anchor_flow_shape[-1]),
+                            hidden_dim=self.rotation_action_translation_head_hidden_dim,
+                            global_dim=int(math.prod(rotation_geometry_shape)),
+                            confidence_dim=confidence_dim,
+                            output_dim=int(n_action_steps) * 6,
+                        )
+                elif self.rotation_action_translation_geometry_only:
+                    translation_step_dim = (
+                        3
+                        if self.rotation_action_translation_translation_only
+                        else 6
+                    )
+                    if self.rotation_action_head_geometry_confidence_key is not None:
+                        translation_step_dim += int(
+                            math.prod(
+                                obs_shape_meta[
+                                    self.rotation_action_head_geometry_confidence_key
+                                ]["shape"]
+                            )
+                        )
+                    translation_context_dim = translation_step_dim * (
+                        1
+                        if self.rotation_action_translation_current_only
+                        else int(n_obs_steps)
+                    )
+                else:
+                    translation_context_steps = (
+                        1
+                        if self.rotation_action_translation_current_only
+                        else int(n_obs_steps)
+                    )
+                    translation_context_dim = int(obs_feature_dim) * translation_context_steps
+                    translation_context_dim += translation_context_steps * int(
+                        math.prod(rotation_geometry_shape)
+                    )
+                    if self.rotation_action_head_geometry_confidence_key is not None:
+                        translation_context_dim += translation_context_steps * int(
+                            math.prod(
+                                obs_shape_meta[
+                                    self.rotation_action_head_geometry_confidence_key
+                                ]["shape"]
+                            )
+                        )
+                if anchor_flow_shape is None:
+                    rotation_action_translation_head = TaskAlignedRotationHead(
+                        input_dim=translation_context_dim,
+                        hidden_dim=self.rotation_action_translation_head_hidden_dim,
+                        output_dim=int(n_action_steps) * 6,
+                    )
+            cprint(
+                "[DP3] task-aligned rotation head: "
+                f"geometry={self.rotation_action_head_geometry_key}, "
+                f"steps={n_action_steps}, weight={self.rotation_action_head_loss_weight}, "
+                f"axis_aligned={self.rotation_action_head_axis_aligned}, "
+                f"geometry_only={self.rotation_action_head_geometry_only}, "
+                f"gated={self.rotation_action_head_gated}, "
+                f"gate_geometry_only={self.rotation_action_gate_geometry_only}",
+                "yellow",
+            )
         input_dim = action_dim + obs_feature_dim
         global_cond_dim = None
         if obs_as_global_cond:
@@ -580,6 +1280,9 @@ class DP3(BasePolicy):
         self.aux_geometry_head = aux_geometry_head
         self.binary_gripper_head = binary_gripper_head
         self.binary_gripper_retention_head = binary_gripper_retention_head
+        self.rotation_action_head = rotation_action_head
+        self.rotation_action_gate = rotation_action_gate
+        self.rotation_action_translation_head = rotation_action_translation_head
         self.aux_geometry_shape = aux_geometry_shape
         self.model = model
         self.noise_scheduler = noise_scheduler
@@ -687,6 +1390,275 @@ class DP3(BasePolicy):
         if self.binary_gripper_retention_head is not None:
             for parameter in self.binary_gripper_retention_head.parameters():
                 parameter.requires_grad_(False)
+
+    def freeze_base_for_rotation_action(self) -> None:
+        if self.rotation_action_head is None:
+            raise RuntimeError("Cannot freeze for rotation action: head is disabled")
+        for parameter in self.parameters():
+            parameter.requires_grad_(False)
+        for parameter in self.rotation_action_head.parameters():
+            parameter.requires_grad_(True)
+        if self.rotation_action_gate is not None:
+            for parameter in self.rotation_action_gate.parameters():
+                parameter.requires_grad_(True)
+        if self.rotation_action_translation_head is not None:
+            for parameter in self.rotation_action_translation_head.parameters():
+                parameter.requires_grad_(True)
+
+    def freeze_base_for_recovery_translation(self) -> None:
+        if self.rotation_action_translation_head is None:
+            raise RuntimeError("Cannot freeze for recovery translation: head is disabled")
+        for parameter in self.parameters():
+            parameter.requires_grad_(False)
+        for parameter in self.rotation_action_translation_head.parameters():
+            parameter.requires_grad_(True)
+
+    def freeze_base_for_rotation_gate(self) -> None:
+        """Train recovery-state recognition without changing its action decoder."""
+
+        if self.rotation_action_gate is None:
+            raise RuntimeError("Cannot freeze for rotation gate: gate is disabled")
+        for parameter in self.parameters():
+            parameter.requires_grad_(False)
+        for parameter in self.rotation_action_gate.parameters():
+            parameter.requires_grad_(True)
+
+    def _rotation_action_context(
+        self,
+        encoded_features: torch.Tensor,
+        observations: Dict[str, torch.Tensor],
+        batch_size: int,
+        *,
+        geometry_only: bool | None = None,
+        current_only: bool = False,
+    ) -> torch.Tensor:
+        geometry_only = (
+            self.rotation_action_head_geometry_only
+            if geometry_only is None
+            else bool(geometry_only)
+        )
+        geometry_sequence = observations[self.rotation_action_head_geometry_key][
+            :, : self.n_obs_steps
+        ].reshape(int(batch_size), self.n_obs_steps, -1)
+        if geometry_only:
+            raw_geometry = self.normalizer[
+                self.rotation_action_head_geometry_key
+            ].unnormalize(geometry_sequence)
+            if current_only:
+                raw_geometry = raw_geometry[:, -1:]
+            context = [
+                raw_geometry[..., :3],
+                _frame9_rotation_rotvec(raw_geometry),
+            ]
+        else:
+            context = [
+                encoded_features.reshape(int(batch_size), -1),
+                geometry_sequence.reshape(int(batch_size), -1),
+            ]
+        if self.rotation_action_head_geometry_confidence_key is not None:
+            confidence = observations[
+                self.rotation_action_head_geometry_confidence_key
+            ][:, : self.n_obs_steps].reshape(int(batch_size), -1)
+            if geometry_only:
+                confidence = self.normalizer[
+                    self.rotation_action_head_geometry_confidence_key
+                ].unnormalize(
+                    confidence.reshape(int(batch_size), self.n_obs_steps, -1)
+                )
+                if current_only:
+                    confidence = confidence[:, -1:]
+                context.append(confidence)
+            else:
+                context.append(confidence)
+        return torch.cat(
+            [value.reshape(int(batch_size), -1) for value in context], dim=-1
+        )
+
+    def _rotation_action_gate_logits(
+        self,
+        encoded_features: torch.Tensor,
+        observations: Dict[str, torch.Tensor],
+        batch_size: int,
+    ) -> torch.Tensor | None:
+        if self.rotation_action_gate is None:
+            return None
+        return self.rotation_action_gate(
+            self._rotation_action_context(
+                encoded_features,
+                observations,
+                int(batch_size),
+                geometry_only=self.rotation_action_gate_geometry_only,
+            )
+        ).reshape(int(batch_size))
+
+    def _rotation_action_translation_prediction(
+        self,
+        encoded_features: torch.Tensor,
+        observations: Dict[str, torch.Tensor],
+        batch_size: int,
+    ) -> torch.Tensor | None:
+        if self.rotation_action_translation_head is None:
+            return None
+        if self.rotation_action_translation_anchor_flow_key is not None:
+            tokens = observations[self.rotation_action_translation_anchor_flow_key][
+                :, self.n_obs_steps - 1
+            ]
+            geometry = observations[self.rotation_action_head_geometry_key][
+                :, self.n_obs_steps - 1
+            ].reshape(int(batch_size), -1)
+            if self.rotation_action_head_geometry_confidence_key is None:
+                confidence = torch.empty(
+                    (int(batch_size), 0),
+                    dtype=tokens.dtype,
+                    device=tokens.device,
+                )
+            else:
+                confidence = observations[
+                    self.rotation_action_head_geometry_confidence_key
+                ][:, self.n_obs_steps - 1].reshape(int(batch_size), -1)
+            prediction = self.rotation_action_translation_head(
+                tokens, geometry, confidence
+            )
+            return prediction.reshape(int(batch_size), self.n_action_steps, 2, 3)
+        if self.rotation_action_translation_geometry_only:
+            if self.rotation_action_translation_translation_only:
+                geometry = observations[self.rotation_action_head_geometry_key][
+                    :, : self.n_obs_steps
+                ].reshape(int(batch_size), self.n_obs_steps, -1)
+                geometry = self.normalizer[
+                    self.rotation_action_head_geometry_key
+                ].unnormalize(geometry)
+                if self.rotation_action_translation_current_only:
+                    geometry = geometry[:, -1:]
+                context_parts = [geometry[..., :3]]
+                if self.rotation_action_head_geometry_confidence_key is not None:
+                    confidence = observations[
+                        self.rotation_action_head_geometry_confidence_key
+                    ][:, : self.n_obs_steps].reshape(
+                        int(batch_size), self.n_obs_steps, -1
+                    )
+                    confidence = self.normalizer[
+                        self.rotation_action_head_geometry_confidence_key
+                    ].unnormalize(confidence)
+                    if self.rotation_action_translation_current_only:
+                        confidence = confidence[:, -1:]
+                    context_parts.append(confidence)
+                context = torch.cat(
+                    [part.reshape(int(batch_size), -1) for part in context_parts],
+                    dim=-1,
+                )
+            else:
+                context = self._rotation_action_context(
+                    encoded_features,
+                    observations,
+                    int(batch_size),
+                    geometry_only=True,
+                    current_only=self.rotation_action_translation_current_only,
+                )
+            prediction = self.rotation_action_translation_head(context)
+            return prediction.reshape(int(batch_size), self.n_action_steps, 2, 3)
+        encoded_context = encoded_features.reshape(
+            int(batch_size), self.n_obs_steps, -1
+        )
+        geometry = observations[self.rotation_action_head_geometry_key][
+            :, : self.n_obs_steps
+        ].reshape(int(batch_size), self.n_obs_steps, -1)
+        if self.rotation_action_translation_current_only:
+            encoded_context = encoded_context[:, -1:]
+            geometry = geometry[:, -1:]
+        context = [
+            encoded_context.reshape(int(batch_size), -1),
+            geometry.reshape(int(batch_size), -1),
+        ]
+        if self.rotation_action_head_geometry_confidence_key is not None:
+            confidence = observations[
+                self.rotation_action_head_geometry_confidence_key
+            ][:, : self.n_obs_steps].reshape(
+                int(batch_size), self.n_obs_steps, -1
+            )
+            if self.rotation_action_translation_current_only:
+                confidence = confidence[:, -1:]
+            context.append(confidence.reshape(int(batch_size), -1))
+        prediction = self.rotation_action_translation_head(
+            torch.cat(context, dim=-1)
+        )
+        return prediction.reshape(int(batch_size), self.n_action_steps, 2, 3)
+
+    def _rotation_action_prediction(
+        self,
+        encoded_features: torch.Tensor,
+        observations: Dict[str, torch.Tensor],
+        batch_size: int,
+    ) -> torch.Tensor | None:
+        if self.rotation_action_head is None:
+            return None
+        prediction = self.rotation_action_head(
+            self._rotation_action_context(
+                encoded_features, observations, int(batch_size)
+            )
+        )
+        if self.rotation_action_head_axis_aligned:
+            magnitude = prediction.reshape(
+                int(batch_size), self.n_action_steps, 2, 1
+            )
+            axis, _valid = self._rotation_action_axis(observations, batch_size)
+            return magnitude * axis[:, None, None, :]
+        return prediction.reshape(int(batch_size), self.n_action_steps, 2, 3)
+
+    def _rotation_action_axis(
+        self,
+        observations: Dict[str, torch.Tensor],
+        batch_size: int,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        relation = observations[self.rotation_action_head_geometry_key][
+            :, self.n_obs_steps - 1
+        ].reshape(int(batch_size), -1)
+        relation = self.normalizer[
+            self.rotation_action_head_geometry_key
+        ].unnormalize(relation)
+        rotvec = _frame9_rotation_rotvec(relation)
+        magnitude = torch.linalg.vector_norm(rotvec, dim=-1)
+        valid = magnitude > 1.0e-5
+        if self.rotation_action_head_geometry_confidence_key is not None:
+            confidence = observations[
+                self.rotation_action_head_geometry_confidence_key
+            ][:, self.n_obs_steps - 1].reshape(int(batch_size), -1)
+            confidence = self.normalizer[
+                self.rotation_action_head_geometry_confidence_key
+            ].unnormalize(confidence)
+            valid = valid & (confidence.mean(dim=-1) >= 0.5)
+        axis = F.normalize(rotvec, dim=-1, eps=1.0e-6)
+        return axis, valid
+
+    def _recovery_geometry_valid(
+        self,
+        observations: Dict[str, torch.Tensor],
+        batch_size: int,
+    ) -> torch.Tensor:
+        """Validate a camera-derived SE(3) relation without requiring rotation.
+
+        Translation-only recovery remains meaningful when the remaining
+        rotation is exactly zero, so it must not inherit the non-zero-axis
+        requirement used by the rotation decoder.
+        """
+
+        relation = observations[self.rotation_action_head_geometry_key][
+            :, self.n_obs_steps - 1
+        ].reshape(int(batch_size), -1)
+        relation = self.normalizer[
+            self.rotation_action_head_geometry_key
+        ].unnormalize(relation)
+        valid = torch.isfinite(relation).all(dim=-1)
+        if self.rotation_action_head_geometry_confidence_key is not None:
+            confidence = observations[
+                self.rotation_action_head_geometry_confidence_key
+            ][:, self.n_obs_steps - 1].reshape(int(batch_size), -1)
+            confidence = self.normalizer[
+                self.rotation_action_head_geometry_confidence_key
+            ].unnormalize(confidence)
+            valid = valid & torch.isfinite(confidence).all(dim=-1)
+            valid = valid & (confidence.mean(dim=-1) >= 0.5)
+        return valid
 
     def _binary_gripper_geometry_context(
         self,
@@ -893,6 +1865,9 @@ class DP3(BasePolicy):
         local_cond = None
         global_cond = None
         binary_gripper_logits = None
+        rotation_action_prediction = None
+        rotation_action_gate_logits = None
+        rotation_action_translation_prediction = None
         if self.obs_as_global_cond:
             # condition through global feature
             this_nobs = dict_apply(nobs, lambda x: x[:, :To, ...].reshape(-1, *x.shape[2:]))
@@ -902,6 +1877,15 @@ class DP3(BasePolicy):
                 binary_gripper_logits = self._binary_gripper_logits(
                     nobs_features, nobs, B
                 )
+            rotation_action_prediction = self._rotation_action_prediction(
+                nobs_features, nobs, B
+            )
+            rotation_action_gate_logits = self._rotation_action_gate_logits(
+                nobs_features, nobs, B
+            )
+            rotation_action_translation_prediction = (
+                self._rotation_action_translation_prediction(nobs_features, nobs, B)
+            )
             if "cross_attention" in self.condition_type:
                 # treat as a sequence
                 global_cond = nobs_features.reshape(B, self.n_obs_steps, -1)
@@ -950,11 +1934,92 @@ class DP3(BasePolicy):
                 torch.ones_like(binary_gripper_probability),
             )
             action[:, :, list(self.binary_gripper_indices)] = command
+        # Keep the policy-generated motion available to a deployment-time
+        # temporal debounce. This snapshot already includes learned binary
+        # gripper commands but precedes the factorized recovery replacement.
+        action_before_rotation_recovery = action.clone()
+        rotation_action_active = None
+        translation_recovery_active = None
+        if rotation_action_prediction is not None:
+            retention_active, _current_gripper_state = (
+                self._binary_gripper_retention_mask(nobs, B)
+            )
+            _rotation_axis, rotation_geometry_valid = self._rotation_action_axis(
+                nobs, B
+            )
+            relation = nobs[self.rotation_action_head_geometry_key][
+                :, self.n_obs_steps - 1
+            ].reshape(B, -1)
+            relation = self.normalizer[
+                self.rotation_action_head_geometry_key
+            ].unnormalize(relation)
+            rotation_geometry_deg = torch.rad2deg(
+                torch.linalg.vector_norm(
+                    _frame9_rotation_rotvec(relation), dim=-1
+                )
+            )
+            translation_geometry_m = torch.linalg.vector_norm(
+                relation[:, :3], dim=-1
+            ) * self.translation_recovery_geometry_scale_m
+            rotation_geometry_valid = rotation_geometry_valid & (
+                rotation_geometry_deg >= self.rotation_action_support_min_deg
+            ) & (
+                rotation_geometry_deg <= self.rotation_action_support_max_deg
+            )
+            rotation_action_active = (
+                retention_active & rotation_geometry_valid[:, None]
+            )
+            translation_recovery_enabled = (
+                self.translation_recovery_support_max_m > 0.0
+            )
+            translation_geometry_valid = self._recovery_geometry_valid(nobs, B)
+            translation_geometry_valid = translation_geometry_valid & (
+                translation_geometry_m >= self.translation_recovery_support_min_m
+            ) & (
+                translation_geometry_m <= self.translation_recovery_support_max_m
+            ) & (
+                rotation_geometry_deg <= self.translation_recovery_rotation_max_deg
+            )
+            if not translation_recovery_enabled:
+                translation_geometry_valid = torch.zeros_like(
+                    translation_geometry_valid, dtype=torch.bool
+                )
+            translation_recovery_active = (
+                retention_active & translation_geometry_valid[:, None]
+            )
+            if rotation_action_gate_logits is not None:
+                gate_active = (
+                    torch.sigmoid(rotation_action_gate_logits)
+                    >= self.rotation_action_gate_threshold
+                )
+                rotation_action_active = rotation_action_active & gate_active[:, None]
+                translation_recovery_active = (
+                    translation_recovery_active & gate_active[:, None]
+                )
+            action = _replace_closed_arm_rotations(
+                action, rotation_action_prediction, rotation_action_active
+            )
+            if rotation_action_translation_prediction is not None:
+                translation_action_active = translation_recovery_active
+                if self.rotation_action_translation_apply_on_high_rotation:
+                    # Optional legacy behavior for heads explicitly trained to
+                    # compensate translation during high-rotation recovery.
+                    # Low-rotation stall heads keep this disabled so decoder
+                    # duties remain orthogonal.
+                    translation_action_active = (
+                        translation_action_active | rotation_action_active
+                    )
+                action = _replace_closed_arm_translations(
+                    action,
+                    rotation_action_translation_prediction,
+                    translation_action_active,
+                )
 
         # get prediction
         result = {
             "action": action,
             "action_pred": action_pred,
+            "action_before_rotation_recovery": action_before_rotation_recovery,
         }
         if aux_geometry_pred is not None:
             result["aux_geometry_pred_normalized"] = aux_geometry_pred
@@ -980,6 +2045,29 @@ class DP3(BasePolicy):
                     retention_state
                 )
                 result["binary_gripper_retention_geometry"] = retention_geometry
+        if rotation_action_prediction is not None:
+            result["rotation_action_head_prediction"] = rotation_action_prediction
+            result["rotation_action_head_active"] = rotation_action_active
+            result["rotation_action_geometry_rotation_deg"] = (
+                rotation_geometry_deg
+            )
+            result["rotation_action_geometry_translation_m"] = (
+                translation_geometry_m
+            )
+            result["translation_recovery_head_active"] = (
+                translation_recovery_active
+            )
+            result["recovery_action_head_active"] = (
+                rotation_action_active | translation_recovery_active
+            )
+        if rotation_action_gate_logits is not None:
+            result["rotation_action_gate_probability"] = torch.sigmoid(
+                rotation_action_gate_logits
+            )
+        if rotation_action_translation_prediction is not None:
+            result["rotation_action_translation_prediction"] = (
+                rotation_action_translation_prediction
+            )
 
         return result
 
@@ -1002,6 +2090,9 @@ class DP3(BasePolicy):
         local_cond = None
         global_cond = None
         binary_gripper_logits = None
+        rotation_action_prediction = None
+        rotation_action_gate_logits = None
+        rotation_action_translation_prediction = None
         trajectory = nactions
         cond_data = trajectory
 
@@ -1016,6 +2107,17 @@ class DP3(BasePolicy):
                 binary_gripper_logits = self._binary_gripper_logits(
                     nobs_features, nobs, batch_size
                 )
+            rotation_action_prediction = self._rotation_action_prediction(
+                nobs_features, nobs, batch_size
+            )
+            rotation_action_gate_logits = self._rotation_action_gate_logits(
+                nobs_features, nobs, batch_size
+            )
+            rotation_action_translation_prediction = (
+                self._rotation_action_translation_prediction(
+                    nobs_features, nobs, batch_size
+                )
+            )
 
             if "cross_attention" in self.condition_type:
                 # treat as a sequence
@@ -1093,7 +2195,26 @@ class DP3(BasePolicy):
             raise ValueError(f"Unsupported prediction type {pred_type}")
 
         action_loss = F.mse_loss(pred, target, reduction="none")
-        action_loss = action_loss * loss_mask.type(action_loss.dtype)
+        action_weights = loss_mask.type(action_loss.dtype)
+        if self.recovery_rotation_only_loss:
+            if "is_recovery_augmented" not in batch or "active_arm_right" not in batch:
+                raise KeyError(
+                    "rotation-only recovery loss requires is_recovery_augmented "
+                    "and active_arm_right batch labels"
+                )
+            recovery_weights = _recovery_action_channel_weights(
+                batch["is_recovery_augmented"].to(
+                    device=action_loss.device, dtype=action_loss.dtype
+                ),
+                batch["active_arm_right"].to(
+                    device=action_loss.device, dtype=action_loss.dtype
+                ),
+                horizon=int(action_loss.shape[1]),
+                action_dim=int(action_loss.shape[2]),
+                rotation_weight=self.recovery_rotation_loss_weight,
+            )
+            action_weights = action_weights * recovery_weights
+        action_loss = action_loss * action_weights
         action_loss = reduce(action_loss, "b ... -> b (...)", "mean")
         action_loss = action_loss.mean()
 
@@ -1152,6 +2273,109 @@ class DP3(BasePolicy):
             )
             loss = loss + self.binary_gripper_loss_weight * gripper_loss
             loss_dict["binary_gripper_loss"] = gripper_loss.item()
+            loss_dict["total_loss"] = loss.item()
+        if rotation_action_prediction is not None:
+            if "active_arm_right" not in batch:
+                raise KeyError(
+                    "rotation action head requires active_arm_right batch labels"
+                )
+            start = self.n_obs_steps - 1
+            rotation_target = batch["action"][
+                :, start : start + self.n_action_steps
+            ].to(
+                device=rotation_action_prediction.device,
+                dtype=rotation_action_prediction.dtype,
+            )
+            recovery_gate_positive = batch.get(
+                "is_recovery_gate_positive",
+                batch.get("is_failure_matched_recovery"),
+            )
+            if self.rotation_action_head_gated and recovery_gate_positive is None:
+                raise KeyError(
+                    "gated rotation head requires recovery-gate labels"
+                )
+            geometry_valid = self._rotation_action_axis(nobs, batch_size)[1]
+            rotation_valid = geometry_valid
+            if self.rotation_action_head_gated:
+                rotation_valid = rotation_valid & (
+                    recovery_gate_positive.reshape(-1).to(
+                        device=geometry_valid.device, dtype=torch.bool
+                    )
+                )
+            rotation_loss = _active_rotation_action_loss(
+                rotation_action_prediction,
+                rotation_target,
+                batch["active_arm_right"],
+                is_recovery=batch.get("is_recovery_augmented"),
+                recovery_weight=self.rotation_action_head_recovery_weight,
+                valid_mask=rotation_valid,
+            )
+            loss = loss + self.rotation_action_head_loss_weight * rotation_loss
+            loss_dict["rotation_action_head_loss"] = rotation_loss.item()
+            loss_dict["total_loss"] = loss.item()
+        if rotation_action_gate_logits is not None:
+            recovery_gate_positive = batch.get(
+                "is_recovery_gate_positive",
+                batch.get("is_failure_matched_recovery"),
+            )
+            if recovery_gate_positive is None:
+                raise KeyError(
+                    "rotation gate requires recovery-gate labels"
+                )
+            gate_target = recovery_gate_positive.reshape(-1).to(
+                device=rotation_action_gate_logits.device,
+                dtype=rotation_action_gate_logits.dtype,
+            )
+            gate_loss = F.binary_cross_entropy_with_logits(
+                rotation_action_gate_logits,
+                gate_target,
+                pos_weight=torch.as_tensor(
+                    self.rotation_action_gate_positive_weight,
+                    device=rotation_action_gate_logits.device,
+                    dtype=rotation_action_gate_logits.dtype,
+                ),
+            )
+            loss = loss + self.rotation_action_gate_loss_weight * gate_loss
+            loss_dict["rotation_action_gate_loss"] = gate_loss.item()
+            loss_dict["total_loss"] = loss.item()
+        if rotation_action_translation_prediction is not None:
+            recovery_gate_positive = batch.get(
+                "is_recovery_gate_positive",
+                batch.get("is_failure_matched_recovery"),
+            )
+            if recovery_gate_positive is None:
+                raise KeyError(
+                    "translation compensation requires recovery-gate labels"
+                )
+            start = self.n_obs_steps - 1
+            translation_target = batch["action"][
+                :, start : start + self.n_action_steps
+            ].to(
+                device=rotation_action_translation_prediction.device,
+                dtype=rotation_action_translation_prediction.dtype,
+            )
+            geometry_valid = self._recovery_geometry_valid(nobs, batch_size)
+            translation_recovery_positive = batch.get(
+                "is_translation_recovery_positive",
+                recovery_gate_positive,
+            )
+            failure_valid = geometry_valid & (
+                translation_recovery_positive.reshape(-1).to(
+                    device=geometry_valid.device, dtype=torch.bool
+                )
+            )
+            translation_loss = _active_translation_action_loss(
+                rotation_action_translation_prediction,
+                translation_target,
+                batch["active_arm_right"],
+                failure_valid,
+                endpoint_weight=self.rotation_action_translation_endpoint_loss_weight,
+            )
+            loss = (
+                loss
+                + self.rotation_action_translation_loss_weight * translation_loss
+            )
+            loss_dict["rotation_action_translation_loss"] = translation_loss.item()
             loss_dict["total_loss"] = loss.item()
 
         # print(f"t2-t1: {t2-t1:.3f}")

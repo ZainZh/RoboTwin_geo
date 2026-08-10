@@ -6,11 +6,93 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 import torch
 
-from .deploy_tagrt_dp3 import _frame9_rotation_angle_deg, _goal_frame9, _path_list
+from .deploy_tagrt_dp3 import (
+    _apply_rotation_recovery_cooldown,
+    _apply_rotation_recovery_persistence,
+    _frame9_rotation_angle_deg,
+    _frame9_rotation_rotvec,
+    _goal_frame9,
+    _path_list,
+)
 from diffusion_policy_3d.policy.dp3 import _se3_frame_invariants
 
 
 class TagrtDP3DeployHelpersTest(unittest.TestCase):
+    def test_rotation_recovery_cooldown_restores_nominal_motion(self):
+        recovery = torch.full((1, 2, 14), 3.0)
+        nominal = torch.full((1, 2, 14), 2.0)
+        prediction = {
+            "action": recovery,
+            "action_before_rotation_recovery": nominal,
+            "rotation_action_head_active": torch.tensor([[False, True]]),
+        }
+        remaining, requested, suppressed = _apply_rotation_recovery_cooldown(
+            prediction, cooldown_remaining=2, cooldown_chunks=2
+        )
+        self.assertEqual(remaining, 1)
+        np.testing.assert_array_equal(requested, [False, True])
+        self.assertTrue(suppressed)
+        torch.testing.assert_close(prediction["action"], nominal)
+        self.assertFalse(bool(prediction["rotation_action_head_active"].any()))
+
+    def test_recovery_cooldown_uses_combined_translation_request(self):
+        nominal = torch.full((1, 2, 14), 2.0)
+        prediction = {
+            "action": torch.full((1, 2, 14), 3.0),
+            "action_before_rotation_recovery": nominal,
+            "rotation_action_head_active": torch.tensor([[False, False]]),
+            "translation_recovery_head_active": torch.tensor([[True, False]]),
+            "recovery_action_head_active": torch.tensor([[True, False]]),
+        }
+        remaining, requested, suppressed = _apply_rotation_recovery_cooldown(
+            prediction, cooldown_remaining=1, cooldown_chunks=2
+        )
+        self.assertEqual(remaining, 0)
+        np.testing.assert_array_equal(requested, [True, False])
+        self.assertTrue(suppressed)
+        torch.testing.assert_close(prediction["action"], nominal)
+        self.assertFalse(bool(prediction["recovery_action_head_active"].any()))
+
+    def test_rotation_recovery_cooldown_arms_after_execution(self):
+        recovery = torch.full((1, 2, 14), 3.0)
+        prediction = {
+            "action": recovery,
+            "action_before_rotation_recovery": torch.full((1, 2, 14), 2.0),
+            "rotation_action_head_active": torch.tensor([[True, False]]),
+        }
+        remaining, requested, suppressed = _apply_rotation_recovery_cooldown(
+            prediction, cooldown_remaining=0, cooldown_chunks=3
+        )
+        self.assertEqual(remaining, 3)
+        np.testing.assert_array_equal(requested, [True, False])
+        self.assertFalse(suppressed)
+        torch.testing.assert_close(prediction["action"], recovery)
+
+    def test_rotation_recovery_persistence_requires_consecutive_requests(self):
+        recovery = torch.full((1, 2, 14), 3.0)
+        nominal = torch.full((1, 2, 14), 2.0)
+        prediction = {
+            "action": recovery,
+            "action_before_rotation_recovery": nominal,
+            "rotation_action_head_active": torch.tensor([[False, True]]),
+        }
+        streak, requested, suppressed = _apply_rotation_recovery_persistence(
+            prediction, requested_streak=0, min_consecutive_chunks=2
+        )
+        self.assertEqual(streak, 1)
+        np.testing.assert_array_equal(requested, [False, True])
+        self.assertTrue(suppressed)
+        torch.testing.assert_close(prediction["action"], nominal)
+
+        prediction["action"] = recovery
+        prediction["rotation_action_head_active"] = torch.tensor([[False, True]])
+        streak, _requested, suppressed = _apply_rotation_recovery_persistence(
+            prediction, requested_streak=streak, min_consecutive_chunks=2
+        )
+        self.assertEqual(streak, 2)
+        self.assertFalse(suppressed)
+        torch.testing.assert_close(prediction["action"], recovery)
+
     def test_goal_frame_columns(self):
         transform = np.eye(4, dtype=np.float32)
         transform[:3, 3] = [1.0, 2.0, 3.0]
@@ -36,6 +118,21 @@ class TagrtDP3DeployHelpersTest(unittest.TestCase):
         )
         frame = np.concatenate(([0.0, 0.0, 0.0], rotation[:, 0], rotation[:, 1]))
         self.assertAlmostEqual(_frame9_rotation_angle_deg(frame), 90.0)
+        np.testing.assert_allclose(
+            _frame9_rotation_rotvec(frame), [0.0, 0.0, angle], atol=1.0e-7
+        )
+
+    def test_frame9_rotation_rotvec_preserves_sign(self):
+        positive = Rotation.from_euler("y", 35.0, degrees=True).as_matrix()
+        negative = Rotation.from_euler("y", -35.0, degrees=True).as_matrix()
+        positive_frame = np.concatenate(
+            ([0.0, 0.0, 0.0], positive[:, 0], positive[:, 1])
+        )
+        negative_frame = np.concatenate(
+            ([0.0, 0.0, 0.0], negative[:, 0], negative[:, 1])
+        )
+        self.assertGreater(_frame9_rotation_rotvec(positive_frame)[1], 0.0)
+        self.assertLess(_frame9_rotation_rotvec(negative_frame)[1], 0.0)
 
     def test_se3_retention_features_discard_axis_direction(self):
         frames = []

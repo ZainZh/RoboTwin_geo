@@ -99,6 +99,58 @@ policy:
   # (translation norm, rotation geodesic angle, confidence).
   binary_gripper_retention_invariant: false
 
+  # Optional failure-matched adapter training. Nominal replay keeps the full
+  # action loss; synthetic recovery rows supervise only the active-arm rotvec.
+  recovery_rotation_only_loss: false
+  recovery_rotation_loss_weight: 4.0
+
+  # Optional SE(3)-factorized learned decoder. DP3 keeps generating translation;
+  # this head replaces only the rotvec chunk of a currently closed arm.
+  rotation_action_head_hidden_dim: 0
+  rotation_action_head_loss_weight: 0.0
+  rotation_action_head_recovery_weight: 1.0
+  rotation_action_head_axis_aligned: false
+  rotation_action_head_geometry_only: false
+  rotation_action_head_gated: false
+  # null preserves legacy behavior by matching rotation_action_head_geometry_only.
+  # Set false with a geometry-only axis head when the gate must also inspect
+  # encoded observation/proprioception context.
+  rotation_action_gate_geometry_only: null
+  rotation_action_gate_loss_weight: 0.0
+  rotation_action_gate_positive_weight: 8.0
+  rotation_action_gate_threshold: 0.5
+  # Keep the factorized recovery head inside the rotation range represented by
+  # its synthetic supervision. Defaults preserve the legacy unrestricted path.
+  rotation_action_support_min_deg: 0.0
+  rotation_action_support_max_deg: 180.0
+  # Optional low-rotation translation-stall branch. A zero maximum disables it.
+  # It shares the learned recovery gate but replaces translation only.
+  translation_recovery_support_min_m: 0.0
+  translation_recovery_support_max_m: 0.0
+  translation_recovery_rotation_max_deg: 180.0
+  # ``tagrt_global`` translation is divided by the dataset geometry scale.
+  # Online deployment overwrites this with the checkpoint dataset contract.
+  translation_recovery_geometry_scale_m: 1.0
+  rotation_action_translation_head_hidden_dim: 0
+  # Prefer this for object-disjoint recovery: it prevents visual/proprioceptive
+  # shortcuts and decodes translation directly from the task-aligned SE(3) token.
+  rotation_action_translation_geometry_only: false
+  rotation_action_translation_current_only: false
+  # Decode only world-frame remaining translation (plus confidence); rotation
+  # is assigned to the separate task-aligned rotation decoder.
+  rotation_action_translation_translation_only: false
+  # Keep low-translation and high-rotation decoder duties orthogonal.
+  rotation_action_translation_apply_on_high_rotation: false
+  # Optional explicit [anchor-relative-left, anchor-relative-right, flow] tokens.
+  rotation_action_translation_anchor_flow_key: null
+  # Raw moment pooling with endpoint + zero-sum temporal residual decoding.
+  rotation_action_translation_flow_consistent: false
+  # Auxiliary consistency between six-step cumulative displacement and label.
+  rotation_action_translation_endpoint_loss_weight: 0.0
+  rotation_action_translation_loss_weight: 0.0
+  rotation_action_head_geometry_key: null
+  rotation_action_head_geometry_confidence_key: null
+
   pointcloud_encoder_cfg:
     in_channels: 3
     out_channels: ${policy.encoder_output_dim}
@@ -152,6 +204,13 @@ training:
   # Optional motion recovery fine-tuning that keeps both learned gripper heads
   # bit-identical to the deployed checkpoint.
   motion_only: false
+  # Train only the task-aligned rotation decoder while preserving the deployed
+  # DP3 translation, gripper, encoder, and TAGRT-adapter parameters bit-for-bit.
+  rotation_action_head_only: false
+  recovery_translation_head_only: false
+  # Relearn only when the recovery decoder should run. This supports staged
+  # training where an already validated SE(3) decoder remains bit-identical.
+  rotation_action_gate_only: false
   rollout_every: 200
   checkpoint_every: 3000
   val_every: 50

@@ -127,6 +127,85 @@ def object_pose9(position: np.ndarray, rotation: Rotation) -> np.ndarray:
     ).astype(np.float32)
 
 
+def sample_failure_matched_rotation(
+    generator: np.random.Generator,
+    mode: dict,
+    *,
+    axis_jitter_deg: float,
+) -> tuple[Rotation, np.ndarray, float]:
+    """Sample an object perturbation that induces a requested remaining axis.
+
+    Near an aligned donor, applying ``R`` to the current object produces the
+    remaining relation ``goal * current^-1 ~= R^-1``.  The perturbation axis is
+    therefore the negative of the desired remaining-rotation axis.
+    """
+
+    remaining_axis = np.asarray(mode["signed_world_axis"], dtype=np.float64)
+    remaining_axis /= max(float(np.linalg.norm(remaining_axis)), 1.0e-12)
+    jitter_rad = np.deg2rad(max(float(axis_jitter_deg), 0.0))
+    if jitter_rad > 0.0:
+        perpendicular = generator.normal(size=3)
+        perpendicular -= remaining_axis * float(
+            np.dot(perpendicular, remaining_axis)
+        )
+        perpendicular_norm = float(np.linalg.norm(perpendicular))
+        if perpendicular_norm > 1.0e-12:
+            perpendicular /= perpendicular_norm
+            angle = float(np.clip(generator.normal(scale=jitter_rad), -2.5 * jitter_rad, 2.5 * jitter_rad))
+            remaining_axis = Rotation.from_rotvec(perpendicular * angle).apply(
+                remaining_axis
+            )
+            remaining_axis /= max(float(np.linalg.norm(remaining_axis)), 1.0e-12)
+    minimum_deg = float(mode["rotation_magnitude_deg_p25"])
+    maximum_deg = float(mode["rotation_magnitude_deg_p75"])
+    magnitude_deg = float(generator.uniform(minimum_deg, maximum_deg))
+    perturbation = Rotation.from_rotvec(
+        -remaining_axis * np.deg2rad(magnitude_deg)
+    )
+    return perturbation, remaining_axis, magnitude_deg
+
+
+def sample_uniform_magnitude_vector(
+    generator: np.random.Generator,
+    minimum: float,
+    maximum: float,
+) -> np.ndarray:
+    """Sample an isotropic vector without concentrating mass near zero."""
+
+    axis = generator.normal(size=3)
+    axis /= max(float(np.linalg.norm(axis)), 1.0e-12)
+    return axis * float(generator.uniform(float(minimum), float(maximum)))
+
+
+def translation_for_remaining_functional_relation(
+    sample: dict[str, np.ndarray | float],
+    rotation: Rotation,
+    desired_remaining_translation: np.ndarray,
+) -> np.ndarray:
+    """Solve the shared perturbation that realizes a requested task relation.
+
+    The camera token stores ``goal_position - current_position``. Sampling an
+    object perturbation directly does not control that resulting relation when
+    the donor is already offset from the goal. This inverse keeps the sampled
+    recovery support identical in data generation and deployment.
+    """
+
+    if "target_frame9" not in sample or "goal_frame9" not in sample:
+        raise KeyError(
+            "remaining-relation translation sampling requires target_frame9 "
+            "and goal_frame9"
+        )
+    goal_position, _ = functional_frame9_transform(sample["goal_frame9"])
+    current_to_goal, _ = functional_frame9_transform(sample["target_frame9"])
+    current_position = goal_position - current_to_goal
+    object_center = np.asarray(sample["current_object_pose9"], dtype=np.float64)[:3]
+    rotated_position = rotation.apply(current_position - object_center) + object_center
+    requested_current_position = goal_position - np.asarray(
+        desired_remaining_translation, dtype=np.float64
+    )
+    return requested_current_position - rotated_position
+
+
 def intended_goal_object_pose9(sample: dict[str, np.ndarray | float]) -> np.ndarray:
     """Recover the task-defined object goal without using an expert endpoint."""
 
@@ -323,6 +402,22 @@ def parser() -> argparse.ArgumentParser:
         help="Fraction of eligible nominal rows augmented per copy.",
     )
     result.add_argument("--translation-std-cm", type=float, default=1.0)
+    result.add_argument(
+        "--translation-sampling",
+        choices=("gaussian", "uniform_magnitude"),
+        default="gaussian",
+    )
+    result.add_argument(
+        "--translation-objective",
+        choices=("object_perturbation", "remaining_relation"),
+        default="object_perturbation",
+        help=(
+            "Interpret the sampled vector as either a physical object "
+            "perturbation or the desired goal-minus-current task relation."
+        ),
+    )
+    result.add_argument("--translation-min-cm", type=float, default=3.0)
+    result.add_argument("--translation-max-cm", type=float, default=8.0)
     result.add_argument("--rotation-std-deg", type=float, default=8.0)
     result.add_argument(
         "--rotation-sampling",
@@ -331,6 +426,37 @@ def parser() -> argparse.ArgumentParser:
     )
     result.add_argument("--rotation-min-deg", type=float, default=10.0)
     result.add_argument("--rotation-max-deg", type=float, default=120.0)
+    result.add_argument(
+        "--rotation-mode-json",
+        type=Path,
+        default=None,
+        help=(
+            "Failure-trace summary containing an aggregate signed remaining-"
+            "rotation mode. Raw held-out observations are never consumed."
+        ),
+    )
+    result.add_argument(
+        "--rotation-mode-key",
+        default="stalled_recovery_direction_mode",
+    )
+    result.add_argument("--rotation-axis-jitter-deg", type=float, default=15.0)
+    result.add_argument(
+        "--gate-positive",
+        action="store_true",
+        help=(
+            "Mark every newly augmented row as a positive example for the "
+            "learned recovery gate. Failure-mode rotations are always marked; "
+            "use this flag for deliberately broad axis-coverage augmentation."
+        ),
+    )
+    result.add_argument(
+        "--translation-recovery-positive",
+        action="store_true",
+        help=(
+            "Mark appended rows as supervision for the low-rotation translation "
+            "decoder independently of the broader recovery-gate label."
+        ),
+    )
     result.add_argument("--seed", type=int, default=0)
     result.add_argument("--relation-only", action="store_true")
     result.add_argument(
@@ -390,6 +516,16 @@ def parser() -> argparse.ArgumentParser:
         default="any",
         help="Optionally balance recovery augmentation toward one grasping arm.",
     )
+    result.add_argument(
+        "--balance-active-arms",
+        action="store_true",
+        help="Select exactly equal numbers of closed left- and right-arm donors.",
+    )
+    result.add_argument(
+        "--nominal-donors-only",
+        action="store_true",
+        help="Exclude pre-existing synthetic recovery rows from donor selection.",
+    )
     result.add_argument("--overwrite", action="store_true")
     return result
 
@@ -404,6 +540,10 @@ def main() -> None:
         raise ValueError("sample-fraction must be in (0,1]")
     if not 0.0 <= args.rotation_min_deg <= args.rotation_max_deg <= 180.0:
         raise ValueError("rotation magnitude bounds must satisfy 0 <= min <= max <= 180")
+    if not 0.0 <= args.translation_min_cm <= args.translation_max_cm:
+        raise ValueError(
+            "translation magnitude bounds must satisfy 0 <= min <= max"
+        )
     if args.release_at_goal and args.release_immediately:
         raise ValueError("release supervision modes are mutually exclusive")
     if (
@@ -425,6 +565,27 @@ def main() -> None:
         0.0 <= float(args.active_gripper_max) <= 1.0
     ):
         raise ValueError("active-gripper-max must be in [0,1]")
+    if args.balance_active_arms and args.active_arm != "any":
+        raise ValueError("balance-active-arms requires --active-arm any")
+    if float(args.rotation_axis_jitter_deg) < 0.0:
+        raise ValueError("rotation-axis-jitter-deg must be non-negative")
+    rotation_mode = None
+    if args.rotation_mode_json is not None:
+        mode_payload = json.loads(args.rotation_mode_json.read_text(encoding="utf-8"))
+        rotation_mode = mode_payload.get(str(args.rotation_mode_key))
+        if not isinstance(rotation_mode, dict):
+            raise KeyError(
+                f"rotation mode {args.rotation_mode_key!r} is absent from "
+                f"{args.rotation_mode_json}"
+            )
+        required_mode_keys = {
+            "signed_world_axis",
+            "rotation_magnitude_deg_p25",
+            "rotation_magnitude_deg_p75",
+        }
+        missing_mode_keys = required_mode_keys - set(rotation_mode)
+        if missing_mode_keys:
+            raise KeyError(f"rotation mode is missing {sorted(missing_mode_keys)}")
     with np.load(args.input, allow_pickle=False) as archive:
         payload = {key: archive[key] for key in archive.files}
     sample_count = int(len(payload["state"]))
@@ -432,6 +593,11 @@ def main() -> None:
         key for key, value in payload.items() if value.ndim > 0 and len(value) == sample_count
     ]
     source_indices = np.arange(sample_count, dtype=np.int64)
+    active_right = (
+        None
+        if "active_arm_right" not in payload
+        else np.asarray(payload["active_arm_right"]).reshape(-1) >= 0.5
+    )
     allowed_shoes = {
         int(item) for item in str(args.allowed_shoes).split(",") if item.strip()
     }
@@ -443,20 +609,22 @@ def main() -> None:
         source_indices = source_indices[
             np.isclose(payload["relation_phase"][source_indices], 1.0)
         ]
+    if args.nominal_donors_only and "is_recovery_augmented" in payload:
+        source_indices = source_indices[
+            np.asarray(payload["is_recovery_augmented"])[source_indices] < 0.5
+        ]
     if args.active_arm != "any":
-        if "active_arm_right" not in payload:
+        if active_right is None:
             raise KeyError("active-arm filtering requires active_arm_right")
-        active_right = np.asarray(payload["active_arm_right"]).reshape(-1) >= 0.5
         desired_right = args.active_arm == "right"
         source_indices = source_indices[
             active_right[source_indices] == desired_right
         ]
     if args.active_gripper_max is not None:
-        if "active_arm_right" not in payload or "state" not in payload:
+        if active_right is None or "state" not in payload:
             raise KeyError(
                 "active gripper filtering requires active_arm_right and state"
             )
-        active_right = np.asarray(payload["active_arm_right"]).reshape(-1) >= 0.5
         active_gripper = np.where(
             active_right,
             np.asarray(payload["state"])[:, 19],
@@ -494,20 +662,65 @@ def main() -> None:
 
     generator = np.random.default_rng(int(args.seed))
     selected_count = max(1, int(round(len(source_indices) * float(args.sample_fraction))))
+    if args.balance_active_arms:
+        if active_right is None:
+            raise KeyError("balance-active-arms requires active_arm_right")
+        left_indices = source_indices[~active_right[source_indices]]
+        right_indices = source_indices[active_right[source_indices]]
+        per_arm_count = min(
+            max(1, int(round(len(left_indices) * float(args.sample_fraction)))),
+            max(1, int(round(len(right_indices) * float(args.sample_fraction)))),
+        )
+        if not len(left_indices) or not len(right_indices):
+            raise ValueError("balanced donor selection requires both active arms")
+    else:
+        left_indices = right_indices = np.empty(0, dtype=np.int64)
+        per_arm_count = 0
     appended = {key: [] for key in sample_keys}
     source_sample_index = []
     translation_norms = []
+    remaining_translation_norms = []
     rotation_degrees = []
+    desired_remaining_axes = []
     for _ in range(int(args.copies)):
-        selected = generator.choice(source_indices, size=selected_count, replace=False)
-        for index in selected:
-            translation = generator.normal(
-                scale=float(args.translation_std_cm) / 100.0, size=3
+        if args.balance_active_arms:
+            selected = np.concatenate(
+                (
+                    generator.choice(left_indices, size=per_arm_count, replace=False),
+                    generator.choice(right_indices, size=per_arm_count, replace=False),
+                )
             )
-            if args.rotation_sampling == "gaussian":
+            generator.shuffle(selected)
+        else:
+            selected = generator.choice(source_indices, size=selected_count, replace=False)
+        for index in selected:
+            sample = {key: payload[key][index] for key in sample_keys}
+            if args.translation_sampling == "gaussian":
+                sampled_translation = generator.normal(
+                    scale=float(args.translation_std_cm) / 100.0, size=3
+                )
+            else:
+                sampled_translation = sample_uniform_magnitude_vector(
+                    generator,
+                    float(args.translation_min_cm) / 100.0,
+                    float(args.translation_max_cm) / 100.0,
+                )
+            if rotation_mode is not None:
+                rotation, desired_axis, sampled_magnitude_deg = (
+                    sample_failure_matched_rotation(
+                        generator,
+                        rotation_mode,
+                        axis_jitter_deg=float(args.rotation_axis_jitter_deg),
+                    )
+                )
+                rotvec = rotation.as_rotvec()
+                desired_remaining_axes.append(desired_axis)
+            elif args.rotation_sampling == "gaussian":
                 rotvec = generator.normal(
                     scale=np.deg2rad(float(args.rotation_std_deg)), size=3
                 )
+                rotation = Rotation.from_rotvec(rotvec)
+                sampled_magnitude_deg = float(np.rad2deg(np.linalg.norm(rotvec)))
             else:
                 axis = generator.normal(size=3)
                 axis /= max(float(np.linalg.norm(axis)), 1e-12)
@@ -518,8 +731,17 @@ def main() -> None:
                     )
                 )
                 rotvec = axis * magnitude
-            rotation = Rotation.from_rotvec(rotvec)
-            sample = {key: payload[key][index] for key in sample_keys}
+                rotation = Rotation.from_rotvec(rotvec)
+                sampled_magnitude_deg = float(np.rad2deg(magnitude))
+            if args.translation_objective == "remaining_relation":
+                translation = translation_for_remaining_functional_relation(
+                    sample, rotation, sampled_translation
+                )
+                remaining_translation_norms.append(
+                    float(np.linalg.norm(sampled_translation))
+                )
+            else:
+                translation = sampled_translation
             goal_object_pose9 = None
             if args.recovery_target == "geometry_goal":
                 if {
@@ -542,7 +764,7 @@ def main() -> None:
                 appended[key].append(augmented[key])
             source_sample_index.append(int(index))
             translation_norms.append(float(np.linalg.norm(translation)))
-            rotation_degrees.append(float(np.rad2deg(np.linalg.norm(rotvec))))
+            rotation_degrees.append(sampled_magnitude_deg)
 
     output_payload = dict(payload)
     for key in sample_keys:
@@ -550,10 +772,59 @@ def main() -> None:
             (payload[key], np.asarray(appended[key], dtype=payload[key].dtype)), axis=0
         )
     augmented_count = int(len(source_sample_index))
+    existing_recovery = np.asarray(
+        payload.get("is_recovery_augmented", np.zeros(sample_count)),
+        dtype=np.float32,
+    ).reshape(-1)
     output_payload["is_recovery_augmented"] = np.concatenate(
         (
-            np.zeros(sample_count, dtype=np.float32),
+            existing_recovery,
             np.ones(augmented_count, dtype=np.float32),
+        )
+    )
+    existing_failure_matched = np.asarray(
+        payload.get("is_failure_matched_recovery", np.zeros(sample_count)),
+        dtype=np.float32,
+    ).reshape(-1)
+    output_payload["is_failure_matched_recovery"] = np.concatenate(
+        (
+            existing_failure_matched,
+            np.full(
+                augmented_count,
+                1.0 if rotation_mode is not None else 0.0,
+                dtype=np.float32,
+            ),
+        )
+    )
+    existing_gate_positive = np.asarray(
+        payload.get(
+            "is_recovery_gate_positive",
+            existing_failure_matched,
+        ),
+        dtype=np.float32,
+    ).reshape(-1)
+    output_payload["is_recovery_gate_positive"] = np.concatenate(
+        (
+            existing_gate_positive,
+            np.full(
+                augmented_count,
+                1.0 if (rotation_mode is not None or args.gate_positive) else 0.0,
+                dtype=np.float32,
+            ),
+        )
+    )
+    existing_translation_positive = np.asarray(
+        payload.get("is_translation_recovery_positive", np.zeros(sample_count)),
+        dtype=np.float32,
+    ).reshape(-1)
+    output_payload["is_translation_recovery_positive"] = np.concatenate(
+        (
+            existing_translation_positive,
+            np.full(
+                augmented_count,
+                1.0 if args.translation_recovery_positive else 0.0,
+                dtype=np.float32,
+            ),
         )
     )
     output_payload["source_sample_index"] = np.concatenate(
@@ -617,16 +888,60 @@ def main() -> None:
             else float(args.active_gripper_max)
         ),
         "active_arm": str(args.active_arm),
+        "balance_active_arms": bool(args.balance_active_arms),
+        "balanced_donors_per_arm_per_copy": int(per_arm_count),
+        "nominal_donors_only": bool(args.nominal_donors_only),
         "allowed_shoes": sorted(allowed_shoes),
         "recovery_target": str(args.recovery_target),
         "release_at_goal": bool(args.release_at_goal),
         "release_immediately": bool(args.release_immediately),
         "translation_std_cm": float(args.translation_std_cm),
+        "translation_sampling": str(args.translation_sampling),
+        "translation_objective": str(args.translation_objective),
+        "translation_min_cm": float(args.translation_min_cm),
+        "translation_max_cm": float(args.translation_max_cm),
         "rotation_std_deg": float(args.rotation_std_deg),
-        "rotation_sampling": str(args.rotation_sampling),
+        "rotation_sampling": (
+            "failure_matched_mode"
+            if rotation_mode is not None
+            else str(args.rotation_sampling)
+        ),
+        "rotation_mode_json": (
+            None
+            if args.rotation_mode_json is None
+            else str(args.rotation_mode_json.resolve())
+        ),
+        "rotation_mode_key": (
+            None if rotation_mode is None else str(args.rotation_mode_key)
+        ),
+        "rotation_axis_jitter_deg": float(args.rotation_axis_jitter_deg),
+        "gate_positive": bool(args.gate_positive or rotation_mode is not None),
+        "translation_recovery_positive": bool(
+            args.translation_recovery_positive
+        ),
+        "desired_remaining_axis_mean": (
+            None
+            if not desired_remaining_axes
+            else (
+                np.mean(np.asarray(desired_remaining_axes), axis=0)
+                / max(
+                    float(
+                        np.linalg.norm(
+                            np.mean(np.asarray(desired_remaining_axes), axis=0)
+                        )
+                    ),
+                    1.0e-12,
+                )
+            ).astype(float).tolist()
+        ),
         "rotation_min_deg": float(args.rotation_min_deg),
         "rotation_max_deg": float(args.rotation_max_deg),
         "actual_translation_norm_cm_mean": float(np.mean(translation_norms) * 100.0),
+        "actual_remaining_translation_norm_cm_mean": (
+            None
+            if not remaining_translation_norms
+            else float(np.mean(remaining_translation_norms) * 100.0)
+        ),
         "actual_rotation_magnitude_deg_mean": float(np.mean(rotation_degrees)),
         "seed": int(args.seed),
     }

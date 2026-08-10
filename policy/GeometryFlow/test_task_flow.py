@@ -20,6 +20,9 @@ from .augment_task_flow_recovery import (
     functional_frame9_transform,
     intended_goal_object_pose9,
     pose9_transform,
+    sample_failure_matched_rotation,
+    sample_uniform_magnitude_vector,
+    translation_for_remaining_functional_relation,
 )
 from .train_task_flow_benchmark import (
     active_arm_routing_loss,
@@ -40,6 +43,62 @@ def pose(position, rotvec):
 
 
 class TaskFlowTest(unittest.TestCase):
+    def test_remaining_relation_translation_inverse(self):
+        current_position = np.asarray([0.12, -0.04, 0.31])
+        goal_position = np.asarray([0.17, 0.02, 0.34])
+        identity = Rotation.identity()
+        current_frame = np.concatenate(
+            (current_position, identity.as_matrix()[:, 0], identity.as_matrix()[:, 1])
+        )
+        sample = {
+            "current_object_pose9": current_frame,
+            "target_frame9": np.concatenate(
+                (
+                    goal_position - current_position,
+                    identity.as_matrix()[:, 0],
+                    identity.as_matrix()[:, 1],
+                )
+            ),
+            "goal_frame9": np.concatenate(
+                (goal_position, identity.as_matrix()[:, 0], identity.as_matrix()[:, 1])
+            ),
+        }
+        desired = np.asarray([-0.03, 0.04, 0.02])
+        perturbation = translation_for_remaining_functional_relation(
+            sample, identity, desired
+        )
+        np.testing.assert_allclose(
+            goal_position - (current_position + perturbation), desired, atol=1e-7
+        )
+
+    def test_uniform_magnitude_vector_respects_requested_shell(self):
+        generator = np.random.default_rng(53)
+        norms = [
+            np.linalg.norm(
+                sample_uniform_magnitude_vector(generator, 0.03, 0.08)
+            )
+            for _ in range(100)
+        ]
+        self.assertGreaterEqual(min(norms), 0.03)
+        self.assertLessEqual(max(norms), 0.08)
+
+    def test_failure_matched_rotation_inverts_remaining_axis(self):
+        mode = {
+            "signed_world_axis": [-1.0, 0.0, 0.0],
+            "rotation_magnitude_deg_p25": 35.0,
+            "rotation_magnitude_deg_p75": 35.0,
+        }
+        perturbation, remaining_axis, magnitude_deg = (
+            sample_failure_matched_rotation(
+                np.random.default_rng(7), mode, axis_jitter_deg=0.0
+            )
+        )
+        np.testing.assert_allclose(remaining_axis, [-1.0, 0.0, 0.0])
+        np.testing.assert_allclose(
+            perturbation.as_rotvec(), [np.deg2rad(35.0), 0.0, 0.0]
+        )
+        self.assertAlmostEqual(magnitude_deg, 35.0)
+
     def test_static_eef_collapse_removes_duplicate_prefix_without_losing_motion(self):
         left = np.stack(
             (

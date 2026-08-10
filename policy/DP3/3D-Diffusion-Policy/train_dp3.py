@@ -157,10 +157,20 @@ class TrainDP3Workspace:
                 for name, value in state.items():
                     target_value = target_state.get(name)
                     if (
+                        target_value is None
+                        and name.startswith("rotation_action_translation_head.")
+                    ):
+                        allowed_shape_mismatches.append(name)
+                        continue
+                    if (
                         target_value is not None
                         and tuple(value.shape) != tuple(target_value.shape)
                     ):
-                        if name.startswith("binary_gripper_retention_head."):
+                        if (
+                            name.startswith("binary_gripper_retention_head.")
+                            or name.startswith("rotation_action_gate.")
+                            or name.startswith("rotation_action_translation_head.")
+                        ):
                             allowed_shape_mismatches.append(name)
                             continue
                         raise RuntimeError(
@@ -177,6 +187,9 @@ class TrainDP3Workspace:
                     not (
                         name.startswith("binary_gripper_head.")
                         or name.startswith("binary_gripper_retention_head.")
+                        or name.startswith("rotation_action_head.")
+                        or name.startswith("rotation_action_gate.")
+                        or name.startswith("rotation_action_translation_head.")
                     )
                     for name in missing
                 ):
@@ -221,13 +234,46 @@ class TrainDP3Workspace:
         motion_only = bool(
             OmegaConf.select(cfg, "training.motion_only", default=False)
         )
-        if sum((geometry_adapter_only, binary_gripper_head_only, motion_only)) > 1:
+        rotation_action_head_only = bool(
+            OmegaConf.select(
+                cfg, "training.rotation_action_head_only", default=False
+            )
+        )
+        recovery_translation_head_only = bool(
+            OmegaConf.select(
+                cfg, "training.recovery_translation_head_only", default=False
+            )
+        )
+        rotation_action_gate_only = bool(
+            OmegaConf.select(
+                cfg, "training.rotation_action_gate_only", default=False
+            )
+        )
+        if sum(
+            (
+                geometry_adapter_only,
+                binary_gripper_head_only,
+                motion_only,
+                rotation_action_head_only,
+                recovery_translation_head_only,
+                rotation_action_gate_only,
+            )
+        ) > 1:
             raise ValueError(
-                "geometry_adapter_only, binary_gripper_head_only, and motion_only "
+                "geometry_adapter_only, binary_gripper_head_only, motion_only, "
+                "rotation_action_head_only, recovery_translation_head_only, "
+                "and rotation_action_gate_only "
                 "are mutually exclusive"
             )
 
-        partial_training = geometry_adapter_only or binary_gripper_head_only or motion_only
+        partial_training = (
+            geometry_adapter_only
+            or binary_gripper_head_only
+            or motion_only
+            or rotation_action_head_only
+            or recovery_translation_head_only
+            or rotation_action_gate_only
+        )
         partial_training_start_from_ema = bool(
             OmegaConf.select(
                 cfg,
@@ -238,7 +284,8 @@ class TrainDP3Workspace:
         if partial_training_start_from_ema and not partial_training:
             raise ValueError(
                 "partial_training_start_from_ema requires geometry_adapter_only "
-                "binary_gripper_head_only, or motion_only"
+                "binary_gripper_head_only, motion_only, rotation_action_head_only, "
+                "recovery_translation_head_only, or rotation_action_gate_only"
             )
         if partial_training_start_from_ema:
             if self.ema_model is None:
@@ -279,6 +326,42 @@ class TrainDP3Workspace:
                 "Motion-only training with fixed gripper heads: "
                 f"{sum(parameter.numel() for parameter in trainable)} trainable parameters"
             )
+        if rotation_action_head_only:
+            self.model.freeze_base_for_rotation_action()
+            if self.ema_model is not None:
+                self.ema_model.freeze_base_for_rotation_action()
+            trainable = [
+                parameter for parameter in self.model.parameters()
+                if parameter.requires_grad
+            ]
+            print(
+                "Rotation-action-head-only training: "
+                f"{sum(parameter.numel() for parameter in trainable)} trainable parameters"
+            )
+        if recovery_translation_head_only:
+            self.model.freeze_base_for_recovery_translation()
+            if self.ema_model is not None:
+                self.ema_model.freeze_base_for_recovery_translation()
+            trainable = [
+                parameter for parameter in self.model.parameters()
+                if parameter.requires_grad
+            ]
+            print(
+                "Recovery-translation-head-only training: "
+                f"{sum(parameter.numel() for parameter in trainable)} trainable parameters"
+            )
+        if rotation_action_gate_only:
+            self.model.freeze_base_for_rotation_gate()
+            if self.ema_model is not None:
+                self.ema_model.freeze_base_for_rotation_gate()
+            trainable = [
+                parameter for parameter in self.model.parameters()
+                if parameter.requires_grad
+            ]
+            print(
+                "Rotation-action-gate-only training: "
+                f"{sum(parameter.numel() for parameter in trainable)} trainable parameters"
+            )
 
         reset_optimizer = bool(
             OmegaConf.select(cfg, "training.reset_optimizer_on_resume", default=False)
@@ -308,6 +391,19 @@ class TrainDP3Workspace:
             # it with statistics from the head-only fine-tuning subset changes
             # both normalized observations and unnormalized diffusion actions,
             # even though every motion parameter is frozen.
+            added_normalizer_keys = []
+            for key in normalizer.params_dict:
+                if key in self.model.normalizer.params_dict:
+                    continue
+                self.model.normalizer[key] = copy.deepcopy(normalizer[key])
+                if self.ema_model is not None:
+                    self.ema_model.normalizer[key] = copy.deepcopy(normalizer[key])
+                added_normalizer_keys.append(str(key))
+            if added_normalizer_keys:
+                print(
+                    "Added new identity observation normalizers while preserving "
+                    f"the deployed contract: {added_normalizer_keys}"
+                )
             print("Preserved deployed EMA normalizer for partial training")
         else:
             self.model.set_normalizer(normalizer)

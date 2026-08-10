@@ -14,10 +14,69 @@ sys.path.insert(0, str(DP3_ROOT))
 
 from diffusion_policy_3d.dataset.tagrt_dataset import (  # noqa: E402
     TaskAlignedGeometryDataset,
+    task_aligned_anchor_flow_tokens,
+)
+from diffusion_policy_3d.policy.dp3 import (  # noqa: E402
+    FlowConsistentAnchorTranslationHead,
+    _active_translation_action_loss,
+    _active_rotation_action_loss,
+    _frame9_rotation_rotvec,
+    _recovery_action_channel_weights,
+    _replace_closed_arm_rotations,
+    _replace_closed_arm_translations,
 )
 
 
 class TaskAlignedGeometryDatasetTest(unittest.TestCase):
+    def test_flow_consistent_head_chunk_sums_to_learned_endpoint(self):
+        head = FlowConsistentAnchorTranslationHead(
+            in_channels=9,
+            hidden_dim=16,
+            global_dim=9,
+            confidence_dim=1,
+            action_steps=6,
+        )
+        tokens = torch.randn(2, 8, 9)
+        relation = torch.randn(2, 9)
+        confidence = torch.ones(2, 1)
+        output = head(tokens, relation, confidence)
+        summary = torch.cat(
+            (
+                tokens.mean(1),
+                tokens.std(1, unbiased=False),
+                tokens.min(1).values,
+                tokens.max(1).values,
+                relation,
+                confidence,
+            ),
+            dim=-1,
+        )
+        endpoint = head.endpoint(head.trunk(summary)).reshape(2, 2, 3)
+        torch.testing.assert_close(output.sum(dim=1), endpoint)
+
+    def test_anchor_flow_tokens_encode_eef_offsets_and_rigid_displacement(self):
+        points = np.asarray([[0.0, 0.0, 0.0], [0.1, 0.0, 0.0]], dtype=np.float32)
+        state = np.zeros(20, dtype=np.float32)
+        state[10:13] = [0.2, 0.0, 0.0]
+        goal = np.asarray([0, 0, 0, 1, 0, 0, 0, 1, 0], dtype=np.float32)
+        relation = goal.copy()
+        relation[:3] = [0.01, 0.0, 0.0]
+        tokens = task_aligned_anchor_flow_tokens(
+            points, state, goal, relation, scale_m=0.1
+        )
+        self.assertEqual(tokens.shape, (2, 9))
+        np.testing.assert_allclose(tokens[:, 6:9], [[0.1, 0, 0], [0.1, 0, 0]])
+        np.testing.assert_allclose(tokens[:, 3:6], (points - state[10:13]) / 0.1)
+
+    def test_dataset_option_exposes_anchor_flow_with_identity_normalizer(self):
+        dataset = self.dataset(include_anchor_flow=True)
+        sample = dataset[0]["obs"]["tagrt_anchor_flow"]
+        self.assertEqual(tuple(sample.shape), (dataset.horizon, 4, 9))
+        normalizer = dataset.get_normalizer()
+        torch.testing.assert_close(
+            normalizer["tagrt_anchor_flow"].normalize(sample), sample
+        )
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         path = Path(self.temp.name) / "rows.npz"
@@ -67,6 +126,102 @@ class TaskAlignedGeometryDatasetTest(unittest.TestCase):
         self.assertEqual(tuple(data["obs"]["tagrt_global"].shape), (8, 9))
         self.assertEqual(tuple(data["action"].shape), (8, 14))
         torch.testing.assert_close(data["action"][2:], torch.ones(6, 14))
+        self.assertEqual(float(data["is_recovery_augmented"]), 0.0)
+        self.assertEqual(float(data["is_failure_matched_recovery"]), 0.0)
+        self.assertEqual(float(data["is_recovery_gate_positive"]), 0.0)
+        self.assertEqual(float(data["active_arm_right"]), 1.0)
+
+    def test_recovery_rotation_weights_preserve_nominal_and_select_active_arm(self):
+        weights = _recovery_action_channel_weights(
+            torch.tensor([0.0, 1.0, 1.0]),
+            torch.tensor([0.0, 0.0, 1.0]),
+            horizon=2,
+            action_dim=14,
+            rotation_weight=4.0,
+        )
+        torch.testing.assert_close(weights[0], torch.ones((2, 14)))
+        self.assertEqual(int(torch.count_nonzero(weights[1])), 6)
+        self.assertEqual(int(torch.count_nonzero(weights[2])), 6)
+        torch.testing.assert_close(weights[1, :, 3:6], torch.full((2, 3), 4.0))
+        torch.testing.assert_close(weights[2, :, 10:13], torch.full((2, 3), 4.0))
+
+    def test_factorized_rotation_replacement_preserves_translation_and_gripper(self):
+        action = torch.arange(2 * 3 * 14, dtype=torch.float32).reshape(2, 3, 14)
+        prediction = torch.full((2, 3, 2, 3), -7.0)
+        replaced = _replace_closed_arm_rotations(
+            action, prediction, torch.tensor([[True, False], [False, True]])
+        )
+        torch.testing.assert_close(replaced[0, :, 3:6], prediction[0, :, 0])
+        torch.testing.assert_close(replaced[0, :, 10:13], action[0, :, 10:13])
+        torch.testing.assert_close(replaced[1, :, 3:6], action[1, :, 3:6])
+        torch.testing.assert_close(replaced[1, :, 10:13], prediction[1, :, 1])
+        preserved = [0, 1, 2, 6, 7, 8, 9, 13]
+        torch.testing.assert_close(replaced[..., preserved], action[..., preserved])
+
+    def test_gated_translation_replacement_preserves_rotation_and_gripper(self):
+        action = torch.arange(2 * 3 * 14, dtype=torch.float32).reshape(2, 3, 14)
+        prediction = torch.full((2, 3, 2, 3), -5.0)
+        replaced = _replace_closed_arm_translations(
+            action, prediction, torch.tensor([[True, False], [False, True]])
+        )
+        torch.testing.assert_close(replaced[0, :, :3], prediction[0, :, 0])
+        torch.testing.assert_close(replaced[0, :, 7:10], action[0, :, 7:10])
+        torch.testing.assert_close(replaced[1, :, :3], action[1, :, :3])
+        torch.testing.assert_close(replaced[1, :, 7:10], prediction[1, :, 1])
+        preserved = [3, 4, 5, 6, 10, 11, 12, 13]
+        torch.testing.assert_close(replaced[..., preserved], action[..., preserved])
+
+    def test_translation_endpoint_loss_penalizes_cumulative_error(self):
+        prediction = torch.zeros((1, 2, 2, 3), dtype=torch.float32)
+        target = torch.zeros((1, 2, 14), dtype=torch.float32)
+        target[0, :, :3] = 1.0
+        per_step = _active_translation_action_loss(
+            prediction,
+            target,
+            torch.tensor([False]),
+            torch.tensor([True]),
+            endpoint_weight=0.0,
+        )
+        with_endpoint = _active_translation_action_loss(
+            prediction,
+            target,
+            torch.tensor([False]),
+            torch.tensor([True]),
+            endpoint_weight=1.0,
+        )
+        self.assertAlmostEqual(float(per_step), 1.0)
+        self.assertAlmostEqual(float(with_endpoint), 5.0)
+
+    def test_rotation_head_loss_selects_active_arm_and_weights_recovery(self):
+        prediction = torch.zeros((2, 2, 2, 3), dtype=torch.float32)
+        target = torch.zeros((2, 2, 14), dtype=torch.float32)
+        target[0, :, 3:6] = 1.0
+        target[0, :, 10:13] = 20.0
+        target[1, :, 3:6] = 30.0
+        target[1, :, 10:13] = 2.0
+        loss = _active_rotation_action_loss(
+            prediction,
+            target,
+            torch.tensor([False, True]),
+            is_recovery=torch.tensor([False, True]),
+            recovery_weight=3.0,
+        )
+        self.assertAlmostEqual(float(loss), (1.0 + 3.0 * 4.0) / 4.0)
+
+    def test_frame9_rotvec_preserves_signed_axis(self):
+        angle = torch.tensor(torch.pi / 3.0)
+        cosine = torch.cos(angle)
+        sine = torch.sin(angle)
+        frame = torch.tensor(
+            [0.0, 0.0, 0.0, cosine, sine, 0.0, -sine, cosine, 0.0]
+        )
+        rotvec = _frame9_rotation_rotvec(frame)
+        torch.testing.assert_close(
+            rotvec, torch.tensor([0.0, 0.0, angle]), atol=1.0e-5, rtol=1.0e-5
+        )
+        torch.testing.assert_close(
+            _frame9_rotation_rotvec(torch.zeros(9)), torch.zeros(3)
+        )
 
     def test_object_splits_and_zero_control(self):
         dataset = self.dataset(condition_mode="zero")

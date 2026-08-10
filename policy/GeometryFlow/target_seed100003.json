@@ -1,0 +1,5 @@
+{
+  "accepted_seeds": [100003],
+  "source": "paired_seeds.json diagnostic subset",
+  "protocol": "single pre-registered failure seed for targeted closed-loop diagnosis"
+}

@@ -60,6 +60,41 @@ def task_aligned_local_coordinates(
     )
 
 
+def task_aligned_anchor_flow_tokens(
+    points_a: np.ndarray,
+    state20: np.ndarray,
+    goal_frame9: np.ndarray,
+    relative_frame9: np.ndarray,
+    *,
+    scale_m: float,
+) -> np.ndarray:
+    """Build per-anchor action-flow tokens without simulator object poses.
+
+    Each token contains the current anchor relative to both end effectors and
+    the remaining rigid displacement of that anchor.  Both EEF positions come
+    from ordinary proprioception; the learned policy still decides which arm
+    acts from its gripper state.
+    """
+
+    goal = np.asarray(goal_frame9, dtype=np.float64).reshape(9)
+    relative = np.asarray(relative_frame9, dtype=np.float64).reshape(9)
+    goal_rotation = _rotation_from_columns(goal[3:])
+    relative_rotation = _rotation_from_columns(relative[3:])
+    source_rotation = relative_rotation.T @ goal_rotation
+    source_position = goal[:3] - relative[:3]
+    anchors = np.asarray(points_a, dtype=np.float64)[:, :3]
+    anchor_local = (anchors - source_position) @ source_rotation
+    desired_anchors = anchor_local @ goal_rotation.T + goal[:3]
+    flow = desired_anchors - anchors
+    state = np.asarray(state20, dtype=np.float64).reshape(20)
+    left_offset = anchors - state[:3]
+    right_offset = anchors - state[10:13]
+    return (
+        np.concatenate((left_offset, right_offset, flow), axis=-1)
+        / float(scale_m)
+    ).astype(np.float32)
+
+
 def _ids(values: Iterable[int]) -> np.ndarray:
     return np.asarray(sorted({int(value) for value in values}), dtype=np.int64)
 
@@ -160,6 +195,7 @@ class TaskAlignedGeometryDataset(BaseDataset):
         use_color: bool = False,
         history_stride: int = 1,
         geometry_scale_m: float | None = None,
+        include_anchor_flow: bool = False,
         task_name=None,
     ):
         super().__init__()
@@ -182,6 +218,10 @@ class TaskAlignedGeometryDataset(BaseDataset):
         if int(history_stride) <= 0:
             raise ValueError("history_stride must be positive")
         self.history_stride = int(history_stride)
+        self.include_anchor_flow = bool(include_anchor_flow)
+        self.observation_keys = self.OBSERVATION_KEYS + (
+            ("tagrt_anchor_flow",) if self.include_anchor_flow else ()
+        )
         with np.load(self.path, allow_pickle=False) as archive:
             required = {
                 "points_a",
@@ -305,13 +345,20 @@ class TaskAlignedGeometryDataset(BaseDataset):
             result.condition_mode = str(condition_mode)
         return result
 
-    def _geometry(self, row: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _geometry(
+        self, row: int
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
         if self.condition_mode == "zero":
             local = np.zeros(
                 (len(self.payload["points_a"][row]) + len(self.payload["points_b"][row]), 4),
                 dtype=np.float32,
             )
-            return local, np.zeros(9, dtype=np.float32), np.zeros(1, dtype=np.float32)
+            anchor_flow = (
+                np.zeros((len(self.payload["points_a"][row]), 9), dtype=np.float32)
+                if self.include_anchor_flow
+                else None
+            )
+            return local, np.zeros(9, dtype=np.float32), np.zeros(1, dtype=np.float32), anchor_flow
         geometry_row = row
         if self.condition_mode == "shuffled":
             position = int(np.flatnonzero(self.active_indices == row)[0])
@@ -350,10 +397,22 @@ class TaskAlignedGeometryDataset(BaseDataset):
         if confidence <= 0.0:
             local.fill(0.0)
             global_relation.fill(0.0)
+        anchor_flow = None
+        if self.include_anchor_flow:
+            anchor_flow = task_aligned_anchor_flow_tokens(
+                self.payload["points_a"][row],
+                self.payload["state"][row],
+                self.payload["goal_frame9"][geometry_row],
+                relative,
+                scale_m=self.geometry_scale_m,
+            )
+            if confidence <= 0.0:
+                anchor_flow.fill(0.0)
         return (
             local.astype(np.float32),
             global_relation.astype(np.float32),
             np.asarray([np.clip(confidence, 0.0, 1.0)], dtype=np.float32),
+            anchor_flow,
         )
 
     def _action_horizon(self, row: int) -> np.ndarray:
@@ -373,9 +432,8 @@ class TaskAlignedGeometryDataset(BaseDataset):
         history = []
         for history_row in self.history_indices[row]:
             history_row = int(history_row)
-            local, global_relation, confidence = self._geometry(history_row)
-            history.append(
-                {
+            local, global_relation, confidence, anchor_flow = self._geometry(history_row)
+            item = {
                     "point_cloud": np.asarray(
                         self.payload["points_a"][history_row, :, :channels],
                         dtype=np.float32,
@@ -391,9 +449,11 @@ class TaskAlignedGeometryDataset(BaseDataset):
                     "tagrt_global": global_relation,
                     "tagrt_confidence": confidence,
                 }
-            )
+            if self.include_anchor_flow:
+                item["tagrt_anchor_flow"] = anchor_flow
+            history.append(item)
         observations = {}
-        for key in self.OBSERVATION_KEYS:
+        for key in self.observation_keys:
             causal = np.stack([item[key] for item in history], axis=0)
             if self.horizon > self.n_obs_steps:
                 causal = np.concatenate(
@@ -409,6 +469,71 @@ class TaskAlignedGeometryDataset(BaseDataset):
         return {
             "obs": observations,
             "action": torch.from_numpy(self._action_horizon(row)),
+            "is_recovery_augmented": torch.as_tensor(
+                float(
+                    np.asarray(
+                        self.payload.get(
+                            "is_recovery_augmented",
+                            np.zeros(len(self.payload["action"]), dtype=np.float32),
+                        )
+                    )[row]
+                ),
+                dtype=torch.float32,
+            ),
+            "is_failure_matched_recovery": torch.as_tensor(
+                float(
+                    np.asarray(
+                        self.payload.get(
+                            "is_failure_matched_recovery",
+                            np.zeros(len(self.payload["action"]), dtype=np.float32),
+                        )
+                    )[row]
+                ),
+                dtype=torch.float32,
+            ),
+            "is_recovery_gate_positive": torch.as_tensor(
+                float(
+                    np.asarray(
+                        self.payload.get(
+                            "is_recovery_gate_positive",
+                            self.payload.get(
+                                "is_failure_matched_recovery",
+                                np.zeros(
+                                    len(self.payload["action"]), dtype=np.float32
+                                ),
+                            ),
+                        )
+                    )[row]
+                ),
+                dtype=torch.float32,
+            ),
+            "is_translation_recovery_positive": torch.as_tensor(
+                float(
+                    np.asarray(
+                        self.payload.get(
+                            "is_translation_recovery_positive",
+                            self.payload.get(
+                                "is_recovery_gate_positive",
+                                np.zeros(
+                                    len(self.payload["action"]), dtype=np.float32
+                                ),
+                            ),
+                        )
+                    )[row]
+                ),
+                dtype=torch.float32,
+            ),
+            "active_arm_right": torch.as_tensor(
+                float(
+                    np.asarray(
+                        self.payload.get(
+                            "active_arm_right",
+                            np.ones(len(self.payload["action"]), dtype=np.float32),
+                        )
+                    )[row]
+                ),
+                dtype=torch.float32,
+            ),
         }
 
     def get_normalizer(self, mode="limits", **kwargs):
@@ -423,7 +548,10 @@ class TaskAlignedGeometryDataset(BaseDataset):
         }
         normalizer = LinearNormalizer()
         normalizer.fit(data=data, last_n_dims=1, mode=mode, **kwargs)
-        for key in ("tagrt_local", "tagrt_global", "tagrt_confidence"):
+        geometry_keys = ["tagrt_local", "tagrt_global", "tagrt_confidence"]
+        if self.include_anchor_flow:
+            geometry_keys.append("tagrt_anchor_flow")
+        for key in geometry_keys:
             normalizer[key] = SingleFieldLinearNormalizer.create_identity()
         return normalizer
 
