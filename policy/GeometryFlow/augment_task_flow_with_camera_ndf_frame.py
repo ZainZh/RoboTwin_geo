@@ -342,6 +342,8 @@ def main() -> None:
             "schema_version": max(int(metadata.get("schema_version", 1)), 6),
             "functional_frame_encoding": "camera_ndf_current_marker_goal_se3_columns_v1",
             "functional_frame_source": "camera-only NDF A frame plus cached B marker frame",
+            "source_ndf_point_count": int(payload["points_a"].shape[1]),
+            "source_ndf_sample_seed_stride": 17,
             "policy_goal_frame_encoding": "camera_marker_goal_se3_columns_v1",
             "deployable": True,
             "fold": int(args.fold),

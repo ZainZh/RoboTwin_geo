@@ -8,17 +8,22 @@ from scipy.spatial.transform import Rotation
 import unittest
 from unittest.mock import patch
 
-from .online_ndf_functional_frame import OnlineNdfFunctionalFrameProvider
+from .online_ndf_functional_frame import (
+    OnlineNdfFunctionalFrameProvider,
+    _deterministic_point_sample,
+)
 
 
 class StubFrameEncoder:
     def __init__(self, rotation: np.ndarray) -> None:
         self.rotation = np.asarray(rotation, dtype=np.float32)
         self.calls = 0
+        self.point_counts = []
 
     def encode_frame(self, support_points_world: np.ndarray) -> np.ndarray:
         self.calls += 1
         assert support_points_world.shape[-1] == 3
+        self.point_counts.append(int(len(support_points_world)))
         return self.rotation.copy()
 
 
@@ -299,6 +304,31 @@ def test_zero_is_exact_and_skips_geometry_models():
     assert not runtime.target_latched
 
 
+def test_source_sampling_matches_training_point_count_and_resets():
+    encoders = [StubFrameEncoder(np.eye(3)), StubFrameEncoder(np.eye(3))]
+    runtime = provider(
+        encoders,
+        source_point_count=5,
+        current_origin_offset_local3=[0.0, 0.0, 0.0],
+    )
+    current = np.arange(36, dtype=np.float32).reshape(12, 3) * 0.01
+    _unused, target = clouds()
+    first = runtime.estimate(
+        current_point_cloud=current, target_point_cloud=target
+    )
+    runtime.estimate(current_point_cloud=current, target_point_cloud=target)
+    assert all(encoder.point_counts == [5, 5] for encoder in encoders)
+    assert first.source_input_points == 12
+    assert first.source_encoded_points == 5
+    expected = _deterministic_point_sample(current, 5, 1).mean(axis=0)
+    np.testing.assert_allclose(first.frame9_metric[:3], [1.04, 2.05, 2.99] - expected)
+    runtime.reset()
+    repeated = runtime.estimate(
+        current_point_cloud=current, target_point_cloud=target
+    )
+    np.testing.assert_allclose(repeated.frame9_metric, first.frame9_metric)
+
+
 def test_oracle_ceiling_is_disabled_by_default_and_explicit_when_enabled():
     encoders = [StubFrameEncoder(np.eye(3)), StubFrameEncoder(np.eye(3))]
     current, target = clouds()
@@ -346,6 +376,9 @@ class OnlineNdfFunctionalFrameTest(unittest.TestCase):
 
     def test_zero(self):
         test_zero_is_exact_and_skips_geometry_models()
+
+    def test_training_contract_source_sampling(self):
+        test_source_sampling_matches_training_point_count_and_resets()
 
     def test_oracle_guard(self):
         test_oracle_ceiling_is_disabled_by_default_and_explicit_when_enabled()

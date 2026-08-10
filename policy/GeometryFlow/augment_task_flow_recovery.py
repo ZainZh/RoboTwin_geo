@@ -430,6 +430,35 @@ def main() -> None:
     output_payload["source_sample_index"] = np.concatenate(
         (np.arange(sample_count, dtype=np.int64), np.asarray(source_sample_index, dtype=np.int64))
     )
+    # Each synthetic recovery row is an independent off-trajectory state, not
+    # another frame in its donor demonstration.  Preserve the semantic donor
+    # episode fields for auditing, while giving the causal dataset builder a
+    # separate history identity.  Otherwise rows with duplicated donor
+    # frame_index values become accidental temporal neighbors.
+    nominal_history_episode = np.asarray(
+        payload.get(
+            "history_episode_index",
+            payload.get(
+                "episode_index",
+                payload.get("episode_id", np.arange(sample_count, dtype=np.int64)),
+            ),
+        ),
+        dtype=np.int64,
+    ).reshape(-1)
+    nominal_history_frame = np.asarray(
+        payload.get(
+            "history_frame_index",
+            payload.get("frame_index", np.arange(sample_count, dtype=np.int64)),
+        ),
+        dtype=np.int64,
+    ).reshape(-1)
+    synthetic_history_episode = -1 - np.arange(augmented_count, dtype=np.int64)
+    output_payload["history_episode_index"] = np.concatenate(
+        (nominal_history_episode, synthetic_history_episode)
+    )
+    output_payload["history_frame_index"] = np.concatenate(
+        (nominal_history_frame, np.zeros(augmented_count, dtype=np.int64))
+    )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(args.output, **output_payload)
     metadata = {

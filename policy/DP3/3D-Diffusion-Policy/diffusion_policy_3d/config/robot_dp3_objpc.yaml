@@ -83,6 +83,14 @@ policy:
   binary_gripper_loss_weight: 0.0
   binary_gripper_positive_weight: 3.0
   binary_gripper_threshold: 0.5
+  binary_gripper_geometry_key: null
+  binary_gripper_geometry_confidence_key: null
+  # If the measured gripper is already closed, optionally use a dedicated
+  # geometry-only hold/release classifier. Open-gripper grasp decisions remain
+  # with the visual policy head, so this does not require stage supervision.
+  binary_gripper_retention_state_key: null
+  binary_gripper_retention_state_indices: []
+  binary_gripper_retention_closed_threshold: 0.0
 
   pointcloud_encoder_cfg:
     in_channels: 3

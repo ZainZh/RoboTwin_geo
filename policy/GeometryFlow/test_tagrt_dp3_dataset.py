@@ -137,6 +137,75 @@ class TaskAlignedGeometryDatasetTest(unittest.TestCase):
         torch.testing.assert_close(sample[:3, 0], torch.tensor([0.0, 1.0, 2.0]))
         torch.testing.assert_close(sample[3:, 0], torch.full((5,), 2.0))
 
+    def test_history_stride_matches_chunked_online_observation_cadence(self):
+        path = Path(self.temp.name) / "strided_temporal_rows.npz"
+        count = 15
+        points = np.zeros((count, 4, 6), dtype=np.float32)
+        state = np.zeros((count, 20), dtype=np.float32)
+        for row in range(count):
+            points[row, :, 0] = float(row)
+            state[row, 0] = float(row)
+        frame = np.tile(
+            np.asarray([0, 0, 0, 1, 0, 0, 0, 1, 0], dtype=np.float32),
+            (count, 1),
+        )
+        np.savez_compressed(
+            path,
+            points_a=points,
+            points_b=points,
+            state=state,
+            action=np.ones((count, 6, 14), dtype=np.float32),
+            shoe_id=np.full(count, 2, dtype=np.int64),
+            goal_frame9=frame,
+            target_frame9=frame,
+            target_frame_confidence=np.ones(count, dtype=np.float32),
+            episode_id=np.full(count, 10, dtype=np.int64),
+            frame_index=np.arange(count, dtype=np.int64),
+            relation_phase=np.zeros(count, dtype=np.float32),
+        )
+        dataset = TaskAlignedGeometryDataset(
+            str(path),
+            train_object_ids=[2],
+            val_object_ids=[1],
+            test_object_ids=[0],
+            history_stride=6,
+        )
+        np.testing.assert_array_equal(dataset.history_indices[14], [2, 8, 14])
+        np.testing.assert_array_equal(dataset.history_indices[7], [0, 1, 7])
+        np.testing.assert_array_equal(dataset.history_indices[3], [0, 0, 3])
+
+    def test_synthetic_history_identity_prevents_donor_frame_leakage(self):
+        path = Path(self.temp.name) / "synthetic_history_rows.npz"
+        count = 5
+        points = np.zeros((count, 4, 6), dtype=np.float32)
+        frame = np.tile(
+            np.asarray([0, 0, 0, 1, 0, 0, 0, 1, 0], dtype=np.float32),
+            (count, 1),
+        )
+        np.savez_compressed(
+            path,
+            points_a=points,
+            points_b=points,
+            state=np.zeros((count, 20), dtype=np.float32),
+            action=np.ones((count, 6, 14), dtype=np.float32),
+            shoe_id=np.asarray([2, 2, 2, 1, 0]),
+            goal_frame9=frame,
+            target_frame9=frame,
+            episode_id=np.asarray([10, 10, 10, 20, 30]),
+            frame_index=np.asarray([0, 1, 1, 0, 0]),
+            history_episode_index=np.asarray([10, 10, -1, 20, 30]),
+            history_frame_index=np.asarray([0, 1, 0, 0, 0]),
+            relation_phase=np.ones(count, dtype=np.float32),
+        )
+        dataset = TaskAlignedGeometryDataset(
+            str(path),
+            train_object_ids=[2],
+            val_object_ids=[1],
+            test_object_ids=[0],
+        )
+        np.testing.assert_array_equal(dataset.history_indices[1], [0, 0, 1])
+        np.testing.assert_array_equal(dataset.history_indices[2], [2, 2, 2])
+
 
 if __name__ == "__main__":
     unittest.main()

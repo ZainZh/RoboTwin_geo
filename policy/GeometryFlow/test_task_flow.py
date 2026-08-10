@@ -6,6 +6,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from .build_task_flow_dataset import (
+    collapse_static_active_eef_frames,
     deterministic_sample,
     eef_delta_action14,
     object_goal_error_labels,
@@ -13,7 +14,13 @@ from .build_task_flow_dataset import (
     resample_indices,
     transform_points,
 )
-from .augment_task_flow_recovery import augment_recovery_sample, centered_transform
+from .augment_task_flow_recovery import (
+    augment_recovery_sample,
+    centered_transform,
+    functional_frame9_transform,
+    intended_goal_object_pose9,
+    pose9_transform,
+)
 from .train_task_flow_benchmark import (
     active_arm_routing_loss,
     build_action_predictor,
@@ -24,6 +31,7 @@ from .train_task_flow_benchmark import (
     rigid_flow_se3_tokens,
     weighted_action_loss,
 )
+from .target_frame import estimate_cached_geometry_marker_frame
 
 
 def pose(position, rotvec):
@@ -32,6 +40,60 @@ def pose(position, rotvec):
 
 
 class TaskFlowTest(unittest.TestCase):
+    def test_static_eef_collapse_removes_duplicate_prefix_without_losing_motion(self):
+        left = np.stack(
+            (
+                pose([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
+                pose([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
+                pose([0.01, 0.0, 0.0], [0.0, 0.0, 0.1]),
+                pose([0.02, 0.0, 0.0], [0.0, 0.0, 0.2]),
+            )
+        )
+        right = np.repeat(pose([0.5, 0.0, 0.0], [0.0, 0.0, 0.0])[None], 4, axis=0)
+        closed = np.zeros(4)
+        opened = np.ones(4)
+        indices = collapse_static_active_eef_frames(
+            left, closed, right, opened, "left"
+        )
+        np.testing.assert_array_equal(indices, [0, 2, 3])
+
+    def test_cached_marker_frame_fuses_sparse_early_observations(self):
+        generator = np.random.default_rng(41)
+        frames = []
+        for _ in range(3):
+            cloud = np.zeros((64, 6), dtype=np.float32)
+            cloud[:, :3] = generator.normal(size=(64, 3)) * [0.04, 0.02, 0.002]
+            cloud[:, 3:6] = [0.1, 0.2, 0.8]
+            cloud[:6, :3] = np.asarray(
+                [[x, 0.0, 0.006] for x in np.linspace(-0.04, 0.04, 6)]
+            )
+            cloud[:6, 3:6] = [0.9, 0.8, 0.0]
+            frames.append(cloud)
+        transform, diagnostic = estimate_cached_geometry_marker_frame(
+            np.asarray(frames)
+        )
+        self.assertEqual(diagnostic["fused_frames"], 3)
+        self.assertEqual(diagnostic["marker_points"], 18)
+        self.assertFalse(diagnostic["sparse_fallback"])
+        np.testing.assert_allclose(
+            transform[:3, :3].T @ transform[:3, :3], np.eye(3), atol=1e-5
+        )
+
+    def test_cached_marker_frame_reports_zero_confidence_fallback(self):
+        generator = np.random.default_rng(43)
+        cloud = np.zeros((2, 64, 6), dtype=np.float32)
+        cloud[..., :3] = (
+            generator.normal(size=(2, 64, 3)) * [0.04, 0.02, 0.002]
+        )
+        cloud[..., 3:6] = [0.1, 0.2, 0.8]
+        transform, diagnostic = estimate_cached_geometry_marker_frame(cloud)
+        self.assertEqual(diagnostic["marker_points"], 0)
+        self.assertTrue(diagnostic["sparse_fallback"])
+        self.assertTrue(np.isfinite(transform).all())
+        np.testing.assert_allclose(
+            transform[:3, :3].T @ transform[:3, :3], np.eye(3), atol=1e-5
+        )
+
     def test_object_goal_error_labels_follow_task_transform_convention(self):
         object_a = pose([0.25, -0.1, 0.72], [0.0, 0.0, 0.3])
         object_b = pose([0.1, -0.2, 0.70], [0.0, 0.0, -0.2])
@@ -194,6 +256,95 @@ class TaskFlowTest(unittest.TestCase):
         actual_eef = pose7_wxyz_to_matrix(augmented["future_eef_pose7"][-1, 1])
         np.testing.assert_allclose(actual_eef, expected_eef, atol=2e-6)
         self.assertTrue(np.allclose(augmented["action"][:, 13], 0.0))
+
+    def test_recovery_updates_camera_relative_frame_and_intended_goal(self):
+        horizon = 3
+        object_pose = pose([0.2, -0.1, 0.7], [0.0, 0.0, 0.2])
+        active_pose = pose([0.25, -0.05, 0.8], [0.1, 0.0, 0.2])
+        inactive_pose = pose([-0.3, 0.0, 0.8], [0.0, 0.0, 0.0])
+        object_matrix = pose7_wxyz_to_matrix(object_pose)
+        current_object9 = np.concatenate(
+            (object_pose[:3], object_matrix[:3, :3][:, :2].reshape(6))
+        ).astype(np.float32)
+        goal_position = np.asarray([0.3, 0.0, 0.75])
+        goal_rotation = Rotation.from_rotvec([0.0, 0.0, 0.6])
+        current_functional_position = np.asarray([0.21, -0.09, 0.71])
+        current_functional_rotation = Rotation.from_rotvec([0.0, 0.0, 0.25])
+        relative_rotation = goal_rotation * current_functional_rotation.inv()
+        state = np.zeros(20, dtype=np.float32)
+        sample = {
+            "points_a": np.asarray([[0.2, -0.1, 0.7]], dtype=np.float32),
+            "points_b": np.asarray([[0.3, 0.0, 0.75]], dtype=np.float32),
+            "state": state,
+            "action": np.zeros((horizon, 14), dtype=np.float32),
+            "current_anchors": np.asarray([[0.2, -0.1, 0.7]], dtype=np.float32),
+            "current_object_pose9": current_object9,
+            "current_eef_pose7": np.stack((inactive_pose, active_pose)).astype(np.float32),
+            "future_eef_pose7": np.repeat(
+                np.stack((inactive_pose, active_pose))[None], horizon, axis=0
+            ).astype(np.float32),
+            "active_arm_right": np.asarray(1.0, dtype=np.float32),
+            "relation_phase": np.asarray(1.0, dtype=np.float32),
+            "goal_translation_error_xyz_m": (goal_position - object_pose[:3]).astype(np.float32),
+            "goal_rotation_error_rotvec": (
+                goal_rotation * Rotation.from_rotvec([0.0, 0.0, 0.2]).inv()
+            ).as_rotvec().astype(np.float32),
+            "goal_frame9": np.concatenate(
+                (
+                    goal_position,
+                    goal_rotation.as_matrix()[:, 0],
+                    goal_rotation.as_matrix()[:, 1],
+                )
+            ).astype(np.float32),
+            "target_frame9": np.concatenate(
+                (
+                    goal_position - current_functional_position,
+                    relative_rotation.as_matrix()[:, 0],
+                    relative_rotation.as_matrix()[:, 1],
+                )
+            ).astype(np.float32),
+            "source_frame6_columns": np.concatenate(
+                (
+                    current_functional_rotation.as_matrix()[:, 0],
+                    current_functional_rotation.as_matrix()[:, 1],
+                )
+            ).astype(np.float32),
+        }
+        perturbation = Rotation.from_euler("z", 20.0, degrees=True)
+        translation = np.asarray([0.01, -0.02, 0.005])
+        goal_object9 = intended_goal_object_pose9(sample)
+        np.testing.assert_allclose(goal_object9[:3], goal_position, atol=1e-6)
+        augmented = augment_recovery_sample(
+            sample,
+            translation=translation,
+            rotation=perturbation,
+            goal_object_pose9=goal_object9,
+        )
+        new_relative_position, new_relative_rotation = functional_frame9_transform(
+            augmented["target_frame9"]
+        )
+        expected_current_position = (
+            perturbation.apply(current_functional_position - object_pose[:3])
+            + object_pose[:3]
+            + translation
+        )
+        expected_current_rotation = perturbation * current_functional_rotation
+        np.testing.assert_allclose(
+            new_relative_position,
+            goal_position - expected_current_position,
+            atol=2e-6,
+        )
+        np.testing.assert_allclose(
+            new_relative_rotation.as_matrix(),
+            (goal_rotation * expected_current_rotation.inv()).as_matrix(),
+            atol=2e-6,
+        )
+        np.testing.assert_allclose(
+            pose9_transform(augmented["current_object_pose9"])[0]
+            + augmented["goal_translation_error_xyz_m"],
+            goal_position,
+            atol=2e-6,
+        )
 
     def test_resample_indices_include_endpoints(self):
         indices = resample_indices(101, 16)

@@ -155,7 +155,11 @@ class TrainDP3Workspace:
                 unexpected = list(incompatible.unexpected_keys)
                 missing = list(incompatible.missing_keys)
                 if unexpected or any(
-                    not name.startswith("binary_gripper_head.") for name in missing
+                    not (
+                        name.startswith("binary_gripper_head.")
+                        or name.startswith("binary_gripper_retention_head.")
+                    )
+                    for name in missing
                 ):
                     raise RuntimeError(
                         "init checkpoint architecture mismatch: "

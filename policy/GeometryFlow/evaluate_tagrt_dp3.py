@@ -35,6 +35,12 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--batch-size", type=int, default=256)
     result.add_argument("--sample-repeats", type=int, default=3)
     result.add_argument(
+        "--history-stride",
+        type=int,
+        default=1,
+        help="Frame spacing between causal observations; match online execute cadence.",
+    )
+    result.add_argument(
         "--conditions", nargs="+", default=("correct", "zero", "shuffled")
     )
     return result
@@ -61,7 +67,7 @@ def _endpoint_error(
     return translation_cm, rotation_deg
 
 
-def _condition_dataset(cfg, path: Path, condition: str):
+def _condition_dataset(cfg, path: Path, condition: str, history_stride: int = 1):
     dataset = TaskAlignedGeometryDataset(
         str(path.resolve()),
         horizon=int(cfg.horizon),
@@ -73,6 +79,7 @@ def _condition_dataset(cfg, path: Path, condition: str):
         split="test",
         condition_mode=str(condition),
         use_color=bool(cfg.task.dataset.get("use_color", False)),
+        history_stride=int(history_stride),
     )
     return dataset
 
@@ -100,7 +107,9 @@ def main() -> None:
 
     with torch.no_grad():
         for condition in args.conditions:
-            dataset = _condition_dataset(cfg, args.npz, str(condition))
+            dataset = _condition_dataset(
+                cfg, args.npz, str(condition), int(args.history_stride)
+            )
             loader = DataLoader(
                 dataset,
                 batch_size=int(args.batch_size),
@@ -307,6 +316,7 @@ def main() -> None:
         "test_objects": list(cfg.task.dataset.test_object_ids),
         "test_rows": int(len(_condition_dataset(cfg, args.npz, "correct"))),
         "sample_repeats": int(args.sample_repeats),
+        "history_stride": int(args.history_stride),
         "summaries": summaries,
         "gripper_summaries": gripper_summaries,
         "summaries_by_phase": summaries_by_phase,

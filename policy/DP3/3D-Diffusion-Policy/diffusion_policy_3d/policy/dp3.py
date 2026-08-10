@@ -206,6 +206,11 @@ class DP3(BasePolicy):
         binary_gripper_loss_weight=0.0,
         binary_gripper_positive_weight=3.0,
         binary_gripper_threshold=0.5,
+        binary_gripper_geometry_key=None,
+        binary_gripper_geometry_confidence_key=None,
+        binary_gripper_retention_state_key=None,
+        binary_gripper_retention_state_indices=(),
+        binary_gripper_retention_closed_threshold=0.0,
         # parameters passed to step
         **kwargs,
     ):
@@ -241,6 +246,17 @@ class DP3(BasePolicy):
             binary_gripper_positive_weight
         )
         self.binary_gripper_threshold = float(binary_gripper_threshold)
+        self.binary_gripper_geometry_key = binary_gripper_geometry_key
+        self.binary_gripper_geometry_confidence_key = (
+            binary_gripper_geometry_confidence_key
+        )
+        self.binary_gripper_retention_state_key = binary_gripper_retention_state_key
+        self.binary_gripper_retention_state_indices = tuple(
+            int(index) for index in (binary_gripper_retention_state_indices or ())
+        )
+        self.binary_gripper_retention_closed_threshold = float(
+            binary_gripper_retention_closed_threshold
+        )
         if len(set(self.binary_gripper_indices)) != len(
             self.binary_gripper_indices
         ):
@@ -249,6 +265,65 @@ class DP3(BasePolicy):
             raise ValueError("binary_gripper_indices are outside the action shape")
         if self.binary_gripper_indices and not obs_as_global_cond:
             raise ValueError("binary gripper head currently requires obs_as_global_cond")
+        if self.binary_gripper_retention_state_indices:
+            if self.binary_gripper_geometry_key is None:
+                raise ValueError(
+                    "binary gripper retention requires binary_gripper_geometry_key"
+                )
+            if self.binary_gripper_retention_state_key not in obs_shape_meta:
+                raise KeyError(
+                    "binary gripper retention state key is missing from shape_meta: "
+                    f"{self.binary_gripper_retention_state_key!r}"
+                )
+            if len(self.binary_gripper_retention_state_indices) != len(
+                self.binary_gripper_indices
+            ):
+                raise ValueError(
+                    "retention state indices must match the binary gripper outputs"
+                )
+            retention_state_size = int(
+                math.prod(obs_shape_meta[self.binary_gripper_retention_state_key]["shape"])
+            )
+            if any(
+                index < 0 or index >= retention_state_size
+                for index in self.binary_gripper_retention_state_indices
+            ):
+                raise ValueError("binary gripper retention state index is out of range")
+        binary_gripper_geometry_shape = None
+        if self.binary_gripper_geometry_key is not None:
+            if not self.binary_gripper_indices:
+                raise ValueError(
+                    "binary_gripper_geometry_key requires a binary gripper head"
+                )
+            if self.binary_gripper_geometry_key not in obs_shape_meta:
+                raise KeyError(
+                    "binary gripper geometry key is missing from shape_meta: "
+                    f"{self.binary_gripper_geometry_key!r}"
+                )
+            binary_gripper_geometry_shape = tuple(
+                obs_shape_meta[self.binary_gripper_geometry_key]["shape"]
+            )
+            if len(binary_gripper_geometry_shape) != 1 or int(
+                binary_gripper_geometry_shape[0]
+            ) < 3:
+                raise ValueError(
+                    "binary gripper geometry must be a vector with at least "
+                    f"three translation values, got {binary_gripper_geometry_shape}"
+                )
+        binary_gripper_confidence_shape = None
+        if self.binary_gripper_geometry_confidence_key is not None:
+            if binary_gripper_geometry_shape is None:
+                raise ValueError(
+                    "binary gripper geometry confidence requires a geometry key"
+                )
+            if self.binary_gripper_geometry_confidence_key not in obs_shape_meta:
+                raise KeyError(
+                    "binary gripper confidence key is missing from shape_meta: "
+                    f"{self.binary_gripper_geometry_confidence_key!r}"
+                )
+            binary_gripper_confidence_shape = tuple(
+                obs_shape_meta[self.binary_gripper_geometry_confidence_key]["shape"]
+            )
         if self.geometry_key is not None and self.aux_geometry_key is not None:
             raise ValueError(
                 "geometry_key and aux_geometry_key are mutually exclusive: "
@@ -378,17 +453,35 @@ class DP3(BasePolicy):
                 "yellow",
             )
         binary_gripper_head = None
+        binary_gripper_retention_head = None
         if self.binary_gripper_indices:
+            binary_gripper_input_dim = int(obs_feature_dim) * int(n_obs_steps)
+            if binary_gripper_geometry_shape is not None:
+                # Preserve the signed SE(3) token and add an invariant
+                # translation magnitude for reliable release extrapolation.
+                geometry_features = int(binary_gripper_geometry_shape[0]) + 1
+                if binary_gripper_confidence_shape is not None:
+                    geometry_features += int(math.prod(binary_gripper_confidence_shape))
+                binary_gripper_input_dim += int(n_obs_steps) * geometry_features
             binary_gripper_head = BinaryGripperHead(
-                input_dim=int(obs_feature_dim) * int(n_obs_steps),
+                input_dim=binary_gripper_input_dim,
                 hidden_dim=int(binary_gripper_hidden_dim),
                 output_dim=int(n_action_steps)
                 * len(self.binary_gripper_indices),
             )
+            if self.binary_gripper_retention_state_indices:
+                binary_gripper_retention_head = BinaryGripperHead(
+                    input_dim=int(n_obs_steps) * geometry_features,
+                    hidden_dim=int(binary_gripper_hidden_dim),
+                    output_dim=int(n_action_steps)
+                    * len(self.binary_gripper_indices),
+                )
             cprint(
                 "[DP3] learned binary gripper head: "
                 f"indices={self.binary_gripper_indices}, "
-                f"steps={n_action_steps}, weight={self.binary_gripper_loss_weight}",
+                f"steps={n_action_steps}, weight={self.binary_gripper_loss_weight}, "
+                f"geometry={self.binary_gripper_geometry_key}, "
+                f"retention={bool(self.binary_gripper_retention_state_indices)}",
                 "yellow",
             )
         input_dim = action_dim + obs_feature_dim
@@ -430,6 +523,7 @@ class DP3(BasePolicy):
         self.global_geometry_adapter = global_geometry_adapter
         self.aux_geometry_head = aux_geometry_head
         self.binary_gripper_head = binary_gripper_head
+        self.binary_gripper_retention_head = binary_gripper_retention_head
         self.aux_geometry_shape = aux_geometry_shape
         self.model = model
         self.noise_scheduler = noise_scheduler
@@ -521,6 +615,68 @@ class DP3(BasePolicy):
             parameter.requires_grad_(False)
         for parameter in self.binary_gripper_head.parameters():
             parameter.requires_grad_(True)
+        if self.binary_gripper_retention_head is not None:
+            for parameter in self.binary_gripper_retention_head.parameters():
+                parameter.requires_grad_(True)
+
+    def _binary_gripper_geometry_context(
+        self,
+        observations: Dict[str, torch.Tensor],
+        batch_size: int,
+    ) -> torch.Tensor:
+        if self.binary_gripper_geometry_key is None:
+            raise RuntimeError("binary gripper geometry context is disabled")
+        relation = observations[self.binary_gripper_geometry_key][
+            :, : self.n_obs_steps
+        ].reshape(int(batch_size), self.n_obs_steps, -1)
+        translation_norm = torch.linalg.vector_norm(
+            relation[..., :3], dim=-1, keepdim=True
+        )
+        components = [relation, translation_norm]
+        if self.binary_gripper_geometry_confidence_key is not None:
+            confidence = observations[
+                self.binary_gripper_geometry_confidence_key
+            ][:, : self.n_obs_steps].reshape(int(batch_size), self.n_obs_steps, -1)
+            components.append(confidence)
+        return torch.cat(components, dim=-1).reshape(int(batch_size), -1)
+
+    def _binary_gripper_context(
+        self,
+        observation_features: torch.Tensor,
+        observations: Dict[str, torch.Tensor],
+        batch_size: int,
+    ) -> torch.Tensor:
+        context = observation_features.reshape(int(batch_size), -1)
+        if self.binary_gripper_geometry_key is None:
+            return context
+        return torch.cat(
+            (context, self._binary_gripper_geometry_context(observations, batch_size)),
+            dim=-1,
+        )
+
+    def _binary_gripper_logits(
+        self,
+        observation_features: torch.Tensor,
+        observations: Dict[str, torch.Tensor],
+        batch_size: int,
+    ) -> torch.Tensor:
+        logits = self.binary_gripper_head(
+            self._binary_gripper_context(
+                observation_features, observations, batch_size
+            )
+        ).reshape(int(batch_size), self.n_action_steps, -1)
+        if self.binary_gripper_retention_head is None:
+            return logits
+        retention_logits = self.binary_gripper_retention_head(
+            self._binary_gripper_geometry_context(observations, batch_size)
+        ).reshape(int(batch_size), self.n_action_steps, -1)
+        current_state = observations[self.binary_gripper_retention_state_key][
+            :, self.n_obs_steps - 1
+        ].reshape(int(batch_size), -1)
+        current_closed = current_state[
+            :, list(self.binary_gripper_retention_state_indices)
+        ] < self.binary_gripper_retention_closed_threshold
+        return torch.where(current_closed[:, None, :], retention_logits, logits)
 
     def _predict_aux_geometry(
         self, observation_features: torch.Tensor, batch_size: int
@@ -631,9 +787,9 @@ class DP3(BasePolicy):
             nobs_features = self._encode_observations(this_nobs)
             aux_geometry_pred = self._predict_aux_geometry(nobs_features, B)
             if self.binary_gripper_head is not None:
-                binary_gripper_logits = self.binary_gripper_head(
-                    nobs_features.reshape(B, -1)
-                ).reshape(B, self.n_action_steps, -1)
+                binary_gripper_logits = self._binary_gripper_logits(
+                    nobs_features, nobs, B
+                )
             if "cross_attention" in self.condition_type:
                 # treat as a sequence
                 global_cond = nobs_features.reshape(B, self.n_obs_steps, -1)
@@ -730,9 +886,9 @@ class DP3(BasePolicy):
                 nobs_features, batch_size
             )
             if self.binary_gripper_head is not None:
-                binary_gripper_logits = self.binary_gripper_head(
-                    nobs_features.reshape(batch_size, -1)
-                ).reshape(batch_size, self.n_action_steps, -1)
+                binary_gripper_logits = self._binary_gripper_logits(
+                    nobs_features, nobs, batch_size
+                )
 
             if "cross_attention" in self.condition_type:
                 # treat as a sequence

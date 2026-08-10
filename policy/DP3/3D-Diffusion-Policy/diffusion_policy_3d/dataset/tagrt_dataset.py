@@ -158,6 +158,7 @@ class TaskAlignedGeometryDataset(BaseDataset):
         split: str = "train",
         condition_mode: str = "correct",
         use_color: bool = False,
+        history_stride: int = 1,
         task_name=None,
     ):
         super().__init__()
@@ -177,6 +178,9 @@ class TaskAlignedGeometryDataset(BaseDataset):
         self.n_action_steps = int(n_action_steps)
         self.condition_mode = str(condition_mode)
         self.use_color = bool(use_color)
+        if int(history_stride) <= 0:
+            raise ValueError("history_stride must be positive")
+        self.history_stride = int(history_stride)
         with np.load(self.path, allow_pickle=False) as archive:
             required = {
                 "points_a",
@@ -247,30 +251,33 @@ class TaskAlignedGeometryDataset(BaseDataset):
         episode boundary we left-pad with the first available frame, matching
         the online runtime reset contract.
         """
-        episode_key = self.payload.get("episode_index")
+        episode_key = self.payload.get("history_episode_index")
+        if episode_key is None:
+            episode_key = self.payload.get("episode_index")
         if episode_key is None:
             episode_key = self.payload.get("episode_id")
         if episode_key is None:
             episode_key = np.arange(count, dtype=np.int64)
         episode_key = np.asarray(episode_key).reshape(-1)
         frame_index = np.asarray(
-            self.payload.get("frame_index", np.arange(count, dtype=np.int64))
+            self.payload.get(
+                "history_frame_index",
+                self.payload.get("frame_index", np.arange(count, dtype=np.int64)),
+            )
         ).reshape(-1)
         output = np.empty((count, self.n_obs_steps), dtype=np.int64)
         for episode in np.unique(episode_key):
             rows = np.flatnonzero(episode_key == episode)
             rows = rows[np.argsort(frame_index[rows], kind="stable")]
             for position, row in enumerate(rows):
-                start = max(0, position - self.n_obs_steps + 1)
-                history = rows[start : position + 1]
-                if len(history) < self.n_obs_steps:
-                    history = np.concatenate(
-                        (
-                            np.repeat(history[:1], self.n_obs_steps - len(history)),
-                            history,
-                        )
-                    )
-                output[int(row)] = history
+                positions = np.arange(
+                    position - self.history_stride * (self.n_obs_steps - 1),
+                    position + 1,
+                    self.history_stride,
+                    dtype=np.int64,
+                )
+                positions = np.clip(positions, 0, position)
+                output[int(row)] = rows[positions]
         return output
 
     def get_validation_dataset(self):

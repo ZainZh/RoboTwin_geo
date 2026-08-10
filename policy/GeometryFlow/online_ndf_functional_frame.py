@@ -62,6 +62,8 @@ class OnlineFunctionalFrameEstimate:
     source_temporal_ambiguous: bool = False
     source_temporal_corrected: bool = False
     source_temporal_jump_deg: float | None = None
+    source_input_points: int | None = None
+    source_encoded_points: int | None = None
 
     def policy_frame9(self, xyz_std: np.ndarray | Sequence[float]) -> np.ndarray:
         """Return the tensor value consumed by a trained policy.
@@ -113,6 +115,21 @@ def _valid_xyz(point_cloud: np.ndarray, name: str) -> np.ndarray:
     return xyz
 
 
+def _deterministic_point_sample(
+    points: np.ndarray, count: int, seed: int
+) -> np.ndarray:
+    """Match the uniform point sampling used to build the policy archive."""
+
+    value = np.asarray(points, dtype=np.float32)
+    if value.ndim != 2 or value.shape[1] != 3 or len(value) == 0:
+        raise ValueError(f"points must have shape [N>0,3], got {value.shape}")
+    generator = np.random.default_rng(int(seed))
+    indices = generator.choice(
+        len(value), size=int(count), replace=len(value) < int(count)
+    )
+    return value[indices].astype(np.float32)
+
+
 def relative_frame9_metric(
     current_position: np.ndarray,
     current_rotation: np.ndarray,
@@ -158,6 +175,8 @@ class OnlineNdfFunctionalFrameProvider:
         temporal_stabilization: bool = False,
         temporal_jump_trigger_deg: float = 120.0,
         temporal_alternative_accept_deg: float = 45.0,
+        source_point_count: int | None = None,
+        source_sample_seed_stride: int = 17,
     ) -> None:
         if (ndf_checkpoints is None) == (frame_encoders is None):
             raise ValueError(
@@ -207,6 +226,15 @@ class OnlineNdfFunctionalFrameProvider:
         self.temporal_alternative_accept_deg = float(
             temporal_alternative_accept_deg
         )
+        if source_point_count is not None and int(source_point_count) < 3:
+            raise ValueError("source_point_count must be at least three")
+        if int(source_sample_seed_stride) <= 0:
+            raise ValueError("source_sample_seed_stride must be positive")
+        self.source_point_count = (
+            None if source_point_count is None else int(source_point_count)
+        )
+        self.source_sample_seed_stride = int(source_sample_seed_stride)
+        self._source_observation_index = 0
         if self.temporal_stabilization:
             stabilize_rotation_against_previous(
                 np.eye(3, dtype=np.float32),
@@ -313,6 +341,10 @@ class OnlineNdfFunctionalFrameProvider:
             temporal_alternative_accept_deg=float(
                 ensemble.get("temporal_alternative_accept_deg", 45.0)
             ),
+            source_point_count=int(camera.get("source_ndf_point_count", 128)),
+            source_sample_seed_stride=int(
+                camera.get("source_ndf_sample_seed_stride", 17)
+            ),
         )
 
     @property
@@ -331,6 +363,7 @@ class OnlineNdfFunctionalFrameProvider:
         self._cached_marker_diagnostic = None
         self._cached_target_confidence = None
         self._previous_source_rotation = None
+        self._source_observation_index = 0
 
     def latch_target(self, target_point_cloud: np.ndarray) -> None:
         """Latch one early B observation (or a caller-concatenated early stack)."""
@@ -385,9 +418,17 @@ class OnlineNdfFunctionalFrameProvider:
         target_point_cloud: np.ndarray,
     ) -> OnlineFunctionalFrameEstimate:
         current_xyz = _valid_xyz(current_point_cloud, "current_point_cloud")
+        source_points = current_xyz
+        if self.source_point_count is not None:
+            source_points = _deterministic_point_sample(
+                current_xyz,
+                self.source_point_count,
+                self._source_observation_index * self.source_sample_seed_stride + 1,
+            )
+        self._source_observation_index += 1
         self._latch_target(target_point_cloud)
         rotations = np.stack(
-            [encoder.encode_frame(current_xyz) for encoder in self.encoders], axis=0
+            [encoder.encode_frame(source_points) for encoder in self.encoders], axis=0
         ).astype(np.float32)
         if rotations.shape != (len(self.encoders), 3, 3):
             raise ValueError(
@@ -425,7 +466,7 @@ class OnlineNdfFunctionalFrameProvider:
         target_confidence = float(self._cached_target_confidence)
         marker_frame = np.asarray(self._cached_marker_frame, dtype=np.float32)
         current_position = (
-            current_xyz.mean(axis=0)
+            source_points.mean(axis=0)
             + source_rotation @ self.current_origin_offset_local3
         )
         goal_rotation = (
@@ -472,6 +513,8 @@ class OnlineNdfFunctionalFrameProvider:
             source_temporal_jump_deg=(
                 None if temporal_jump is None else float(temporal_jump)
             ),
+            source_input_points=int(len(current_xyz)),
+            source_encoded_points=int(len(source_points)),
         )
 
     def estimate(

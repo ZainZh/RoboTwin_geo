@@ -47,6 +47,17 @@ def _goal_frame9(transform: np.ndarray) -> np.ndarray:
     )
 
 
+def _frame9_rotation_angle_deg(frame9: np.ndarray) -> float:
+    value = np.asarray(frame9, dtype=np.float64).reshape(9)
+    first = value[3:6]
+    first /= max(float(np.linalg.norm(first)), 1.0e-8)
+    second = value[6:9] - first * float(np.dot(first, value[6:9]))
+    second /= max(float(np.linalg.norm(second)), 1.0e-8)
+    rotation = np.column_stack((first, second, np.cross(first, second)))
+    cosine = np.clip((float(np.trace(rotation)) - 1.0) * 0.5, -1.0, 1.0)
+    return float(np.rad2deg(np.arccos(cosine)))
+
+
 class TagrtDP3Runtime:
     """Load one DP3 checkpoint and reproduce its camera-only TAGRT contract."""
 
@@ -185,6 +196,15 @@ class TagrtDP3Runtime:
             "source_confidence": float(estimate.source_confidence),
             "target_confidence": float(estimate.target_confidence),
             "source_disagreement_deg": estimate.source_disagreement_deg,
+            "source_input_points": estimate.source_input_points,
+            "source_encoded_points": estimate.source_encoded_points,
+            "estimated_translation_xyz_m": estimate.frame9_metric[:3].tolist(),
+            "estimated_translation_norm_m": float(
+                np.linalg.norm(estimate.frame9_metric[:3])
+            ),
+            "estimated_rotation_deg": _frame9_rotation_angle_deg(
+                estimate.frame9_metric
+            ),
             "target_latched": bool(estimate.target_latched),
         }
         self.observation_index += 1
@@ -254,6 +274,10 @@ def get_model(usr_args):
         predicted_rotation_norm_max=0.0,
         predicted_gripper_sum=np.zeros(2, dtype=np.float64),
         predicted_gripper_closed=np.zeros(2, dtype=np.int64),
+        first_active_release_step=None,
+        first_active_release_geometry_translation_m=None,
+        first_active_release_geometry_rotation_deg=None,
+        first_active_release_geometry_confidence=None,
     )
 
     def metrics():
@@ -297,6 +321,16 @@ def get_model(usr_args):
                 model.predicted_gripper_closed[1]
                 / max(model.executed_actions, 1)
             ),
+            "tagrt_dp3_first_active_release_step": model.first_active_release_step,
+            "tagrt_dp3_first_active_release_geometry_translation_m": (
+                model.first_active_release_geometry_translation_m
+            ),
+            "tagrt_dp3_first_active_release_geometry_rotation_deg": (
+                model.first_active_release_geometry_rotation_deg
+            ),
+            "tagrt_dp3_first_active_release_geometry_confidence": (
+                model.first_active_release_geometry_confidence
+            ),
             **{
                 f"tagrt_dp3_{key}": value
                 for key, value in runtime.last_diagnostic.items()
@@ -321,6 +355,23 @@ def eval(TASK_ENV, model, observation):
         action = np.asarray(raw_action, dtype=np.float32).copy()
         action[6] = np.clip(action[6], 0.0, 1.0)
         action[13] = np.clip(action[13], 0.0, 1.0)
+        gripper_now = np.asarray(
+            [endpose["left_gripper"], endpose["right_gripper"]],
+            dtype=np.float32,
+        )
+        active_release = (gripper_now < 0.5) & (action[[6, 13]] >= 0.5)
+        if model.first_active_release_step is None and bool(np.any(active_release)):
+            diagnostic = model.runtime.last_diagnostic
+            model.first_active_release_step = int(model.executed_actions)
+            model.first_active_release_geometry_translation_m = diagnostic.get(
+                "estimated_translation_norm_m"
+            )
+            model.first_active_release_geometry_rotation_deg = diagnostic.get(
+                "estimated_rotation_deg"
+            )
+            model.first_active_release_geometry_confidence = diagnostic.get(
+                "confidence"
+            )
         translation_norms = (
             float(np.linalg.norm(action[:3])),
             float(np.linalg.norm(action[7:10])),
@@ -377,6 +428,10 @@ def reset_model(model):
     model.predicted_rotation_norm_max = 0.0
     model.predicted_gripper_sum.fill(0.0)
     model.predicted_gripper_closed.fill(0)
+    model.first_active_release_step = None
+    model.first_active_release_geometry_translation_m = None
+    model.first_active_release_geometry_rotation_deg = None
+    model.first_active_release_geometry_confidence = None
 
 
 def latch_target_observations(model, observations) -> dict:
