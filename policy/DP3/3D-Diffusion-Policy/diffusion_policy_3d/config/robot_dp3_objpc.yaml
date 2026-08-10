@@ -145,6 +145,9 @@ policy:
   rotation_action_translation_anchor_flow_key: null
   # Raw moment pooling with endpoint + zero-sum temporal residual decoding.
   rotation_action_translation_flow_consistent: false
+  # Replace paired translation+rotation from one learned chunk so synthetic
+  # joint-SE(3) labels and deployed active-arm actions obey the same contract.
+  rotation_action_translation_joint_se3: false
   # Auxiliary consistency between six-step cumulative displacement and label.
   rotation_action_translation_endpoint_loss_weight: 0.0
   rotation_action_translation_loss_weight: 0.0
@@ -204,6 +207,9 @@ training:
   # Optional motion recovery fine-tuning that keeps both learned gripper heads
   # bit-identical to the deployed checkpoint.
   motion_only: false
+  # Relearn closed-state hold/release while preserving the grasp head and all
+  # Cartesian policy/recovery parameters bit-for-bit.
+  binary_gripper_retention_head_only: false
   # Train only the task-aligned rotation decoder while preserving the deployed
   # DP3 translation, gripper, encoder, and TAGRT-adapter parameters bit-for-bit.
   rotation_action_head_only: false

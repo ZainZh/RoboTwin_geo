@@ -231,6 +231,13 @@ class TrainDP3Workspace:
                 cfg, "training.binary_gripper_head_only", default=False
             )
         )
+        binary_gripper_retention_head_only = bool(
+            OmegaConf.select(
+                cfg,
+                "training.binary_gripper_retention_head_only",
+                default=False,
+            )
+        )
         motion_only = bool(
             OmegaConf.select(cfg, "training.motion_only", default=False)
         )
@@ -253,6 +260,7 @@ class TrainDP3Workspace:
             (
                 geometry_adapter_only,
                 binary_gripper_head_only,
+                binary_gripper_retention_head_only,
                 motion_only,
                 rotation_action_head_only,
                 recovery_translation_head_only,
@@ -260,7 +268,8 @@ class TrainDP3Workspace:
             )
         ) > 1:
             raise ValueError(
-                "geometry_adapter_only, binary_gripper_head_only, motion_only, "
+                "geometry_adapter_only, binary_gripper_head_only, "
+                "binary_gripper_retention_head_only, motion_only, "
                 "rotation_action_head_only, recovery_translation_head_only, "
                 "and rotation_action_gate_only "
                 "are mutually exclusive"
@@ -269,6 +278,7 @@ class TrainDP3Workspace:
         partial_training = (
             geometry_adapter_only
             or binary_gripper_head_only
+            or binary_gripper_retention_head_only
             or motion_only
             or rotation_action_head_only
             or recovery_translation_head_only
@@ -284,7 +294,8 @@ class TrainDP3Workspace:
         if partial_training_start_from_ema and not partial_training:
             raise ValueError(
                 "partial_training_start_from_ema requires geometry_adapter_only "
-                "binary_gripper_head_only, motion_only, rotation_action_head_only, "
+                "binary_gripper_head_only, binary_gripper_retention_head_only, "
+                "motion_only, rotation_action_head_only, "
                 "recovery_translation_head_only, or rotation_action_gate_only"
             )
         if partial_training_start_from_ema:
@@ -312,6 +323,18 @@ class TrainDP3Workspace:
             ]
             print(
                 "Binary-gripper-head-only training: "
+                f"{sum(parameter.numel() for parameter in trainable)} trainable parameters"
+            )
+        if binary_gripper_retention_head_only:
+            self.model.freeze_base_for_binary_gripper_retention()
+            if self.ema_model is not None:
+                self.ema_model.freeze_base_for_binary_gripper_retention()
+            trainable = [
+                parameter for parameter in self.model.parameters()
+                if parameter.requires_grad
+            ]
+            print(
+                "Binary-gripper-retention-head-only training: "
                 f"{sum(parameter.numel() for parameter in trainable)} trainable parameters"
             )
         if motion_only:

@@ -17,6 +17,7 @@ from diffusion_policy_3d.dataset.tagrt_dataset import (  # noqa: E402
     task_aligned_anchor_flow_tokens,
 )
 from diffusion_policy_3d.policy.dp3 import (  # noqa: E402
+    DP3,
     FlowConsistentAnchorTranslationHead,
     _active_translation_action_loss,
     _active_rotation_action_loss,
@@ -28,6 +29,32 @@ from diffusion_policy_3d.policy.dp3 import (  # noqa: E402
 
 
 class TaskAlignedGeometryDatasetTest(unittest.TestCase):
+    def test_retention_only_freeze_preserves_every_other_module(self):
+        policy = DP3.__new__(DP3)
+        torch.nn.Module.__init__(policy)
+        policy.binary_gripper_head = torch.nn.Linear(2, 2)
+        policy.binary_gripper_retention_head = torch.nn.Linear(2, 2)
+        policy.rotation_action_head = torch.nn.Linear(2, 2)
+        policy.freeze_base_for_binary_gripper_retention()
+        self.assertTrue(
+            all(
+                parameter.requires_grad
+                for parameter in policy.binary_gripper_retention_head.parameters()
+            )
+        )
+        self.assertTrue(
+            all(
+                not parameter.requires_grad
+                for parameter in policy.binary_gripper_head.parameters()
+            )
+        )
+        self.assertTrue(
+            all(
+                not parameter.requires_grad
+                for parameter in policy.rotation_action_head.parameters()
+            )
+        )
+
     def test_flow_consistent_head_chunk_sums_to_learned_endpoint(self):
         head = FlowConsistentAnchorTranslationHead(
             in_channels=9,
@@ -52,6 +79,34 @@ class TaskAlignedGeometryDatasetTest(unittest.TestCase):
             dim=-1,
         )
         endpoint = head.endpoint(head.trunk(summary)).reshape(2, 2, 3)
+        torch.testing.assert_close(output.sum(dim=1), endpoint)
+
+    def test_flow_consistent_joint_se3_head_preserves_six_dimensional_endpoint(self):
+        head = FlowConsistentAnchorTranslationHead(
+            in_channels=9,
+            hidden_dim=16,
+            global_dim=9,
+            confidence_dim=1,
+            action_steps=6,
+            action_channels=6,
+        )
+        tokens = torch.randn(2, 8, 9)
+        relation = torch.randn(2, 9)
+        confidence = torch.ones(2, 1)
+        output = head(tokens, relation, confidence)
+        self.assertEqual(tuple(output.shape), (2, 6, 2, 6))
+        summary = torch.cat(
+            (
+                tokens.mean(1),
+                tokens.std(1, unbiased=False),
+                tokens.min(1).values,
+                tokens.max(1).values,
+                relation,
+                confidence,
+            ),
+            dim=-1,
+        )
+        endpoint = head.endpoint(head.trunk(summary)).reshape(2, 2, 6)
         torch.testing.assert_close(output.sum(dim=1), endpoint)
 
     def test_anchor_flow_tokens_encode_eef_offsets_and_rigid_displacement(self):
@@ -191,6 +246,19 @@ class TaskAlignedGeometryDatasetTest(unittest.TestCase):
         )
         self.assertAlmostEqual(float(per_step), 1.0)
         self.assertAlmostEqual(float(with_endpoint), 5.0)
+
+    def test_joint_se3_recovery_loss_supervises_rotation_and_translation(self):
+        prediction = torch.zeros((1, 2, 2, 6), dtype=torch.float32)
+        target = torch.zeros((1, 2, 14), dtype=torch.float32)
+        target[0, :, 7:13] = 1.0
+        loss = _active_translation_action_loss(
+            prediction,
+            target,
+            torch.tensor([True]),
+            torch.tensor([True]),
+            endpoint_weight=0.0,
+        )
+        self.assertAlmostEqual(float(loss), 1.0)
 
     def test_rotation_head_loss_selects_active_arm_and_weights_recovery(self):
         prediction = torch.zeros((2, 2, 2, 3), dtype=torch.float32)

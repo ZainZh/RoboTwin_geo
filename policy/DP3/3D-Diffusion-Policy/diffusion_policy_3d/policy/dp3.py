@@ -244,9 +244,13 @@ class FlowConsistentAnchorTranslationHead(nn.Module):
         global_dim: int,
         confidence_dim: int,
         action_steps: int,
+        action_channels: int = 3,
     ):
         super().__init__()
         self.action_steps = int(action_steps)
+        self.action_channels = int(action_channels)
+        if self.action_channels not in (3, 6):
+            raise ValueError("flow-consistent action channels must be 3 or 6")
         input_dim = 4 * int(in_channels) + int(global_dim) + int(confidence_dim)
         hidden = int(hidden_dim)
         self.trunk = nn.Sequential(
@@ -256,8 +260,10 @@ class FlowConsistentAnchorTranslationHead(nn.Module):
             nn.Linear(hidden, hidden),
             nn.Mish(),
         )
-        self.endpoint = nn.Linear(hidden, 2 * 3)
-        self.temporal_residual = nn.Linear(hidden, self.action_steps * 2 * 3)
+        self.endpoint = nn.Linear(hidden, 2 * self.action_channels)
+        self.temporal_residual = nn.Linear(
+            hidden, self.action_steps * 2 * self.action_channels
+        )
 
     def forward(
         self,
@@ -277,9 +283,9 @@ class FlowConsistentAnchorTranslationHead(nn.Module):
             dim=-1,
         )
         feature = self.trunk(raw_summary)
-        endpoint = self.endpoint(feature).reshape(-1, 2, 3)
+        endpoint = self.endpoint(feature).reshape(-1, 2, self.action_channels)
         residual = self.temporal_residual(feature).reshape(
-            -1, self.action_steps, 2, 3
+            -1, self.action_steps, 2, self.action_channels
         )
         residual = residual - residual.mean(dim=1, keepdim=True)
         return residual + endpoint[:, None] / float(self.action_steps)
@@ -433,13 +439,21 @@ def _active_translation_action_loss(
 ) -> torch.Tensor:
     """Supervise only the gated active-arm Cartesian compensation."""
 
-    if prediction.ndim != 4 or tuple(prediction.shape[-2:]) != (2, 3):
-        raise ValueError("translation prediction must have shape [B, T, 2, 3]")
+    if prediction.ndim != 4 or int(prediction.shape[-2]) != 2:
+        raise ValueError("recovery prediction must have shape [B, T, 2, C]")
+    action_channels = int(prediction.shape[-1])
+    if action_channels not in (3, 6):
+        raise ValueError("recovery prediction channels must be 3 or 6")
     if target_action.ndim != 3 or int(target_action.shape[-1]) != 14:
         raise ValueError("translation target requires [B, T, 14] actions")
-    target_translation = torch.stack(
-        (target_action[..., :3], target_action[..., 7:10]), dim=2
-    )
+    if action_channels == 3:
+        target_translation = torch.stack(
+            (target_action[..., :3], target_action[..., 7:10]), dim=2
+        )
+    else:
+        target_translation = torch.stack(
+            (target_action[..., :6], target_action[..., 7:13]), dim=2
+        )
     active_right = active_arm_right.reshape(-1).to(
         device=prediction.device, dtype=torch.long
     )
@@ -600,6 +614,7 @@ class DP3(BasePolicy):
         rotation_action_translation_apply_on_high_rotation=False,
         rotation_action_translation_anchor_flow_key=None,
         rotation_action_translation_flow_consistent=False,
+        rotation_action_translation_joint_se3=False,
         rotation_action_translation_endpoint_loss_weight=0.0,
         rotation_action_translation_loss_weight=0.0,
         rotation_action_head_geometry_key=None,
@@ -736,6 +751,9 @@ class DP3(BasePolicy):
         self.rotation_action_translation_flow_consistent = bool(
             rotation_action_translation_flow_consistent
         )
+        self.rotation_action_translation_joint_se3 = bool(
+            rotation_action_translation_joint_se3
+        )
         self.rotation_action_translation_endpoint_loss_weight = float(
             rotation_action_translation_endpoint_loss_weight
         )
@@ -789,6 +807,11 @@ class DP3(BasePolicy):
             raise ValueError(
                 "rotation_action_translation_endpoint_loss_weight must be non-negative"
             )
+        if (
+            self.rotation_action_translation_joint_se3
+            and self.rotation_action_translation_anchor_flow_key is None
+        ):
+            raise ValueError("joint SE(3) recovery requires anchor-flow tokens")
         rotation_action_head_enabled = self.rotation_action_head_hidden_dim > 0
         if rotation_action_head_enabled:
             if not obs_as_global_cond:
@@ -1177,6 +1200,11 @@ class DP3(BasePolicy):
                                 global_dim=int(math.prod(rotation_geometry_shape)),
                                 confidence_dim=confidence_dim,
                                 action_steps=int(n_action_steps),
+                                action_channels=(
+                                    6
+                                    if self.rotation_action_translation_joint_se3
+                                    else 3
+                                ),
                             )
                         )
                     else:
@@ -1378,6 +1406,18 @@ class DP3(BasePolicy):
             for parameter in self.binary_gripper_retention_head.parameters():
                 parameter.requires_grad_(True)
 
+    def freeze_base_for_binary_gripper_retention(self) -> None:
+        """Train hold/release without changing grasp or Cartesian actions."""
+
+        if self.binary_gripper_retention_head is None:
+            raise RuntimeError(
+                "Cannot freeze for gripper retention: retention head is disabled"
+            )
+        for parameter in self.parameters():
+            parameter.requires_grad_(False)
+        for parameter in self.binary_gripper_retention_head.parameters():
+            parameter.requires_grad_(True)
+
     def freeze_binary_gripper_heads(self) -> None:
         """Keep learned grasp/retention decisions fixed during motion tuning."""
 
@@ -1519,7 +1559,10 @@ class DP3(BasePolicy):
             prediction = self.rotation_action_translation_head(
                 tokens, geometry, confidence
             )
-            return prediction.reshape(int(batch_size), self.n_action_steps, 2, 3)
+            channels = 6 if self.rotation_action_translation_joint_se3 else 3
+            return prediction.reshape(
+                int(batch_size), self.n_action_steps, 2, channels
+            )
         if self.rotation_action_translation_geometry_only:
             if self.rotation_action_translation_translation_only:
                 geometry = observations[self.rotation_action_head_geometry_key][
@@ -2011,9 +2054,15 @@ class DP3(BasePolicy):
                     )
                 action = _replace_closed_arm_translations(
                     action,
-                    rotation_action_translation_prediction,
+                    rotation_action_translation_prediction[..., :3],
                     translation_action_active,
                 )
+                if self.rotation_action_translation_joint_se3:
+                    action = _replace_closed_arm_rotations(
+                        action,
+                        rotation_action_translation_prediction[..., 3:6],
+                        translation_action_active,
+                    )
 
         # get prediction
         result = {

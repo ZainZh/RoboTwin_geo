@@ -61,6 +61,9 @@ def evaluate(policy, dataset, *, device: torch.device, batch_size: int) -> dict:
     translation_mse = []
     translation_endpoint_error = []
     translation_endpoint_cosine = []
+    rotation_endpoint_error_deg = []
+    active_gripper_probability = []
+    active_gripper_target = []
     for batch in loader:
         observations = dict_apply(
             batch["obs"], lambda value: value.to(device, non_blocking=True)
@@ -93,15 +96,62 @@ def evaluate(policy, dataset, *, device: torch.device, batch_size: int) -> dict:
         active_right = batch["active_arm_right"].to(
             device=translation_prediction.device, dtype=torch.bool
         )
+        gripper_logits = policy._binary_gripper_logits(encoded, normalized, count)
+        gripper_probability = torch.sigmoid(gripper_logits)
+        gripper_commands = torch.stack(
+            (target_action[..., 6], target_action[..., 13]), dim=-1
+        )
+        active_gripper_index = active_right[:, None, None].expand(
+            -1, int(policy.n_action_steps), 1
+        )
+        active_gripper_probability.append(
+            torch.gather(
+                gripper_probability,
+                dim=2,
+                index=active_gripper_index.long(),
+            ).squeeze(2).cpu().numpy()
+        )
+        active_gripper_target.append(
+            torch.gather(
+                gripper_commands < 0.5,
+                dim=2,
+                index=active_gripper_index.long(),
+            ).squeeze(2).cpu().numpy()
+        )
         active_index = active_right[:, None, None, None].expand(
             -1, int(policy.n_action_steps), 1, 3
         )
         active_prediction = torch.gather(
             translation_prediction, dim=2, index=active_index.long()
-        ).squeeze(2)
+        ).squeeze(2)[..., :3]
         active_target = torch.gather(
             target_translation, dim=2, index=active_index.long()
         ).squeeze(2)
+        if int(translation_prediction.shape[-1]) == 6:
+            target_rotation = torch.stack(
+                (target_action[..., 3:6], target_action[..., 10:13]), dim=2
+            )
+            active_rotation_prediction = torch.gather(
+                translation_prediction[..., 3:6],
+                dim=2,
+                index=active_index.long(),
+            ).squeeze(2)
+            active_rotation_target = torch.gather(
+                target_rotation, dim=2, index=active_index.long()
+            ).squeeze(2)
+            rotation_endpoint_error_deg.append(
+                torch.rad2deg(
+                    torch.linalg.vector_norm(
+                        active_rotation_prediction.sum(dim=1)
+                        - active_rotation_target.sum(dim=1),
+                        dim=-1,
+                    )
+                ).cpu().numpy()
+            )
+        else:
+            rotation_endpoint_error_deg.append(
+                np.full((count,), np.nan, dtype=np.float32)
+            )
         translation_mse.append(
             torch.mean((active_prediction - active_target) ** 2, dim=(1, 2))
             .cpu()
@@ -128,6 +178,13 @@ def evaluate(policy, dataset, *, device: torch.device, batch_size: int) -> dict:
     translation_error = np.concatenate(translation_mse).astype(np.float64)
     endpoint_error = np.concatenate(translation_endpoint_error).astype(np.float64)
     endpoint_cosine = np.concatenate(translation_endpoint_cosine).astype(np.float64)
+    rotation_error_deg = np.concatenate(rotation_endpoint_error_deg).astype(
+        np.float64
+    )
+    gripper_probability = np.concatenate(active_gripper_probability).astype(
+        np.float64
+    )
+    gripper_target = np.concatenate(active_gripper_target).astype(bool)
     translation_target = (gate_target >= 0.5) & (failure_target < 0.5)
     return {
         "samples": int(len(probability)),
@@ -141,6 +198,9 @@ def evaluate(policy, dataset, *, device: torch.device, batch_size: int) -> dict:
         "translation_mse": translation_error,
         "translation_endpoint_error": endpoint_error,
         "translation_endpoint_cosine": endpoint_cosine,
+        "rotation_endpoint_error_deg": rotation_error_deg,
+        "active_gripper_probability": gripper_probability,
+        "active_gripper_target": gripper_target,
     }
 
 
@@ -178,6 +238,9 @@ def main() -> None:
             translation_mse = values.pop("translation_mse")
             endpoint_error = values.pop("translation_endpoint_error")
             endpoint_cosine = values.pop("translation_endpoint_cosine")
+            rotation_error_deg = values.pop("rotation_endpoint_error_deg")
+            gripper_probability = values.pop("active_gripper_probability")
+            gripper_target = values.pop("active_gripper_target")
             subset_probability = {
                 "negative": probability[gate_target < 0.5],
                 "failure_matched_rotation": probability[failure_target >= 0.5],
@@ -217,6 +280,47 @@ def main() -> None:
                         np.quantile(endpoint_cosine[mask], 0.05)
                     ),
                 }
+            values["active_gripper_by_subset"] = {}
+            for key, mask in {
+                "failure_matched_rotation": failure_target >= 0.5,
+                "generic_translation": translation_target,
+            }.items():
+                if not np.any(mask):
+                    values["active_gripper_by_subset"][key] = None
+                    continue
+                subset_probability = gripper_probability[mask]
+                subset_target = gripper_target[mask]
+                predicted_closed = subset_probability >= float(
+                    policy.binary_gripper_threshold
+                )
+                values["active_gripper_by_subset"][key] = {
+                    "closed_target_fraction": float(subset_target.mean()),
+                    "closed_probability_mean_by_step": subset_probability.mean(
+                        axis=0
+                    ).tolist(),
+                    "closed_probability_p05_by_step": np.quantile(
+                        subset_probability, 0.05, axis=0
+                    ).tolist(),
+                    "all_steps_predicted_closed_fraction": float(
+                        predicted_closed.all(axis=1).mean()
+                    ),
+                }
+            values["rotation_endpoint_by_subset"] = {}
+            for key, mask in {
+                "failure_matched_rotation": failure_target >= 0.5,
+                "generic_translation": translation_target,
+            }.items():
+                finite = mask & np.isfinite(rotation_error_deg)
+                values["rotation_endpoint_by_subset"][key] = (
+                    None
+                    if not np.any(finite)
+                    else {
+                        "error_deg_mean": float(rotation_error_deg[finite].mean()),
+                        "error_deg_p95": float(
+                            np.quantile(rotation_error_deg[finite], 0.95)
+                        ),
+                    }
+                )
             values["operating_points"] = [
                 binary_metrics(probability, gate_target, threshold)
                 for threshold in args.thresholds

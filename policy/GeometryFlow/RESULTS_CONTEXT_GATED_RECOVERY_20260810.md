@@ -141,3 +141,64 @@ is the only low-translation candidate promoted to a targeted closed-loop
 diagnostic. It is not yet a frozen success-rate result. The local H200 host
 cannot launch SAPIEN's required Vulkan renderer, so that single diagnostic is
 scheduled on the isolated RTX 4090 simulator host before any 400xxx blind run.
+
+## Targeted RTX-4090 closed-loop diagnosis
+
+The epoch-30 translation-only anchor-flow candidate failed on the pre-registered
+development seed 100003. The high-rotation decoder remained effective, moving
+the true state from 5.57 cm / 39.0 degrees to 3.57 cm / 16.5 degrees. The
+low-rotation head then fired at a camera estimate of 3.13 cm / 17.8 degrees and
+increased the true error to 4.47 cm / 19.2 degrees. Its active-arm endpoint was
+`[+2.14,+2.50,-2.64] cm`. The old retention head simultaneously released after
+the first action of the chunk. Final performance was 5.48 cm / 17.99 degrees,
+0/1 success.
+
+The retention implementation is a learned six-step head, not a one-step rule.
+It had been frozen during the translation-head experiment and had never learned
+the new recovery-state distribution. Retention-only training changed exactly
+six tensors under `binary_gripper_retention_head` and no other model tensor.
+Epoch 4 was selected before another rollout: on 136 held-out shoe-5 rows, 97.1%
+predicted closed for all six steps and the per-step p05 probabilities remained
+0.538--0.591.
+
+The translation distribution was then expanded from donor rotation below 2
+degrees to a 0--18 degree residual-rotation shell, still using training shoes
+2/3/4/7/8/9 only. A new held-out shoe-5 set used the same shell. Translation-
+only decoding reached 1.618 cm endpoint error and 0.948 cosine offline, but it
+again failed online: its `[+1.66,+6.16,-2.81] cm` endpoint changed the true
+state from 3.59 cm / 16.3 degrees to 6.79 cm / 18.4 degrees. Retention was fixed
+and stayed closed for the full 90 steps, so release no longer explains the
+failure.
+
+This identifies a supervision/deployment contract error. The synthetic
+geometry-goal translation label contains the grasp-point orbit paired with its
+rotation label, while the deployed translation-only branch discards that
+rotation and retains nominal DP3 rotation. A high-rotation + learned-retention
+ablation (translation branch disabled) ended at 3.87 cm / 7.24 degrees at 90
+steps and 4.78 cm / 10.91 degrees at 120 steps; extra horizon did not resolve
+the nominal translation drift. The factorized low-rotation translation-only
+branch is therefore rejected.
+
+## Paired joint-SE(3) anchor-flow decoder
+
+The corrected learned decoder retains the same camera NDF/TAGRT inputs and gate
+but emits a paired active-arm `[translation, rotvec]` chunk. One head produces
+`[B, 6, 2, 6]`; its temporal residuals are zero-sum, so the chunk sum exactly
+matches the learned 6D endpoint. At deployment, a low-rotation gate activation
+replaces both translation and rotation from this same prediction. No planner,
+simulator-pose input, stage label, or analytic residual was added.
+
+Held-out shoe-5 results on the 0--18 degree cascade distribution are:
+
+| Epoch | Translation mean / p95 | Direction cosine | Rotation mean / p95 |
+|---:|---:|---:|---:|
+| 5 | 2.210 / 3.522 cm | 0.9227 | 7.07 / 12.22 deg |
+| 10 | 1.849 / 3.075 cm | 0.9422 | 5.97 / 10.44 deg |
+| 15 | 1.652 / 2.703 cm | 0.9537 | 5.26 / 9.17 deg |
+| 20 | 1.570 / 2.555 cm | 0.9584 | 4.87 / 8.58 deg |
+| 25 | 1.541 / 2.500 cm | 0.9599 | 4.65 / 8.31 deg |
+| 30 | **1.532 / 2.479 cm** | **0.9602** | **4.58 / 8.29 deg** |
+
+Epoch 30 is the sole joint-SE(3) candidate promoted to the same seed-100003
+targeted diagnostic. No new blind cohort may be run until that diagnostic
+shows that offline paired-action consistency transfers to closed loop.
