@@ -12,7 +12,7 @@ VARIANT="$2"
   exit 2
 }
 case "${VARIANT}" in
-  full_fixed|no_ce|no_supcon|no_consistency) ;;
+  full_fixed|no_ce|no_supcon|no_consistency|ce_only) ;;
   *) echo "unknown stage42 variant: ${VARIANT}" >&2; exit 2 ;;
 esac
 [[ "${RUN_STAGE42:-0}" == "1" ]] || {

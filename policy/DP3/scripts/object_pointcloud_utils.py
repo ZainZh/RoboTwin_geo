@@ -165,7 +165,12 @@ def strip_zero_points(point_cloud: np.ndarray) -> np.ndarray:
     return point_cloud[nonzero_mask]
 
 
-def _farthest_point_sample_indices(points_xyz: np.ndarray, target_num: int) -> np.ndarray:
+def _farthest_point_sample_indices(
+    points_xyz: np.ndarray,
+    target_num: int,
+    *,
+    deterministic: bool = False,
+) -> np.ndarray:
     points_xyz = np.asarray(points_xyz, dtype=np.float32)
     num_points = len(points_xyz)
     if num_points == 0:
@@ -175,7 +180,12 @@ def _farthest_point_sample_indices(points_xyz: np.ndarray, target_num: int) -> n
 
     selected = np.zeros((target_num,), dtype=np.int64)
     distances = np.full((num_points,), np.inf, dtype=np.float32)
-    farthest = int(np.random.randint(0, num_points))
+    if deterministic:
+        center = points_xyz.mean(axis=0, keepdims=True)
+        distance_to_center = np.sum((points_xyz - center) ** 2, axis=1)
+        farthest = int(np.argmax(distance_to_center))
+    else:
+        farthest = int(np.random.randint(0, num_points))
     for i in range(target_num):
         selected[i] = farthest
         centroid = points_xyz[farthest]
@@ -185,7 +195,12 @@ def _farthest_point_sample_indices(points_xyz: np.ndarray, target_num: int) -> n
     return selected
 
 
-def resample_point_cloud(point_cloud: np.ndarray, target_num_points: int) -> np.ndarray:
+def resample_point_cloud(
+    point_cloud: np.ndarray,
+    target_num_points: int,
+    *,
+    deterministic: bool = False,
+) -> np.ndarray:
     point_cloud = strip_zero_points(point_cloud)
     if target_num_points <= 0:
         return point_cloud.astype(np.float32)
@@ -193,12 +208,22 @@ def resample_point_cloud(point_cloud: np.ndarray, target_num_points: int) -> np.
         return np.zeros((target_num_points, 6), dtype=np.float32)
     if len(point_cloud) < target_num_points:
         reps = target_num_points - len(point_cloud)
-        extra_idx = np.random.choice(len(point_cloud), size=reps, replace=True)
+        if deterministic:
+            extra_idx = np.resize(
+                np.arange(len(point_cloud), dtype=np.int64),
+                reps,
+            )
+        else:
+            extra_idx = np.random.choice(len(point_cloud), size=reps, replace=True)
         point_cloud = np.concatenate([point_cloud, point_cloud[extra_idx]], axis=0)
         return point_cloud.astype(np.float32)
     if len(point_cloud) == target_num_points:
         return point_cloud.astype(np.float32)
-    selected = _farthest_point_sample_indices(point_cloud[:, :3], target_num_points)
+    selected = _farthest_point_sample_indices(
+        point_cloud[:, :3],
+        target_num_points,
+        deterministic=deterministic,
+    )
     return point_cloud[selected].astype(np.float32)
 
 

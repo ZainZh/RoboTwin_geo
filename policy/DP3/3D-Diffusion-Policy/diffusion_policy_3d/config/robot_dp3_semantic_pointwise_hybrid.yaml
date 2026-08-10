@@ -55,6 +55,13 @@ policy:
 
   use_pc_color: false
   pointnet_type: "pointnet"
+  pointcloud_fusion_mode: concat
+  semantic_gate_init: 0.0
+  semantic_gate_trainable: true
+  semantic_gate_scale: 1.0
+  semantic_attention_heads: 4
+  semantic_attention_dropout: 0.0
+  part_pool_temperature: 1.0
 
   pointcloud_encoder_cfg:
     in_channels: 3
@@ -94,6 +101,11 @@ optimizer:
 
 training:
   device: "cuda:0"
+  precision: fp32
+  allow_tf32: null
+  warmstart_safe_checkpoint: null
+  warmstart_use_ema_weights: true
+  freeze_vanilla_backbone: false
   seed: 42
   debug: False
   resume: True

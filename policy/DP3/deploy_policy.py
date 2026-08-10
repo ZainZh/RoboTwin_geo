@@ -1,5 +1,6 @@
 # import packages and module here
 import sys
+import math
 
 import json
 import torch
@@ -40,6 +41,7 @@ parent_directory = os.path.dirname(current_file_path)
 
 sys.path.append(os.path.join(parent_directory, '3D-Diffusion-Policy'))
 sys.path.append(os.path.join(parent_directory, 'scripts'))
+from safe_dp3_checkpoint import load_weights_only_checkpoint
 
 from dp3_policy import *
 from object_pointcloud_utils import merge_object_point_clouds, parse_placeholder_list
@@ -147,6 +149,18 @@ def get_utonia_utils():
     from utonia_feature_utils import compute_utonia_pointwise_cloud, load_utonia_model
 
     return compute_utonia_pointwise_cloud, load_utonia_model
+
+
+def get_matched_utonia_utils():
+    from matched_utonia_feature_utils import compute_utonia_features_at_queries
+
+    return compute_utonia_features_at_queries
+
+
+def get_utonia_projection_utils():
+    from utonia_projection_utils import load_projection_artifact, project_utonia_cloud
+
+    return load_projection_artifact, project_utonia_cloud
 
 
 def get_sam2_utils():
@@ -463,26 +477,97 @@ def encode_obs(observation, model):  # Post-Process Observation
                     ).astype(np.float32)
 
     if use_semantic_pointwise:
+        semantic_frame_index = int(getattr(model, "semantic_policy_frame_index", 0))
         compute_semantic_pointwise_cloud, _ = get_semantic_utils()
+        semantic_output_mode = str(
+            getattr(model, "semantic_policy_output_mode", "embedding")
+        )
+        use_matched_utonia = semantic_output_mode in {
+            "matched_utonia",
+            "matched_utonia128",
+        }
+        use_projected_utonia = semantic_output_mode == "matched_utonia128"
+        compute_matched_utonia = (
+            get_matched_utonia_utils() if use_matched_utonia else None
+        )
         default_sem_dim = int(getattr(model, "semantic_feat_dim", 128))
         for placeholder, semantic_artifacts in getattr(model, "semantic_models", {}).items():
-            pointcloud_key = placeholder_semantic_pointcloud_key(placeholder)
+            pointcloud_key = (
+                placeholder_utonia_pointcloud_key(placeholder)
+                if use_matched_utonia
+                else placeholder_semantic_pointcloud_key(placeholder)
+            )
             point_num = int(getattr(model, "semantic_point_num_by_placeholder", {}).get(placeholder, 128))
-            feat_dim = int(getattr(model, "semantic_feat_dim_by_placeholder", {}).get(placeholder, default_sem_dim))
+            if use_matched_utonia:
+                feat_dim = int(
+                    getattr(model, "utonia_feat_dim_by_placeholder", {}).get(
+                        placeholder, getattr(model, "utonia_feat_dim", 576)
+                    )
+                )
+            else:
+                feat_dim = int(getattr(model, "semantic_feat_dim_by_placeholder", {}).get(placeholder, default_sem_dim))
             object_pc = object_pointcloud.get(placeholder)
             if object_pc is None:
+                if use_matched_utonia:
+                    raise ValueError(
+                        f"matched_utonia is missing object support for {placeholder}"
+                    )
                 obs[pointcloud_key] = np.zeros((point_num, 3 + feat_dim), dtype=np.float32)
                 continue
-            obs[pointcloud_key] = compute_semantic_pointwise_cloud(
+            semantic_cloud = compute_semantic_pointwise_cloud(
                 artifacts=semantic_artifacts,
                 object_point_cloud=object_pc,
                 target_num_points=point_num,
                 placeholder=placeholder,
                 semantic_input_color_mode=str(getattr(model, "semantic_input_color_mode", "debug_placeholder")),
                 semantic_forward_mode=str(getattr(model, "semantic_forward_mode", "reference")),
-                output_mode=str(getattr(model, "semantic_policy_output_mode", "embedding")),
+                output_mode="xyz" if use_matched_utonia else semantic_output_mode,
+                output_seed=int(getattr(model, "semantic_policy_output_seed", 20260807)),
+                output_frame_index=semantic_frame_index,
             ).astype(np.float32)
+            if use_matched_utonia:
+                utonia_artifacts = getattr(model, "utonia_models", {}).get(placeholder)
+                if utonia_artifacts is None:
+                    raise ValueError(
+                        f"matched_utonia is missing Utonia artifacts for {placeholder}"
+                    )
+                matched_cloud = compute_matched_utonia(
+                    artifacts=utonia_artifacts,
+                    object_point_cloud=object_pc,
+                    query_world_xyz=semantic_cloud[:, :3],
+                    placeholder=placeholder,
+                    color_mode=str(
+                        getattr(model, "matched_utonia_color_mode", "debug_placeholder")
+                    ),
+                    normal_mode=str(
+                        getattr(model, "matched_utonia_normal_mode", "fallback")
+                    ),
+                ).astype(np.float32)
+                if use_projected_utonia:
+                    _, project_utonia_cloud = get_utonia_projection_utils()
+                    matched_cloud = project_utonia_cloud(
+                        matched_cloud,
+                        getattr(model, "matched_utonia_projection")["matrix"],
+                    )
+                expected_shape = (point_num, 3 + feat_dim)
+                if matched_cloud.shape != expected_shape:
+                    raise ValueError(
+                        f"matched_utonia produced shape {matched_cloud.shape} for "
+                        f"{placeholder}; expected {expected_shape}"
+                    )
+                if not np.isfinite(matched_cloud).all():
+                    raise ValueError(
+                        f"matched_utonia produced NaN/Inf for {placeholder}"
+                    )
+                if not np.array_equal(matched_cloud[:, :3], semantic_cloud[:, :3]):
+                    raise ValueError(
+                        f"matched_utonia changed semantic query XYZ for {placeholder}"
+                    )
+                obs[pointcloud_key] = matched_cloud
+            else:
+                obs[pointcloud_key] = semantic_cloud
 
+        model.semantic_policy_frame_index = semantic_frame_index + 1
     if use_utonia_pointwise:
         compute_utonia_pointwise_cloud, _ = get_utonia_utils()
         default_utonia_dim = int(getattr(model, "utonia_feat_dim", 96))
@@ -570,6 +655,50 @@ def resolve_checkpoint_path(usr_args, use_rgb: bool) -> pathlib.Path:
     )
 
 
+def resolve_safe_checkpoint_path(usr_args) -> pathlib.Path | None:
+    value = str(usr_args.get("safe_checkpoint_path", "") or "").strip()
+    if not value:
+        return None
+    path = pathlib.Path(value).expanduser().resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f"safe DP3 checkpoint does not exist: {path}")
+    return path
+
+
+def inspect_safe_policy_metadata(
+    checkpoint_path: pathlib.Path,
+    *,
+    expected_task_name: str,
+) -> dict:
+    """Read deployment metadata exclusively through PyTorch's restricted loader."""
+    payload = load_weights_only_checkpoint(checkpoint_path, mmap=True)
+    metadata = payload["metadata"]
+    required = {"task_name", "use_ema", "shape_meta"}
+    missing = sorted(required.difference(metadata))
+    if missing:
+        raise ValueError(f"Safe DP3 checkpoint metadata is missing {missing}")
+    if metadata["task_name"] != str(expected_task_name):
+        raise ValueError(
+            "Safe DP3 checkpoint task metadata mismatch: "
+            f"expected {expected_task_name!r}, got {metadata['task_name']!r}"
+        )
+    if not isinstance(metadata["use_ema"], bool):
+        raise ValueError("Safe DP3 checkpoint metadata 'use_ema' must be a bool")
+    if metadata["use_ema"] and payload.get("ema_model") is None:
+        raise ValueError("Safe DP3 checkpoint requests EMA but ema_model is absent")
+    del payload
+    return metadata
+
+
+def validate_safe_policy_shape_meta(metadata: dict, cfg) -> None:
+    expected = OmegaConf.to_container(cfg.task.shape_meta, resolve=True)
+    if metadata["shape_meta"] != expected:
+        raise ValueError(
+            "Safe DP3 checkpoint shape_meta mismatch: "
+            f"expected {expected!r}, got {metadata['shape_meta']!r}"
+        )
+
+
 def infer_checkpoint_use_ema(ckpt_path: pathlib.Path):
     if not ckpt_path.is_file():
         return None
@@ -625,12 +754,88 @@ def get_model(usr_args):
         }
     }
 
+
     OmegaConf.set_struct(cfg, False)
     cfg.hydra = hydra_runtime_cfg
     cfg.task_name = usr_args["task_name"]
     cfg.expert_data_num = usr_args["expert_data_num"]
     cfg.raw_task_name = usr_args["task_name"]
     cfg.policy.use_pc_color = usr_args['use_rgb']
+    safe_checkpoint_path = resolve_safe_checkpoint_path(usr_args)
+    safe_checkpoint_metadata = None
+    if safe_checkpoint_path is not None:
+        cfg.setting = str(usr_args.get("ckpt_setting", cfg.setting))
+        safe_checkpoint_metadata = inspect_safe_policy_metadata(
+            safe_checkpoint_path,
+            expected_task_name=str(cfg.task.name),
+        )
+        cfg.training.use_ema = bool(safe_checkpoint_metadata["use_ema"])
+
+    checkpoint_encoder_metadata = safe_checkpoint_metadata or {}
+    requested_fusion_mode = str(
+        usr_args.get("pointcloud_fusion_mode", "") or ""
+    ).strip()
+    checkpoint_fusion_mode = str(
+        checkpoint_encoder_metadata.get("pointcloud_fusion_mode", "") or ""
+    ).strip()
+    if (
+        requested_fusion_mode
+        and checkpoint_fusion_mode
+        and requested_fusion_mode != checkpoint_fusion_mode
+    ):
+        raise ValueError(
+            "Requested pointcloud_fusion_mode does not match safe checkpoint: "
+            f"{requested_fusion_mode!r} != {checkpoint_fusion_mode!r}"
+        )
+    pointcloud_fusion_mode = (
+        requested_fusion_mode
+        or checkpoint_fusion_mode
+        or str(cfg.policy.get("pointcloud_fusion_mode", "concat"))
+    )
+    attention_heads = int(
+        usr_args.get(
+            "semantic_attention_heads",
+            checkpoint_encoder_metadata.get(
+                "semantic_attention_heads",
+                cfg.policy.get("semantic_attention_heads", 4),
+            ),
+        )
+    )
+    part_pool_temperature = float(
+        usr_args.get(
+            "part_pool_temperature",
+            checkpoint_encoder_metadata.get(
+                "part_pool_temperature",
+                cfg.policy.get("part_pool_temperature", 1.0),
+            ),
+        )
+    )
+    gate_trainable_default = checkpoint_encoder_metadata.get(
+        "semantic_gate_trainable",
+        cfg.policy.get("semantic_gate_trainable", True),
+    )
+    semantic_gate_trainable = parse_bool_arg(
+        usr_args.get("semantic_gate_trainable", gate_trainable_default),
+        default=bool(gate_trainable_default),
+    )
+    semantic_gate_scale = float(usr_args.get("semantic_gate_scale", 1.0))
+    if not math.isfinite(semantic_gate_scale):
+        raise ValueError("semantic_gate_scale must be finite")
+    OmegaConf.update(
+        cfg, "policy.pointcloud_fusion_mode", pointcloud_fusion_mode, force_add=True
+    )
+    OmegaConf.update(
+        cfg, "policy.semantic_attention_heads", attention_heads, force_add=True
+    )
+    OmegaConf.update(
+        cfg, "policy.part_pool_temperature", part_pool_temperature, force_add=True
+    )
+    OmegaConf.update(
+        cfg, "policy.semantic_gate_trainable", semantic_gate_trainable, force_add=True
+    )
+    OmegaConf.update(
+        cfg, "policy.semantic_gate_scale", semantic_gate_scale, force_add=True
+    )
 
     use_actorseg_objpc = "objpc_actorseg" in usr_args["config_name"]
     use_sam2_objpc = "objpc_sam2" in usr_args["config_name"]
@@ -724,9 +929,36 @@ def get_model(usr_args):
     semantic_input_color_mode = str(usr_args.get("semantic_input_color_mode", "debug_placeholder"))
     semantic_forward_mode = str(usr_args.get("semantic_forward_mode", "reference"))
     semantic_policy_output_mode = str(usr_args.get("semantic_policy_output_mode", "embedding"))
-    if semantic_policy_output_mode not in {"embedding", "xyz", "part_prob"}:
+    semantic_policy_output_seed = int(usr_args.get("semantic_policy_output_seed", 20260807))
+    if semantic_policy_output_mode not in {
+        "embedding",
+        "xyz",
+        "part_prob",
+        "uniform_prob",
+        "shuffled_prob",
+        "matched_utonia",
+        "matched_utonia128",
+    }:
         raise ValueError(
             f"Unsupported semantic_policy_output_mode: {semantic_policy_output_mode}"
+        )
+    use_matched_utonia = semantic_policy_output_mode in {
+        "matched_utonia",
+        "matched_utonia128",
+    }
+    use_projected_utonia = semantic_policy_output_mode == "matched_utonia128"
+    if use_matched_utonia and not use_semantic_pointwise:
+        raise ValueError(
+            f"semantic_policy_output_mode={semantic_policy_output_mode} requires a semantic_pointwise config"
+        )
+    if use_matched_utonia and use_utonia_pointwise:
+        raise ValueError(
+            "semantic_policy_output_mode=matched_utonia cannot be combined with the legacy "
+            "utonia_pointwise config route"
+        )
+    if use_matched_utonia and safe_checkpoint_path is None:
+        raise ValueError(
+            "semantic_policy_output_mode=matched_utonia requires safe_checkpoint_path"
         )
     semantic_device = torch.device(usr_args.get("semantic_device", "cuda:0") if torch.cuda.is_available() else "cpu")
     semantic_model_specs = resolve_semantic_models(usr_args)
@@ -736,10 +968,11 @@ def get_model(usr_args):
     utonia_spec = resolve_utonia_spec(usr_args)
     utonia_feature_placeholders = resolve_utonia_feature_placeholders(usr_args, object_placeholders)
     utonia_feat_dim_by_placeholder = {}
-    ckpt_file = resolve_checkpoint_path(usr_args, use_rgb=bool(usr_args.get("use_rgb", False)))
-    checkpoint_use_ema = infer_checkpoint_use_ema(ckpt_file)
-    if checkpoint_use_ema is not None:
-        cfg.training.use_ema = bool(checkpoint_use_ema)
+    if safe_checkpoint_path is None:
+        ckpt_file = resolve_checkpoint_path(usr_args, use_rgb=bool(usr_args.get("use_rgb", False)))
+        checkpoint_use_ema = infer_checkpoint_use_ema(ckpt_file)
+        if checkpoint_use_ema is not None:
+            cfg.training.use_ema = bool(checkpoint_use_ema)
     actorseg_extract_fn = None
     actorseg_camera_names = []
     actorseg_segmentation_key = "actor_segmentation"
@@ -804,7 +1037,7 @@ def get_model(usr_args):
             )
             if semantic_policy_output_mode == "embedding":
                 output_feature_dim = int(semantic_models[placeholder]["sem_embedding_dim"])
-            elif semantic_policy_output_mode == "part_prob":
+            elif semantic_policy_output_mode in {"part_prob", "uniform_prob", "shuffled_prob"}:
                 output_feature_dim = len(semantic_models[placeholder].get("canonical_label_names", []))
                 if output_feature_dim <= 0:
                     raise ValueError(f"No semantic labels available for {placeholder}")
@@ -814,7 +1047,7 @@ def get_model(usr_args):
     else:
         semantic_models = {}
 
-    if use_utonia_pointwise:
+    if use_utonia_pointwise or use_matched_utonia:
         _, load_utonia_model = get_utonia_utils()
         utonia_artifacts = load_utonia_model(
             device=utonia_device,
@@ -823,16 +1056,63 @@ def get_model(usr_args):
             upcast_levels=int(utonia_spec["upcast_levels"]),
 
         )
+        selected_utonia_placeholders = (
+            [
+                placeholder
+                for placeholder in semantic_models
+                if placeholder in utonia_feature_placeholders
+            ]
+            if use_matched_utonia
+            else utonia_feature_placeholders
+        )
+        if use_matched_utonia and len(selected_utonia_placeholders) == 0:
+            raise ValueError(
+                "matched_utonia requires at least one semantic checkpoint selected for "
+                "Utonia features"
+            )
+        if use_matched_utonia and set(selected_utonia_placeholders) != set(semantic_models):
+            missing = sorted(set(semantic_models).difference(selected_utonia_placeholders))
+            raise ValueError(
+                "matched_utonia requires Utonia artifacts for every semantic placeholder; "
+                f"missing {missing}"
+            )
         utonia_models = {
             placeholder: utonia_artifacts
-            for placeholder in utonia_feature_placeholders
+            for placeholder in selected_utonia_placeholders
         }
         utonia_feat_dim_by_placeholder = {
             placeholder: int(utonia_artifacts["feature_dim"])
-            for placeholder in utonia_feature_placeholders
+            for placeholder in selected_utonia_placeholders
         }
     else:
         utonia_models = {}
+    matched_utonia_projection = None
+    if use_projected_utonia:
+        projection_path = str(
+            usr_args.get("matched_utonia_projection_path", "") or ""
+        ).strip()
+        if not projection_path:
+            raise ValueError(
+                "matched_utonia128 requires matched_utonia_projection_path"
+            )
+        raw_dims = sorted(set(utonia_feat_dim_by_placeholder.values()))
+        if len(raw_dims) != 1:
+            raise ValueError(
+                f"matched_utonia128 requires one shared Utonia feature dim, got {raw_dims}"
+            )
+        projection_output_dim = int(
+            usr_args.get("matched_utonia_projection_dim", 128)
+        )
+        load_projection_artifact, _ = get_utonia_projection_utils()
+        matched_utonia_projection = load_projection_artifact(
+            projection_path,
+            expected_input_dim=raw_dims[0],
+            expected_output_dim=projection_output_dim,
+        )
+        utonia_feat_dim_by_placeholder = {
+            placeholder: projection_output_dim
+            for placeholder in utonia_feat_dim_by_placeholder
+        }
 
     if use_ndf_pointwise:
         for placeholder in object_placeholders:
@@ -909,9 +1189,18 @@ def get_model(usr_args):
             artifacts = semantic_models.get(placeholder)
             if artifacts is None:
                 continue
-            pointcloud_key = placeholder_semantic_pointcloud_key(placeholder)
+            pointcloud_key = (
+                placeholder_utonia_pointcloud_key(placeholder)
+                if use_matched_utonia
+                else placeholder_semantic_pointcloud_key(placeholder)
+            )
+            output_feat_dim = (
+                utonia_feat_dim_by_placeholder[placeholder]
+                if use_matched_utonia
+                else semantic_feat_dim_by_placeholder[placeholder]
+            )
             cfg.task.shape_meta.obs[pointcloud_key] = {
-                "shape": [semantic_point_num, 3 + semantic_feat_dim_by_placeholder[placeholder]],
+                "shape": [semantic_point_num, 3 + output_feat_dim],
                 "type": "point_cloud",
             }
     if use_utonia_pointwise:
@@ -925,6 +1214,9 @@ def get_model(usr_args):
                 "type": "point_cloud",
             }
     OmegaConf.set_struct(cfg, True)
+    if safe_checkpoint_metadata is not None:
+        validate_safe_policy_shape_meta(safe_checkpoint_metadata, cfg)
+
 
     DP3_Model = DP3(cfg, usr_args)
     DP3_Model.use_actorseg_objpc = use_actorseg_objpc
@@ -1028,6 +1320,15 @@ def get_model(usr_args):
     DP3_Model.semantic_input_color_mode = semantic_input_color_mode
     DP3_Model.semantic_forward_mode = semantic_forward_mode
     DP3_Model.semantic_policy_output_mode = semantic_policy_output_mode
+    DP3_Model.semantic_policy_output_seed = semantic_policy_output_seed
+    DP3_Model.semantic_policy_frame_index = 0
+    DP3_Model.matched_utonia_color_mode = str(
+        usr_args.get("matched_utonia_color_mode", "debug_placeholder")
+    )
+    DP3_Model.matched_utonia_normal_mode = str(
+        usr_args.get("matched_utonia_normal_mode", "fallback")
+    )
+    DP3_Model.matched_utonia_projection = matched_utonia_projection
     DP3_Model.semantic_point_num_by_placeholder = {
         placeholder: semantic_point_num
         for placeholder in object_placeholders
@@ -1079,8 +1380,25 @@ def eval(TASK_ENV, model, observation):
 
     actions = model.get_action()  # Get Action according to observation chunk
 
-    for action in actions:  # Execute each step of the action
+    retain_tail_observations = bool(
+        getattr(TASK_ENV, "eval_mode", False)
+        and getattr(TASK_ENV, "fast_eval", {}).get("retain_action_tail_observations", False)
+    )
+    retained_observation_count = max(
+        1, int(getattr(model.env_runner, "n_obs_steps", len(actions)))
+    )
+    first_retained_action = max(0, len(actions) - retained_observation_count)
+
+    for action_index, action in enumerate(actions):  # Execute each step of the action
         TASK_ENV.take_action(action)
+        if TASK_ENV.eval_success or TASK_ENV.take_action_cnt >= TASK_ENV.step_lim:
+            break
+        if retain_tail_observations and action_index < first_retained_action:
+            # These frames cannot enter the next n_obs_steps window. Keep the
+            # explicit frame counter aligned for frame-dependent controls.
+            if hasattr(model, "semantic_policy_frame_index"):
+                model.semantic_policy_frame_index += 1
+            continue
         observation = TASK_ENV.get_obs()
         obs = encode_obs(observation, model)
         model.update_obs(obs)  # Update Observation, `update_obs` here can be modified
@@ -1098,3 +1416,5 @@ def reset_model(
         model.sam2_tracking_state_by_camera = {}
     if hasattr(model, "sam2_bbox_prompts_by_camera") and not bool(getattr(model, "sam2_bbox_prompts_persistent", False)):
         model.sam2_bbox_prompts_by_camera = {}
+    if hasattr(model, "semantic_policy_frame_index"):
+        model.semantic_policy_frame_index = 0

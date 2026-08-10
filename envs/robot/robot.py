@@ -1,7 +1,6 @@
 import sapien.core as sapien
 import numpy as np
 import pdb
-from .planner import MplibPlanner
 import numpy as np
 import toppra as ta
 import math
@@ -12,7 +11,6 @@ from copy import deepcopy
 import sapien.core as sapien
 import envs._GLOBAL_CONFIGS as CONFIGS
 from envs.utils import transforms
-from .planner import CuroboPlanner
 import torch.multiprocessing as mp
 
 
@@ -26,6 +24,10 @@ class Robot:
     def _init_robot_(self, scene, need_topp=False, **kwargs):
         # self.dual_arm = dual_arm_tag
         # self.plan_success = True
+        # Planner-free policy evaluation still uses the common gripper
+        # interpolation path during environment setup. Keep the transport
+        # mode well-defined even when set_planner() is intentionally skipped.
+        self.communication_flag = False
 
         self.left_js = None
         self.right_js = None
@@ -132,7 +134,8 @@ class Robot:
                 self.right_conn.send({"cmd": "reset"})
                 _ = self.right_conn.recv()
         else:
-            if not isinstance(self.left_planner, CuroboPlanner) or not isinstance(self.right_planner, CuroboPlanner):
+            from .planner import CuroboPlanner
+            if not isinstance(getattr(self, "left_planner", None), CuroboPlanner) or not isinstance(getattr(self, "right_planner", None), CuroboPlanner):
                 self.set_planner(scene=scene)
 
         self.init_joints()
@@ -255,6 +258,7 @@ class Robot:
         print("right ee: ", self.right_ee.get_name())
 
     def set_planner(self, scene=None):
+        from .planner import CuroboPlanner, MplibPlanner
         abs_left_curobo_yml_path = os.path.join(CONFIGS.ROOT_PATH, self.left_curobo_yml_path)
         abs_right_curobo_yml_path = os.path.join(CONFIGS.ROOT_PATH, self.right_curobo_yml_path)
 
@@ -342,15 +346,27 @@ class Robot:
         if self.communication_flag:
             self.left_conn.send({"cmd": "plan_grippers", "now_val": now_val, "target_val": target_val})
             return self.left_conn.recv()
-        else:
+        if hasattr(self, "left_planner"):
             return self.left_planner.plan_grippers(now_val, target_val)
+        return self._linear_gripper_plan(now_val, target_val)
 
     def right_plan_grippers(self, now_val, target_val):
         if self.communication_flag:
             self.right_conn.send({"cmd": "plan_grippers", "now_val": now_val, "target_val": target_val})
             return self.right_conn.recv()
-        else:
+        if hasattr(self, "right_planner"):
             return self.right_planner.plan_grippers(now_val, target_val)
+        return self._linear_gripper_plan(now_val, target_val)
+
+    @staticmethod
+    def _linear_gripper_plan(now_val, target_val):
+        """Match Planner.plan_grippers without constructing a motion planner."""
+        num_step = 200
+        return {
+            "num_step": num_step,
+            "per_step": (target_val - now_val) / num_step,
+            "result": np.linspace(now_val, target_val, num_step),
+        }
 
     def left_plan_multi_path(
         self,

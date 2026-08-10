@@ -1,0 +1,69 @@
+\section{Task Definitions and Success Criteria}
+\label{app:tasks}
+
+We provide additional details for the simulation and real-world experiments. All tasks require the robot to identify and interact with task-relevant functional parts, rather than relying only on object-level category recognition. We use the same task initialization protocol, maximum execution horizon, and success criteria for all compared methods.
+
+\paragraph{Simulation tasks.}
+\begin{itemize}
+\item \textbf{Hanging Mug.} The robot grasps the rim or another stable graspable region of a mug and hangs the mug by placing its handle onto a target rack. This task requires identifying both a reliable grasping region and the mug handle used for hanging. A trial is successful if the mug is stably hung on the target rack without falling.
+
+\item \textbf{Beat Block with Hammer.} The robot grasps the handle of a hammer and uses the hammer head to hit a target block. The task requires distinguishing the hammer handle from the hammer head and generating effective contact with the hammer head. A trial is successful if the hammer head contacts the block and moves it to the target state.
+
+\item \textbf{Open Microwave.} The robot opens a microwave door by interacting with the door handle or another valid interactive region. The task requires localizing the articulated interaction region and applying motion in the correct direction. A trial is successful if the microwave door is opened beyond the predefined angle threshold.
+
+\item \textbf{Put Object into Cabinet.} The robot first interacts with the cabinet handle to open the cabinet, and then places the target object into the cabinet or target storage region. This task requires identifying the cabinet handle as the functional interaction region and completing the subsequent placement. A trial is successful if the cabinet is opened and the object is placed inside the target cabinet region without falling.
+\end{itemize}
+
+\begin{figure*}[t]
+    \centering
+    \includegraphics[width=0.9\linewidth]{Images/simulation_experiment.png}
+    \caption{Simulation task examples used in our evaluation. These tasks require localizing functional object parts, such as mug handles, hammer heads, articulated handles, and placement regions, to complete object-centric manipulation.}
+    \label{fig:simulation_experiment}
+\end{figure*}
+
+
+\paragraph{Real-world tasks.}
+\begin{itemize}
+\item \textbf{Grasp Mug.} The robot grasps a mug from the table and lifts it stably. This task requires identifying a reliable graspable region, such as the mug handle, rim, or body. A trial is successful if the robot lifts the mug above a height threshold without slipping or dropping it.
+
+\item \textbf{Beat Cube.} The robot grasps a hammer and uses the hammer head to hit a target cube. This task requires distinguishing the hammer handle from the hammer head and generating contact with the hammer head rather than the handle or side surface. A trial is successful if the hammer head contacts the cube and causes visible displacement or reaches the target state.
+
+\item \textbf{Stir Mug.} The robot grasps a stirring tool and inserts its tip into a mug to perform a stirring motion. This task requires identifying the graspable region and functional tip of the tool, as well as the opening of the mug. A trial is successful if the tool tip enters the mug and completes the stirring motion without losing control or colliding severely with the mug.
+
+\item \textbf{Pour Water.} The robot grasps a container and pours its contents into a target cup or target region. This task requires identifying a stable grasp region, the opening or pouring direction of the container, and the target container location. A trial is successful if the container is tilted toward the target and the contents enter the target cup or region.
+\end{itemize}
+
+\section{Real-World Setup and Point-Cloud Processing}
+\label{app:real_world_setup}
+
+For the real-world experiments, we use a bimanual robot platform equipped with two calibrated ZED 2i RGB-D cameras. Figure~\ref{fig:experiment_setup} shows the robot setup and the object instances used in our real-world evaluation. At each policy step, we reconstruct the scene point cloud from calibrated RGB-D observations and extract object-level point clouds for the task-relevant objects.
+
+\begin{figure*}[t]
+    \centering
+    \includegraphics[width=0.9\linewidth]{Images/experiment_setup}
+    \caption{Real-world experimental setup. The bimanual robot platform is equipped with two calibrated ZED 2i RGB-D cameras, and the evaluated objects include mugs, hammers, stirring tools, and containers used in the real-world manipulation tasks.}
+    \label{fig:experiment_setup}
+\end{figure*}
+
+To obtain object point clouds, we use text-prompted real-time tracking and segmentation with SAM2~\cite{ravi2024sam2}. For each target object, a text prompt specifies the object of interest in the RGB observations. SAM2 tracks the corresponding object masks over time and across camera views. The segmented multi-view RGB-D observations are then back-projected into 3D using camera intrinsics and extrinsics, producing object-specific point clouds in the world coordinate frame. These object point clouds are used both as raw object observations for point-wise baselines and as the support condition for our semantic field. All compared methods share the same RGB-D observations, calibration, segmentation masks, and point-cloud extraction pipeline.
+
+\begin{figure*}[t]
+    \centering
+    \includegraphics[width=0.9\linewidth]{Images/object_segmentation}
+    \caption{Object point-cloud extraction pipeline. Text prompts specify task-relevant objects in multi-view RGB observations; SAM2 tracks and segments the objects over time; the masked RGB-D observations are back-projected with camera calibration to obtain object-specific point clouds for policy input and semantic-field conditioning.}
+    \label{fig:object_segmentation}
+\end{figure*}
+
+\input{7_appendix_C_implementation_details}
+
+\section{Additional Semantic Feature Visualizations}
+\label{app:additional_features}
+
+Figure~\ref{fig:more_result} provides additional qualitative visualizations of the semantic embeddings produced by our object-centric field on different object families. Colors are obtained by projecting the queried embeddings to RGB for visualization only; consistent color patterns across instances indicate that the learned representation captures stable part-aware semantic structure.
+
+\begin{figure*}[t]
+    \centering
+    \includegraphics[width=0.9\linewidth]{Images/more_result}
+    \caption{Additional qualitative visualizations of queried semantic embeddings on mugs, hammers, microwaves, spoons, and teapots. Similar colors indicate similar embedding responses after RGB projection, highlighting consistent part-aware patterns across object instances.}
+    \label{fig:more_result}
+\end{figure*}

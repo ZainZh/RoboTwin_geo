@@ -63,14 +63,15 @@ class TestHammerSemanticLossAblation(unittest.TestCase):
             env=environment,
         )
         commands = completed.stdout.splitlines()
-        self.assertEqual(4, len(commands))
-        by_variant = {variant: next(line for line in commands if f"hammer_{variant}_" in line) for variant in ("full_fixed", "no_ce", "no_supcon", "no_consistency")}
+        self.assertEqual(5, len(commands))
+        by_variant = {variant: next(line for line in commands if f"hammer_{variant}_" in line) for variant in ("full_fixed", "no_ce", "no_supcon", "no_consistency", "ce_only")}
 
         expected = {
             "full_fixed": ("1.0", "0.2", "0.1"),
             "no_ce": ("0.0", "0.2", "0.1"),
             "no_supcon": ("1.0", "0.0", "0.1"),
             "no_consistency": ("1.0", "0.2", "0.0"),
+            "ce_only": ("1.0", "0.0", "0.0"),
         }
         for variant, (ce, supcon, consistency) in expected.items():
             command = by_variant[variant]

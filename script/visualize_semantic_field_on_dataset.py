@@ -1003,7 +1003,8 @@ def _load_dinov2_backend(args: argparse.Namespace, dataset_dir: Path):
     if isinstance(patch_size, tuple):
         patch_size = int(patch_size[0])
     patch_size = int(patch_size)
-    image_size = int(getattr(args, "dinov2_image_size", 224))
+    requested_image_size = int(getattr(args, "dinov2_image_size", 224))
+    image_size = requested_image_size
     image_size = max(patch_size, (image_size // patch_size) * patch_size)
     mean = torch.tensor([0.485, 0.456, 0.406], dtype=torch.float32, device=device).view(1, 3, 1, 1)
     std = torch.tensor([0.229, 0.224, 0.225], dtype=torch.float32, device=device).view(1, 3, 1, 1)
@@ -1056,7 +1057,7 @@ def _load_dinov2_backend(args: argparse.Namespace, dataset_dir: Path):
         placeholder: str,
         target_num_points: int,
         **_kwargs,
-    ) -> np.ndarray:
+    ) -> dict[str, object]:
         cloud = ensure_point_cloud_channels(object_cloud, channels=6)
         cloud = strip_zero_points(cloud)
         if int(target_num_points) > 0:
@@ -1075,10 +1076,14 @@ def _load_dinov2_backend(args: argparse.Namespace, dataset_dir: Path):
         contexts = context_cache[cache_key]
         if not contexts:
             raise RuntimeError("DINOv2 feature extraction requires at least one camera context.")
+        provenance = getattr(compute_dinov2_pointwise_cloud, "provenance", None)
+        if isinstance(provenance, dict):
+            provenance["camera_labels"] = [str(context["label"]) for context in contexts]
 
         features_by_view: list[np.ndarray] = []
         visible_by_view: list[np.ndarray] = []
         weights_by_view: list[np.ndarray] = []
+        view_statistics: list[dict[str, object]] = []
         for context in contexts:
             patch = image_to_patch_features(int(episode_idx), int(frame_idx), context)
             visibility = compute_depth_visibility(
@@ -1102,18 +1107,105 @@ def _load_dinov2_backend(args: argparse.Namespace, dataset_dir: Path):
             features_by_view.append(sampled)
             visible_by_view.append(visibility.visible)
             weights_by_view.append(visibility.confidence_weight)
+            visible_count = int(np.count_nonzero(visibility.visible))
+            view_statistics.append(
+                {
+                    "camera_label": str(context["label"]),
+                    "query_point_count": int(xyz.shape[0]),
+                    "in_frame_count": int(np.count_nonzero(visibility.in_frame)),
+                    "depth_valid_count": int(np.count_nonzero(visibility.depth_valid)),
+                    "foreground_mask_applied": context.get("foreground_mask") is not None,
+                    "foreground_valid_count": int(np.count_nonzero(visibility.foreground_valid)),
+                    "zbuffer_visible_count": int(np.count_nonzero(visibility.zbuffer_visible)),
+                    "visible_count": visible_count,
+                    "visible_fraction": float(visible_count / max(int(xyz.shape[0]), 1)),
+                    "confidence_weight_sum": float(np.sum(visibility.confidence_weight, dtype=np.float64)),
+                    "mean_visible_depth_error_m": (
+                        float(np.mean(visibility.depth_error_m[visibility.visible], dtype=np.float64))
+                        if visible_count > 0
+                        else None
+                    ),
+                }
+            )
         if not features_by_view:
             raise RuntimeError("DINOv2 feature extraction did not produce any patch features.")
-        fused, _valid, _weight_sum, _view_count = fuse_multiview_features(
+        fused, valid, weight_sum, view_count = fuse_multiview_features(
             features_by_view,
             visible_by_view,
             weights_by_view=weights_by_view,
             l2_normalize_inputs=True,
             l2_normalize_output=True,
         )
-        return np.concatenate([xyz, fused], axis=1).astype(np.float32, copy=False)
+        valid_count = int(np.count_nonzero(valid))
+        valid_view_counts = view_count[valid]
+        return {
+            "point_cloud": np.concatenate([xyz, fused], axis=1).astype(np.float32, copy=False),
+            "visibility": {
+                "views": view_statistics,
+                "fusion": {
+                    "camera_labels": [str(context["label"]) for context in contexts],
+                    "view_count": int(len(contexts)),
+                    "query_point_count": int(xyz.shape[0]),
+                    "valid_point_count": valid_count,
+                    "invalid_point_count": int(xyz.shape[0] - valid_count),
+                    "valid_point_fraction": float(valid_count / max(int(xyz.shape[0]), 1)),
+                    "confidence_weight_sum": float(np.sum(weight_sum, dtype=np.float64)),
+                    "mean_visible_views_per_valid_point": (
+                        float(np.mean(valid_view_counts, dtype=np.float64))
+                        if valid_count > 0
+                        else 0.0
+                    ),
+                    "max_visible_view_count": int(view_count.max()) if view_count.size else 0,
+                },
+            },
+        }
+
+    compute_dinov2_pointwise_cloud.provenance = {
+        "model_name": model_name,
+        "requested_image_size": int(requested_image_size),
+        "image_size": int(image_size),
+        "patch_size": int(patch_size),
+        "camera_labels": list(camera_labels or []),
+    }
 
     return compute_dinov2_pointwise_cloud
+
+
+def _unpack_dinov2_backend_result(result: object) -> tuple[np.ndarray, dict | None]:
+    if not isinstance(result, Mapping):
+        return np.asarray(result, dtype=np.float32), None
+    if "point_cloud" not in result:
+        raise ValueError("Structured DINOv2 backend result is missing point_cloud.")
+    visibility = result.get("visibility")
+    if visibility is not None and not isinstance(visibility, Mapping):
+        raise ValueError("Structured DINOv2 visibility metadata must be a mapping.")
+    return np.asarray(result["point_cloud"], dtype=np.float32), None if visibility is None else dict(visibility)
+
+
+def _dinov2_summary_config(args: argparse.Namespace, backend: object | None) -> dict[str, object]:
+    configured_labels = _parse_camera_labels(getattr(args, "dinov2_camera_labels", "")) or _parse_camera_labels(
+        getattr(args, "camera_labels", "")
+    )
+    runtime = getattr(backend, "provenance", {}) if backend is not None else {}
+    runtime = runtime if isinstance(runtime, Mapping) else {}
+    return {
+        "model_name": str(runtime.get("model_name", getattr(args, "dinov2_model_name", "dinov2_vits14"))),
+        "requested_image_size": int(
+            runtime.get("requested_image_size", getattr(args, "dinov2_image_size", 224))
+        ),
+        "image_size": int(runtime.get("image_size", getattr(args, "dinov2_image_size", 224))),
+        "patch_size": None if runtime.get("patch_size") is None else int(runtime["patch_size"]),
+        "camera_labels": list(runtime.get("camera_labels", configured_labels or [])),
+        "depth_absolute_tolerance_m": float(getattr(args, "dinov2_depth_tolerance_m", 0.02)),
+        "depth_relative_tolerance": float(getattr(args, "dinov2_depth_relative_tolerance", 0.01)),
+        "query_zbuffer_tolerance_m": float(
+            getattr(args, "dinov2_query_zbuffer_tolerance_m", 0.005)
+        ),
+        "min_depth_m": float(getattr(args, "min_depth_m", 0.05)),
+        "max_depth_m": float(getattr(args, "max_depth_m", 3.0)),
+        "point_num": int(getattr(args, "dinov2_point_num", getattr(args, "semantic_point_num", 5000))),
+        "foreground_mask_enabled": not bool(getattr(args, "dinov2_disable_foreground_mask", False)),
+    }
 
 
 def run_visualization(args: argparse.Namespace) -> dict:
@@ -1254,13 +1346,14 @@ def run_visualization(args: argparse.Namespace) -> dict:
             if "dinov2" in feature_methods:
                 if compute_dinov2_pointwise_cloud is None:
                     raise RuntimeError("DINOv2 feature method is not initialized.")
-                dinov2_cloud = compute_dinov2_pointwise_cloud(
+                dinov2_result = compute_dinov2_pointwise_cloud(
                     object_cloud,
                     target_num_points=int(getattr(args, "dinov2_point_num", args.semantic_point_num)),
                     placeholder=placeholder,
                     episode_idx=int(episode_idx),
                     frame_idx=int(frame_idx),
                 )
+                dinov2_cloud, dinov2_visibility = _unpack_dinov2_backend_result(dinov2_result)
                 record = {
                     "episode": int(episode_idx),
                     "frame": int(frame_idx),
@@ -1269,6 +1362,7 @@ def run_visualization(args: argparse.Namespace) -> dict:
                     "object_cloud": object_cloud,
                     "feature_cloud": np.asarray(dinov2_cloud, dtype=np.float32),
                     "semantic_checkpoint": "",
+                    "dinov2_visibility": dinov2_visibility,
                 }
                 records.append(record)
                 frame_records.setdefault((int(episode_idx), int(frame_idx)), []).append(record)
@@ -1419,6 +1513,11 @@ def run_visualization(args: argparse.Namespace) -> dict:
         "camera_labels": [] if _parse_camera_labels(args.camera_labels) is None else _parse_camera_labels(args.camera_labels),
         "background_mode": str(args.background_mode),
         "shared_pca_scope": str(args.shared_pca_scope),
+        "dinov2": (
+            _dinov2_summary_config(args, compute_dinov2_pointwise_cloud)
+            if "dinov2" in feature_methods
+            else None
+        ),
         "label_palette": None if label_palette_path is None else str(label_palette_path),
         "objects": [
             {
@@ -1439,6 +1538,7 @@ def run_visualization(args: argparse.Namespace) -> dict:
                 "pca_projection_mode": record.get("pca_projection_mode"),
                 "pred_label_histogram": record.get("pred_label_histogram"),
                 "mean_confidence": record.get("mean_confidence"),
+                "dinov2_visibility": record.get("dinov2_visibility"),
             }
             for record in records
         ],

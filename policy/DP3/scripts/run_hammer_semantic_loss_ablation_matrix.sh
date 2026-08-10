@@ -19,7 +19,7 @@ ALIAS_CONFIG="${ALIAS_CONFIG:-${RELEASE_ROOT}/configs/hammer.json}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-${REPO_ROOT}/outputs/paper_revision/hammer_semantic_loss_ablation}"
 DEVICE="${DEVICE:-cuda:0}"
 SEEDS="${SEEDS:-20260805 20260806 20260807}"
-VARIANTS="${VARIANTS:-full_fixed no_ce no_supcon no_consistency}"
+VARIANTS="${VARIANTS:-full_fixed no_ce no_supcon no_consistency ce_only}"
 
 # These are the actual Hammer recipe values found in the checkpoint/release
 # config.  In particular CE=1.0 (not the stale manuscript value 0.5).
@@ -72,6 +72,8 @@ for seed in "${SEED_ARRAY[@]}"; do
         ce_weight="1.0"; supcon_weight="0.0"; consistency_weight="0.1" ;;
       no_consistency)
         ce_weight="1.0"; supcon_weight="0.2"; consistency_weight="0.0" ;;
+      ce_only)
+        ce_weight="1.0"; supcon_weight="0.0"; consistency_weight="0.0" ;;
       *)
         echo "unknown variant: ${variant}" >&2; exit 2 ;;
     esac

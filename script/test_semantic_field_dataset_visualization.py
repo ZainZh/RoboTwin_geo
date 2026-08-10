@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from argparse import Namespace
@@ -101,6 +102,14 @@ class SemanticFieldDatasetVisualizationTest(unittest.TestCase):
         grouped = group_feature_records_for_pca(records, shared_pca_scope="all")
 
         self.assertEqual(sorted(grouped.keys()), ["dinov2:all", "semantic:all", "utonia:all"])
+
+    def test_unpack_dinov2_backend_result_accepts_legacy_array(self):
+        cloud = np.asarray([[0.0, 0.0, 1.0, 2.0]], dtype=np.float32)
+
+        unpacked, visibility = viz._unpack_dinov2_backend_result(cloud)
+
+        np.testing.assert_array_equal(unpacked, cloud)
+        self.assertIsNone(visibility)
 
     def test_shared_pca_colors_multiple_sets_in_one_space(self):
         embeddings_a = np.asarray(
@@ -596,6 +605,10 @@ class SemanticFieldDatasetVisualizationTest(unittest.TestCase):
                 dinov2_model_name="dinov2_vits14",
                 dinov2_camera_labels="global,back",
                 dinov2_image_size=224,
+                dinov2_depth_tolerance_m=0.03,
+                dinov2_depth_relative_tolerance=0.02,
+                dinov2_query_zbuffer_tolerance_m=0.007,
+                dinov2_disable_foreground_mask=False,
                 overlay_mode="cut_replace",
                 overlay_distance=0.05,
                 overlay_min_neighbors=1,
@@ -613,9 +626,28 @@ class SemanticFieldDatasetVisualizationTest(unittest.TestCase):
                 output_dir=str(root / "out"),
             )
 
+            dinov2_visibility = {
+                "views": [{"camera_label": "global", "visible_count": 2, "visible_fraction": 1.0}],
+                "fusion": {"valid_point_count": 2, "valid_point_fraction": 1.0},
+            }
+
+            def fake_dinov2(cloud, **_kwargs):
+                return {
+                    "point_cloud": make_feature_cloud(cloud, 3.0),
+                    "visibility": dinov2_visibility,
+                }
+
+            fake_dinov2.provenance = {
+                "model_name": "dinov2_vits14",
+                "requested_image_size": 224,
+                "image_size": 224,
+                "patch_size": 14,
+                "camera_labels": ["global", "back"],
+            }
+
             with mock.patch.object(viz, "_load_semantic_backend", return_value=("cpu", fake_load, lambda _m, cloud, **_kw: make_feature_cloud(cloud, 1.0))), \
                 mock.patch.object(viz, "_load_utonia_backend", return_value=(lambda cloud, **_kw: make_feature_cloud(cloud, 2.0))), \
-                mock.patch.object(viz, "_load_dinov2_backend", return_value=(lambda cloud, **_kw: make_feature_cloud(cloud, 3.0))):
+                mock.patch.object(viz, "_load_dinov2_backend", return_value=fake_dinov2):
                 summary = run_visualization(args)
 
             self.assertEqual(summary["feature_methods"], ["semantic", "utonia", "dinov2"])
@@ -629,6 +661,28 @@ class SemanticFieldDatasetVisualizationTest(unittest.TestCase):
                 sorted(item["feature_method"] for item in summary["objects"]),
                 ["dinov2", "semantic", "utonia"],
             )
+            self.assertEqual(
+                summary["dinov2"],
+                {
+                    "model_name": "dinov2_vits14",
+                    "requested_image_size": 224,
+                    "image_size": 224,
+                    "patch_size": 14,
+                    "camera_labels": ["global", "back"],
+                    "depth_absolute_tolerance_m": 0.03,
+                    "depth_relative_tolerance": 0.02,
+                    "query_zbuffer_tolerance_m": 0.007,
+                    "min_depth_m": 0.05,
+                    "max_depth_m": 3.0,
+                    "point_num": 2,
+                    "foreground_mask_enabled": True,
+                },
+            )
+            dinov2_object = next(item for item in summary["objects"] if item["feature_method"] == "dinov2")
+            self.assertEqual(dinov2_object["dinov2_visibility"], dinov2_visibility)
+            written_summary = json.loads((root / "out" / "summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(written_summary["dinov2"], summary["dinov2"])
+            self.assertEqual(written_summary["objects"][2]["dinov2_visibility"], dinov2_visibility)
 
     def test_run_visualization_label_mode_uses_predicted_labels(self):
         with tempfile.TemporaryDirectory() as tmp:

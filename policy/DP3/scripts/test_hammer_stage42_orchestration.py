@@ -15,6 +15,7 @@ import hammer_remote_slot_filler_stage42 as remote_stage42
 import hammer_stage42_local_queue as local_queue
 from hammer_stage42_protocol import (
     EPOCHS,
+    ARTIFACT_EPOCH_TAG,
     LOCAL_SEEDS,
     REMOTE_SEEDS,
     SPLIT_SEED,
@@ -61,7 +62,7 @@ class TestStage42ProtocolAndLauncher(unittest.TestCase):
         for path in (LAUNCHER, REMOTE_WRAPPER):
             subprocess.run(["bash", "-n", str(path)], check=True)
         lines = self._dry_run("local")
-        self.assertEqual(8, len(lines))
+        self.assertEqual(10, len(lines))
         for seed in LOCAL_SEEDS:
             for variant in VARIANTS:
                 matches = [
@@ -79,9 +80,9 @@ class TestStage42ProtocolAndLauncher(unittest.TestCase):
             self.assertIn("--auto-resume", line)
             self.assertIn("train_semantic_field_loss_ablation_fast.py", line)
 
-    def test_remote_assignment_is_exactly_seed06_four_variants(self):
+    def test_remote_assignment_is_exactly_seed06_five_variants(self):
         lines = self._dry_run("remote")
-        self.assertEqual(4, len(lines))
+        self.assertEqual(5, len(lines))
         self.assertTrue(all("--seed 20260806" in line for line in lines))
         self.assertTrue(all("--num-workers 8" in line for line in lines))
         self.assertTrue(all("remote6000ada_seed20260806" in line for line in lines))
@@ -108,8 +109,8 @@ class TestStage42ProtocolAndLauncher(unittest.TestCase):
     def test_unique_roots_and_frozen_split(self):
         local = build_tasks("local")
         remote = build_tasks("remote")
-        self.assertEqual(8, len(local))
-        self.assertEqual(4, len(remote))
+        self.assertEqual(10, len(local))
+        self.assertEqual(5, len(remote))
         self.assertEqual(set(LOCAL_SEEDS), {task.seed for task in local})
         self.assertEqual(set(REMOTE_SEEDS), {task.seed for task in remote})
         self.assertTrue(all(f"split{SPLIT_SEED}" in task.run_name for task in local + remote))
@@ -134,25 +135,34 @@ class TestStage42ProtocolAndLauncher(unittest.TestCase):
         (task.run_dir / "config.json").write_text(
             json.dumps(config, sort_keys=True), encoding="utf-8"
         )
+        checkpoint_args = {
+            key: value for key, value in config.items() if key != "canonical_label_names"
+        }
         for name, epoch in (("last.pt", EPOCHS), ("best.pt", 123), ("best_sem.pt", 321)):
+            payload_args = dict(checkpoint_args)
+            if name != "last.pt":
+                payload_args["epochs"] = ARTIFACT_EPOCH_TAG
+                payload_args["save_every"] = ARTIFACT_EPOCH_TAG
             torch.save(
                 {
                     "format": "semantic_field_weights_only_v1",
                     "training_resume_supported": False,
                     "epoch": epoch,
-                    "args": config,
+                    "canonical_label_names": ["Handle", "Head"],
+                    "args": payload_args,
                 },
                 task.run_dir / name,
             )
         controls = {"resume", "resume_additional_epochs", "resume_from", "auto_resume"}
-        identity_config = {key: value for key, value in config.items() if key not in controls}
+        identity_config = {key: value for key, value in checkpoint_args.items() if key not in controls}
         torch.save(
             {
                 "format": "semantic_field_training_state_v1",
                 "training_resume_supported": True,
                 "resume_epoch_boundary": True,
                 "epoch": EPOCHS,
-                "args": config,
+                "canonical_label_names": ["Handle", "Head"],
+                "args": checkpoint_args,
                 "run_identity": {
                     "run_name": task.run_name,
                     "seed": int(task.seed),
@@ -211,7 +221,7 @@ class TestLocalQueue(unittest.TestCase):
                 unit=f"legacy-{variant}.service",
                 completion=root / "legacy" / variant / "completion.json",
             )
-            for variant in VARIANTS
+            for variant in local_queue.CURRENT_UNITS
         ]
         units = {
             guard.unit: local_queue.UnitState("loaded", "active", "running", 10 + i)
@@ -299,12 +309,12 @@ class TestRemoteSuccessor(unittest.TestCase):
 
     def test_stage42_tasks_are_seed06_split424242_and_disabled_conf(self):
         tasks = remote_stage42.build_stage42_tasks("/tmp/stage42-seed{seed}")
-        self.assertEqual(4, len(tasks))
+        self.assertEqual(5, len(tasks))
         self.assertTrue(all(task.seed == "20260806" for task in tasks))
         self.assertTrue(all("split424242" in task.run_name for task in tasks))
         text = REMOTE_CONF.read_text(encoding="utf-8")
-        self.assertEqual(4, text.count("autostart=false"))
-        self.assertEqual(4, text.count('RUN_STAGE42="1"'))
+        self.assertEqual(5, text.count("autostart=false"))
+        self.assertEqual(5, text.count('RUN_STAGE42="1"'))
 
     def test_pending_legacy_has_priority_over_stage42(self):
         with tempfile.TemporaryDirectory() as temporary:

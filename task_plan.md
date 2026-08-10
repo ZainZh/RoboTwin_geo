@@ -68,6 +68,7 @@
 - [complete] 57. 远端safe入口默认自动安装semantic fast path并完成SHA、CLI与唯一e1产物验证，使Full完成后的后续variants无需抢停即可自动加速
 - [complete] 58. 审计当前loss矩阵的独立test可声明性，完成legacy/independent双协议prepare、CPU validate、汇总门禁与stage42最小重训成本文档
 - [pending] 47. 实现visibility-aware DINOv2 lifting并评估D3Fields/F3RM风格强baseline的可运行方案
+- [complete] 70. 补全DINOv2 visualization summary的配置provenance与逐物体visibility/fusion统计，保持旧ndarray backend兼容并完成CPU回归
 - [pending] 48. 用受控感知扰动、相同policy和阶段失败统计解释sim-real gap
 - [complete] 58. 为safe/fast trainer实现weights-only可读的原子full-state resume checkpoint，严格校验run/config/seed identity，并保留v1评测checkpoint兼容
 - [complete] 59. 保全归档远端两seed被停止的No-SupCon partial，并部署严格max=4、No-CE优先、incomplete fail-closed的持久supervisor slot-filler
@@ -77,6 +78,10 @@
 - [complete] 63. 按用户速度优先决策，将当前及后续Hammer loss/stage42矩阵统一从固定e4000迁移为e1750，保持断点连续并避免变体间预算不一致
 - [in_progress] 64. 验证e1750停止、完成标记、回传与评测协议，更新剩余队列及最终ETA
 - [in_progress] 65. 审计当前工作树并仅提交代码、测试、脚本与必要文档，排除模型/数据/训练产物后推送现有Git云端
+- [complete] 66. 回传并校验RTX6000上的4组Stage42训练产物，确保远端释放前模型与完成元数据安全落盘
+- [complete] 67. 将CE-only纳入Stage42协议并在双机完成三training-seed统一e1750训练
+- [complete] 68. 对Full/No-CE/No-SupCon/No-Consistency/CE-only统一运行independent-test R1与稳定性/鲁棒性R2
+- [complete] 69. 汇总三seed统计、决定辅助损失定位并更新重投稿实验表述
 - [pending] 49. 完成多任务/实物paired closed-loop评测、统计与失败分析
 - [pending] 50. 汇总所有实验为可重算表格、图、视频和重投稿正文
 ## 约束
@@ -86,9 +91,36 @@
 - estimator 输入不得包含 query 资产路径、`functional_matrix`、`orientation_point` 或预计算 per-shoe goal。
 - 训练/参考实例和 held-out 测试实例必须按鞋划分，避免通过 observation 最近邻隐式恢复实例身份。
 
+## Beat Block Hammer formal-fixed 闭环协议（2026-08-08）
+
+### 目标
+在不启动仿真/GPU的前提下，实现可审计的标准锤 fixed-seed RoboTwin 闭环协议：精确评估 seeds 100000..100099，关闭视频与 expert screening，保存逐 candidate JSONL 及 summary JSON，并保持 `_result.txt` 兼容。
+
+### 阶段
+- [complete] 71. 完整审阅 eval loop、task config 与现有 CPU 测试边界
+- [complete] 72. 新增标准 020_hammer formal-fixed task config
+- [complete] 73. 实现逐 candidate JSONL 与 summary JSON 落盘，保持旧结果文件
+- [complete] 74. 新增不依赖 SAPIEN/GPU 的 seed 序列与结果格式回归测试
+- [complete] 75. 运行定向测试、语法检查并记录精确产物
+
+## Matched Utonia 在线闭环路由（2026-08-08）
+
+### 目标
+让 semantic policy 显式支持 `matched_utonia` 在线观测：先由 semantic query 路径生成与训练 Zarr 一致的 128 个 query XYZ，再在原始 `object_pointcloud_A` support 上查询 Utonia 576D 特征，输出 `[128,579]` 到 `utonia_point_cloud_A`；保持其他 semantic 输出模式及 legacy Utonia 路由不变，并以 CPU mock 单测验证契约。
+
+### 阶段
+- [complete] 76. 完整审阅 deploy/config/semantic query/Utonia helper/checkpoint shape_meta 链路
+- [complete] 77. 实现显式 matched_utonia 配置、模型加载与在线输出路由
+- [complete] 78. 添加 key/query/shape/配置路由及旧模式兼容 CPU mock 单测
+- [complete] 79. 运行定向测试、语法检查并形成实现报告
+
 ## 错误记录
 | 错误 | 尝试 | 处理 |
 |---|---:|---|
+| formal-fixed 协议首次两次 `apply_patch` 被 bwrap loopback 错误阻断 | 2 | helper 在任何写入前失败；改用同一 `apply_patch` 程序的审批 PTY/stdin 入口，后续补丁正常落盘。 |
+| matched Utonia 首轮定向测试在 `RoboTwin` 环境导入 semantic release 时缺 `utonia` 包 | 1 | py_compile 已通过但测试未执行；改用仓库现有 `geo-utonia` CPU 环境运行，不安装依赖、不启动 GPU。 |
+| matched Utonia 第二轮在 `geo-utonia` 环境导入 DP3 时缺 `diffusers` | 1 | helper 的4项CPU测试通过、deploy两模块未加载；定位到 `/home/zheng/github/Utonia`，改用具备DP3依赖的 `RoboTwin` 环境并显式加入该只读源码路径。 |
+| accepted/skipped 测试 fixture 的无上下文补丁命中首个 `accepted=True` | 1 | 5项CPU测试立即以断言失败捕获；改用 candidate_seed 完整上下文分别修正 successful/unstable 记录。 |
 | relation 集成测试缺 `zarr` / `diffusers` | 1 | 记录为当前 Python 环境依赖缺失；其余可运行测试继续验证，不擅自安装依赖。 |
 | vendored NDF CPU forward 使用硬编码 CUDA device | 1 | 将 graph index tensor 改为跟随输入 device；CPU checkpoint forward 与 validator smoke 通过。 |
 | 直接导入完整任务做 runtime 单测时 Curobo 强制初始化 CUDA | 1 | 将成功指标抽成独立纯 NumPy 模块，在无仿真/GPU依赖下完成真实逻辑单测。 |
@@ -131,3 +163,122 @@
 | 首次真实e1750恢复被save_every 4000→1750身份差异拒绝 | 1 | 训练在加载断点前安全退出；确认save_every仅影响额外文件写入后纳入operational字段，并重跑18/18回归。 |
 | 远端staging的13项编排测试缺两个未修改辅助文件 | 1 | 正式代码未受影响；补传wrapper/conf后同一套件13/13通过。 |
 | 本机No-Consistency在人工停机前已推进至1779，超过新目标29轮 | 1 | 立即停止并以target_epoch=1750的显式完成标记保全；不得将其表述为精确e1750，正式统一矩阵使用stage42。 |
+| CE-only首个多文件`git apply`使用了缺少范围的hunk头，被判定为garbage | 1 | Git在写入前整体拒绝；改为核对`nl -ba`精确行号并使用`--unidiff-zero --recount`，补丁成功且无部分旧写入。 |
+| CE-only首轮语法门禁在scripts工作目录仍传仓库相对路径，且测试夹具把CE-only虚构成legacy guard | 1 | 路径错误未执行对应检查；改用当前目录文件名并让fixture读取真实CURRENT_UNITS，随后py_compile/bash-n和26/26回归通过。 |
+| Stage42严格审计补丁三次因zero-context行位移插入函数实参内部 | 3 | 每次均由py_compile或真实audit在发布/评测前捕获；最终替换完整resume审计块并在本机项目环境重跑26/26通过。 |
+| 首轮聚焦回归误用缺torch的系统Python | 1 | py_compile已通过但测试collection失败；改用训练实际RoboTwin环境，26/26实际加载通过。 |
+| 初次远端正式评估未显式设置Utonia checkout路径 | 1 | 审计通过但evaluator在模型加载前ImportError；将`PYTHONPATH=/workspace/Utonia`固化进Supervisor配置，独立import验证后评估正常运行。 |
+| 远端评估Supervisor首次start在连续失败重试期返回spawn error | 1 | 检查独立日志确认根因同为Utonia import，不是CUDA/模型；修正环境后update process group，服务稳定RUNNING。 |
+| final matrix prepare把历史best_sem的e4000 metadata误当作训练未统一 | 1 | 保持config/last严格e1750，仅允许best_sem的epochs=save_every属于{1750,artifact_tag4000}且best epoch不超过1750；新增非法3999与last4000拒绝测试，27/27通过。 |
+| 通用Stage42本机CLI按build_tasks默认workers4审计真实workers0产物 | 1 | 不改launcher/queue默认；CLI新增显式`--num-workers`且role默认local0/remote8，真实本机Full audit通过。 |
+| 远端旧四组inner completion完整但outer completion/manifest缺失 | 1 | 根因是完成时旧严格审计拒绝历史best metadata；修复后重新进入wrapper，run-lock验证现有产物并只生成outer SHA/marker，四组均EXITED且无重训。 |
+| DINO provenance搜索命令包含不存在的shell glob `test*` | 1 | `rg`已返回其余有效路径且未写文件；后续改用明确的`script/`与`policy/DP3/scripts/`测试路径。 |
+| `apply_patch`受bwrap loopback错误阻断DINO provenance补丁 | 1 | helper在写入前失败；沿用已验证的`git apply --recount`最小补丁入口。 |
+| 系统Python运行DINO visualization测试缺少torch | 1 | 测试未collection；切换已有RoboTwin环境并保持`CUDA_VISIBLE_DEVICES=''`，32项CPU测试实际执行。 |
+| 新增summary落盘断言首次缺少json import | 1 | CPU测试以NameError捕获；补充单行import后27项visualization与5项visibility测试全部通过。 |
+| 合并outer metadata时整根rsync意外包含仍在写入的CE-only resume.pt | 1 | 识别本机临时partial后立即SIGINT接收端，不影响远端训练且不发布临时文件；改为精确同步completed/manifests与已完成evaluation目录，checksum dry-run一致。 |
+
+## RoboTwin 双GPU仿真比较（2026-08-07 起）
+
+- [complete] 77. 冻结Beat Block Hammer/Hanging Mug仿真训练、held-out资产、固定测试seed与公平输入协议
+- [complete] 78. 修复并验证uniform/shuffled part-prob构建器，确保query/action/state与概率分布不变量
+- [complete] 79. 构建Beat Block Hammer matched XYZ/part-prob/field/Utonia及两条概率控制数据并完成训练smoke；DINO因原始数据缺dense depth按Phase85独立阻塞
+- [in_progress] 80. 将正式六路线×三training-seed矩阵拆分到本机4090与远端RTX6000 Ada并行训练
+- [in_progress] 81. 对完成模型先运行统一fixed-2闭环门禁，通过后扩展到同一100个RoboTwin测试seed的成功率、耗时和失败阶段评测
+- [in_progress] 82. 在Hanging Mug重复主路线，并补clean/randomized/held-out instance与感知扰动对照
+- [pending] 83. 冻结仿真模型与结果SHA，生成论文主表、置信区间、失败案例和可复算图表
+- [complete] 84. 审计Beat Hammer原始HDF5的同步多视角RGB-D与相机标定，确认visibility-aware DINOv2 matched数据可行性
+- [pending] 85. 复用现有投影/深度可见性/多视角融合工具实现matched-query DINOv2 zarr构建器与provenance门禁
+- [pending] 86. 用合成数据和真实max-frames smoke验证bitwise invariants、visibility/fusion统计及失败关闭语义
+
+### 本轮新增错误
+
+| 错误 | 尝试 | 处理 |
+|---|---:|---|
+| apply_patch再次因本机bwrap loopback失败 | 1 | 读取精确文件结尾后改用此前验证的unidiff-zero最小git补丁，不重试同一失败入口。 |
+| semantic control无上下文补丁位置漂移 | 2 | 编译门禁捕获参数错位；核心文件、mode guard与7项构建器测试均已修复并通过。 |
+| 本地首次DP3 smoke误用geo-utonia解释器，缺diffusers/zarr | 1 | 训练在模型构建前退出且未写权重；改用依赖完整的RoboTwin环境后field e1成功。 |
+| 五路线validator首次使用错误参数别名 | 1 | argparse在读取数据前拒绝；按真实参数重跑后全部约束通过。 |
+| apply_patch再次因bwrap loopback阻断DINO子阶段记录 | 1 | helper在写入前失败；切换到精确git apply，不重复失败入口。 |
+| 首个DINO规划多文件补丁因progress尾部上下文已变化而整体拒绝 | 1 | 无文件被部分修改；拆成基于当前尾部的独立补丁。 |
+| findings git diff误含apply_patch结束标记而被判corrupt | 1 | Git在写入前拒绝；移除非diff标记后同一内容成功应用。 |
+| DINO审计器增强补丁再次被apply_patch的bwrap错误阻断 | 1 | helper写入前失败；切换到精确git apply。 |
+| 零上下文shape门禁补丁插入多行valid表达式中导致SyntaxError | 1 | py_compile在真实审计前捕获；替换完整局部表达式后10/10测试通过。 |
+| 归档器首次smoke使用了不存在的`diffusion_policy/config`路径 | 1 | checkpoint已安全验证但manifest在写入前fail-closed；改为实际`diffusion_policy_3d/config`，真实manifest与source-receipt smoke均通过。 |
+| rsync断点续传首次组合`--append-verify --whole-file` | 1 | rsync在传输前拒绝；移除互斥参数，不影响远端训练和已完成文件。 |
+| rsync断点续传第二次组合`--append-verify --partial-dir` | 1 | rsync在传输前拒绝；恢复已验证的`--partial --partial-dir`模式，保留110MB部分文件并持续回传。 |
+
+### Phase 79 当前门禁（2026-08-07 23:45 HKT）
+
+- [complete] Beat Hammer field数据：50 episodes、5718 frames、joint14，finite检查通过。
+- [complete] 从同一field数据派生XYZ、part-prob、uniform-prob与shuffled-prob。
+- [complete] 五路线action/state/scene/query XYZ逐值一致与概率控制验证，JSON证据已落盘。
+- [complete] field单路e1与XYZ/part-prob本地双路e3真实训练smoke。
+- [complete] BF16/TF32、原子weights-only、safe deploy、远端数据同步和并发profile门禁。
+- [complete] 正式Utonia matched数据构建并通过六路线一致性门禁。
+- [blocked] visibility-aware DINOv2 matched数据：现有50条演示的100个camera-episode全部缺dense depth，须确定性重渲染/补采后继续。
+- [in_progress] 六条可运行路线×三seed e300训练；之后执行固定100-seed闭环评测。
+
+## RoboTwin 闭环评测性能优化（2026-08-08）
+
+### 目标
+在不改变固定候选seed、策略输入、物理控制频率、成功判定和方法公平性的前提下，定位并减少RoboTwin闭环推理中的场景初始化、相机渲染、点云生成和冗余数据收集开销；以相同seed的基准/优化计时与观测契约验证后再用于正式评测。
+
+### 阶段
+- [complete] 87. 对当前formal-fixed单回合做分段计时并审计相机、RGB、third-view、点云与对象点云依赖
+- [complete] 88. 实现显式fast-eval配置/计时接口，保持默认协议向后兼容并添加CPU回归测试
+- [in_progress] 89. 用少量固定seed运行基准/优化A-B smoke，验证观测shape/finite/query契约和成功判定一致性
+  - 2026-08-09：四次首帧digest一致；planner-free setup错误和远端同步错位均产生 `evaluated_count=0`，已判无效。安全 fast smoke 为89.9s（旧baseline 138.7s）；尾部观测虽到53.2s，但 fixed-100 前34 seeds 为0/34、旧协议同区间5次成功，故已撤销。现本机 validation3 与远端六个互斥 route-group 均用安全配置从新时间戳重跑。
+- [pending] 90. 达到安全加速门槛后更新后续队列；若协议不等价则保留原配置并记录瓶颈
+- [pending] 91. 汇总速度、显存、成功一致性和论文结果可比性证据
+
+## Beat Hammer matched baseline 扩展（2026-08-09）
+
+### 目标
+补齐当前六路线之外的三个关键公平对照：严格 Vanilla DP3（仅主点云与机器人状态）、GT part one-hot oracle（仅在可审计真值存在时）和 Utonia-128（不拟合任何数据、冻结随机正交投影的固定降维），随后接入同一三 training-seed、e300、joint14 与 fixed-100 闭环协议。
+
+### 阶段
+- [complete] 92. 审计 strict Vanilla 数据/配置、Hammer GT part 标签来源和 Utonia-128 无泄漏降维方案
+- [complete] 93. 实现数据构建、在线部署路由、shape/provenance 门禁与 CPU 回归测试
+- [complete] 94. 构建可成立的 matched 数据并验证 action/state/main-cloud/query 不变量；标准020_hammer无逐面part真值，GT oracle已按协议fail-closed
+- [complete] 95. 旧路线训练已结束或按用户指示停止，已有checkpoint与结果保留；GPU队列转入语义-策略接口搜索
+- [complete] 96. 旧fixed-100余项按用户指示停止，不再占用双GPU；现有有效结果仅作为新接口筛选基线
+
+## PA3FF相似路线与当前效果退化分析（2026-08-10）
+
+### 目标
+完整阅读《Learning Part-Aware Dense 3D Feature Field for Generalizable Articulated Object Manipulation》，对照其表征、数据、策略接口和评测协议与本项目的真实实现及现有结果，定位“思路相近但下游效果不佳”的主因，形成按证据强弱排序的诊断与最小验证实验。
+
+### 阶段
+- [complete] 97. 完整提取并阅读PA3FF正文、附录、表格、训练与策略细节
+- [complete] 98. 建立PA3FF与本方法在监督、场表示、query/support、规范化、策略集成和泛化协议上的逐项对照
+- [complete] 99. 将现有R1/R2和RoboTwin fixed-100结果映射到候选失败机制，区分已证实问题与待验证假设
+- [complete] 100. 写成可执行中文分析文档，给出修复优先级、止损条件与论文重定位建议
+
+## 双GPU语义表征-策略稳定接入搜索（2026-08-10）
+
+### 目标
+停止旧训练/评测队列，在不篡改数据与正式协议的前提下，用本机RTX 4090和远端RTX 6000 Ada并行定位随机query、额外分支和blind maxpool的影响；实现至少一种不会稳定劣于strict Vanilla、并能在真正需要部件信息的任务上提供增益的语义策略接口。
+
+### 阶段
+- [complete] 101. 精确识别并停止两机旧GPU任务与自动接力，保留checkpoint、日志和同步服务，确认两张GPU空闲
+- [complete] 102. 审计现有dataset、query构建、encoder与checkpoint兼容边界，定义可复用的paired筛选协议
+- [complete] 103. 实现确定性query、zero-feature/zero-gate matched control和训练/在线逐值一致性门禁
+- [complete] 104. 实现三类候选接口：零初始化残差门控、按部件soft pooling几何token、task/part-token Transformer或cross-attention
+- [in_progress] 105. CPU单测和e1真实GPU smoke后，双卡并行短预算训练；用paired fixed seeds闭环淘汰明显差于Vanilla的方案
+- [pending] 106. 对入选方案运行至少3个training seeds、统一checkpoint选择和fixed-100闭环，并报告均值、置信区间、失败阶段与计算成本
+- [pending] 107. 在至少一个更需要语义的多实例/跨任务RoboTwin设置复验，更新论文方法、消融与限制
+
+### 本轮接口搜索错误记录
+
+| 错误 | 尝试 | 处理 |
+|---|---:|---|
+| 首次用JavaScript模板字符串生成临时launcher编辑器时，Bash变量`${...}`被解释为JS模板表达式并在任何工具执行前SyntaxError | 1 | 未产生文件修改；改用shell单引号保护的Perl q-string精确替换临时副本，bash -n和完整diff通过。 |
+
+| RoboTwin环境直接运行两组旧semantic测试未显式加入现有Utonia checkout，import阶段失败 | 1 | 未触发GPU或写产物；按仓库既有环境边界设置PYTHONPATH=/home/zheng/github/Utonia后两组16/16通过。 |
+
+| warm-start toy测试错误假设frozen参数量必大于adapter参数量 | 1 | helper行为正确；改为分别断言两者均大于0并核对精确trainable names，4/4通过。 |
+| 临时launcher位于/tmp时用相对zarr路径，repo_root解析为/导致dry-run找不到数据 | 1 | 未启动GPU；用绝对zarr路径重跑后完整Hydra命令通过。 |
+| warm-start首次把配置raw_task_name显式null解释为任务名 | 1 | 权重加载前fail-closed；加入null fallback后语法通过。 |
+| legacy配置实际把raw_task_name写为字符串none，第二次仍得到none前缀 | 1 | 权重加载前fail-closed；统一将空/none/null sentinel回退到task_name。 |
+| Vanilla训练后checkpoint含目标模型在dataset初始化前尚无的normalizer buffers | 1 | 只白名单跳过normalizer.*并计数，其余missing/shape仍fail-closed；测试4/4与真实e1通过。 |

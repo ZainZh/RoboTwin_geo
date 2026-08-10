@@ -1,0 +1,143 @@
+\pdfoutput=1
+
+\documentclass[letterpaper, 10 pt, journal, twoside]{ieeetran}
+\usepackage{amsmath,amsfonts}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+
+\usepackage{array}
+\usepackage[caption=false,font=normalsize,labelfont=sf,textfont=sf]{subfig}
+\usepackage{textcomp}
+% \usepackage{stfloats}
+\usepackage{url}
+\usepackage{verbatim}
+\usepackage{graphicx}
+\usepackage{cite}
+\usepackage{xcolor,soul}
+\usepackage{graphicx}
+\usepackage{amsmath}
+%\usepackage{siunitx}
+%\usepackage{color}
+\usepackage{cite}
+\usepackage{url}
+
+\usepackage{times}
+\usepackage{fancyhdr,graphicx,amsmath,amssymb}
+% \usepackage[ruled,vlined]{algorithm2e}
+
+
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{soul}
+
+%\usepackage[colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue]{hyperref}
+% ** SAVE SPACE ON FIGURES
+\usepackage[font=footnotesize,belowskip=-0.5pt,aboveskip=0pt]{caption}
+\usepackage{bigstrut}
+\usepackage[utf8]{inputenc}
+\usepackage{array}
+\usepackage{multirow}
+\usepackage{tabularx}
+\usepackage{bigstrut}
+\setlength{\extrarowheight}{5pt}
+\usepackage{makecell}
+\usepackage{tabu}
+\usepackage{bm}
+\usepackage{caption}
+
+\usepackage{amsmath}          
+\usepackage{graphics}
+\usepackage{graphicx}
+%\usepackage{stfloats}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{dblfloatfix}
+%\usepackage{fixltx2e}
+\usepackage{calc}
+\usepackage{url}
+\usepackage{textcomp}
+% \usepackage{flushend} %comment this one out if it is messing up citations...
+\usepackage{balance}
+\usepackage{siunitx}
+\usepackage{mdwlist}
+\usepackage{comment}
+\usepackage{enumerate}
+% \usepackage[shortlabels]{enumitem}
+\usepackage{lipsum}
+
+% MAKE CITATIONS COMPACT
+%\usepackage[nospace]{cite}
+\usepackage{gensymb}
+
+\usepackage{array}
+\usepackage{multirow}
+\usepackage{tabularx}
+\usepackage{booktabs}
+
+\usepackage{bigstrut}
+\setlength{\extrarowheight}{5pt}
+\usepackage{fixltx2e}
+
+\usepackage{color}
+\usepackage{hhline}
+\usepackage[dvipsnames]{xcolor}
+% \usepackage{nidanfloat }
+\usepackage{float}
+\usepackage{caption}
+\usepackage{balance}
+\usepackage[colorlinks=true, linkcolor=blue, citecolor=blue, urlcolor=blue]{hyperref}
+\hyphenation{op-tical net-works semi-conduc-tor IEEE-Xplore}
+\algnewcommand{\LeftComment}[1]{\Statex\(\triangleright\)~\textcolor{blue}{#1}}
+
+% updated with editorial comments 8/9/2021
+
+\begin{document}
+
+\title{Beyond Point-Attached Semantics: Object-Centric Semantic Fields for Generalizable Manipulation}
+% \title{A Hyperspectral Imaging Guided Robotic Grasping System with A High-Precision Hyperspectral Imaging Device}
+% \title{A Hyperspectral Imaging Guided Robotic Grasping System the Custom-Designed Hyperspectral Imaging Device}
+\author{Zheng Sun$^{1}$, Zhihao Li$^{1}$, Zhuo Li$^{1}$, Quentin ROUXEL $^{1}$,\\and~Fei~Chen $^{\dag 1}$,~\IEEEmembership{Senior~Member,~IEEE}
+        % <-this % stops a space
+%\thanks{Manuscript received: January, 23, 2025; Revised March, 24, 2025; Accepted May, 26, 2025.}
+%\thanks{This paper was recommended for publication by Editor Júlia Borràs Sol upon evaluation of the Associate Editor and Reviewers' comments. This study was supported in part by the InnoHK initiative of the Innovation and Technology Commission of the Hong Kong Special Administrative Region Government via the Hong Kong Centre for Logistics Robotics.}
+\thanks{
+$^{1}$ Zheng Sun, Zhipeng Dong, Shixiong Wang, and Fei Chen are with the Department of Mechanical and Automation Engineering, T-Stone Robotics Institute, The Chinese University of Hong Kong, Hong Kong SAR {\tt \footnotesize zhengsun@link.cuhk.edu.hk, zhipengdong@cuhk.edu.hk,
+sxwang@hklcr.hk, 
+f.chen@ieee.org}.
+}
+\thanks{$^{2}$ Zhongyi Chu is with the School of Instrumentation and Optoelectronic Engineering, Beihang University, Beijing 100191, China  {\tt \footnotesize chuzy@buaa.edu}.}
+\thanks{
+$^{\dag}$ Corresponding authors
+}
+\thanks{Digital Object Identifier (DOI): see top of this page.}
+}
+
+
+\markboth{IEEE Robotics and Automation Letters. Preprint Version. May, 2025}
+{SUN \MakeLowercase{\textit{et al.}}: A Hyperspectral Imaging Guided Robotic Grasping System} 
+% \thanks{Manuscript received: January, 23, 2025; Revised March, 24, 2025; Accepted May, 26, 2025.}%Use only for final RAL version
+
+\maketitle
+\begin{abstract}
+Generalizable robot manipulation requires stable 3D understanding of functional object parts, such as handles, tool heads, openings, and graspable regions. Raw point clouds provide geometry but lack explicit part semantics, and their sampled points vary with viewpoint, sensor configuration, and object instance. Existing 2D feature lifting and discrete 3D point-wise features enrich point clouds with semantics, but the resulting features remain attached to observation-dependent samples. We propose an object-centric continuous semantic field that conditions on an object point cloud and reads part-aware semantic embeddings at explicit 3D query locations. The field is trained from part-annotated object models and then frozen to generate semantic point clouds as object-level conditioning for manipulation policies. Experiments on RoboTwin simulation tasks and real-world bimanual object manipulation show that our representation provides more stable functional-part cues and improves policy performance over raw point-cloud, 2D feature lifting, and 3D point-wise feature baselines. Project Page: \href{https://zainzh.github.io/beyond-point-attached-semantics}{https://zainzh.github.io/beyond-point-attached-semantics}.
+
+\end{abstract}
+\begin{IEEEkeywords}
+Object-Centric Representation Learning; Continuous Semantic Fields; Generalizable Robotic Manipulation
+\end{IEEEkeywords}
+% Two or three meaningful keywords should be added here
+
+\input{1_introduction}
+\input{2_related_works}
+%\input{3_method}
+\input{3_method_new}
+\input{4_experiment}
+\input{5_limitation}
+\input{6_conclusion}
+\input{7_appendix_C_implementation_details}
+
+
+\bibliographystyle{IEEEtran}
+\bibliography{reference}
+\end{document}

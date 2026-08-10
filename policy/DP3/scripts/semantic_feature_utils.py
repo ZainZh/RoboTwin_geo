@@ -40,8 +40,21 @@ DEBUG_PLACEHOLDER_COLORS_RGB = {
 }
 DEFAULT_DEBUG_PLACEHOLDER_COLOR_RGB = np.asarray([180.0, 180.0, 180.0], dtype=np.float32)
 SEMANTIC_INPUT_COLOR_MODES = {"debug_placeholder", "stored_scaled", "stored"}
-SEMANTIC_FORWARD_MODES = {"reference", "dp3"}
-SEMANTIC_POLICY_OUTPUT_MODES = {"embedding", "xyz", "part_prob"}
+SEMANTIC_FORWARD_MODES = {"reference", "dp3", "deterministic"}
+SEMANTIC_POLICY_OUTPUT_MODES = {"embedding", "xyz", "part_prob", "uniform_prob", "shuffled_prob"}
+
+
+def deterministic_derangement(size: int, *, seed: int) -> np.ndarray:
+    """Return a reproducible no-fixed-point permutation for semantic controls."""
+    if int(size) < 2:
+        raise ValueError("within-frame shuffle requires at least two query points")
+    generator = np.random.default_rng(int(seed))
+    order = generator.permutation(int(size))
+    if np.any(order == np.arange(int(size))):
+        order = np.roll(
+            np.arange(int(size)), int(generator.integers(1, int(size)))
+        )
+    return order
 
 
 def ensure_point_cloud_channels(point_cloud: np.ndarray, *, channels: int = 6) -> np.ndarray:
@@ -85,9 +98,12 @@ def semantic_forward_options(
     mode = str(semantic_forward_mode)
     if mode not in SEMANTIC_FORWARD_MODES:
         raise ValueError(f"Unsupported semantic_forward_mode: {semantic_forward_mode}")
-    default_normal_mode, default_query_sample_mode = (
-        ("fallback", "random") if mode == "reference" else ("estimated", "fps")
-    )
+    if mode == "reference":
+        default_normal_mode, default_query_sample_mode = "fallback", "random"
+    elif mode == "dp3":
+        default_normal_mode, default_query_sample_mode = "estimated", "fps"
+    else:
+        default_normal_mode, default_query_sample_mode = "estimated", "deterministic_fps"
     return (
         default_normal_mode if normal_mode is None else str(normal_mode),
         default_query_sample_mode if query_sample_mode is None else str(query_sample_mode),
@@ -280,6 +296,12 @@ def _compute_semantic_query(
         query_pc = _sample_rows(point_cloud, int(target_num_points))
     elif str(query_sample_mode) == "fps":
         query_pc = resample_point_cloud(point_cloud, int(target_num_points))
+    elif str(query_sample_mode) == "deterministic_fps":
+        query_pc = resample_point_cloud(
+            point_cloud,
+            int(target_num_points),
+            deterministic=True,
+        )
     else:
         raise ValueError(f"Unsupported semantic query_sample_mode: {query_sample_mode}")
 
@@ -338,6 +360,8 @@ def compute_semantic_pointwise_cloud(
     normal_mode: str | None = None,
     query_sample_mode: str | None = None,
     output_mode: str = "embedding",
+    output_seed: int = 20260807,
+    output_frame_index: int = 0,
 ) -> np.ndarray:
     resolved_output_mode = str(output_mode)
     if resolved_output_mode not in SEMANTIC_POLICY_OUTPUT_MODES:
@@ -350,10 +374,10 @@ def compute_semantic_pointwise_cloud(
     point_cloud = strip_zero_points(point_cloud)
     if resolved_output_mode == "embedding":
         output_feature_dim = int(artifacts["sem_embedding_dim"])
-    elif resolved_output_mode == "part_prob":
+    elif resolved_output_mode in {"part_prob", "uniform_prob", "shuffled_prob"}:
         output_feature_dim = len(artifacts.get("canonical_label_names", []))
         if output_feature_dim <= 0:
-            raise ValueError("part_prob output requires canonical_label_names")
+            raise ValueError(f"{resolved_output_mode} output requires canonical_label_names")
     else:
         output_feature_dim = 0
     if len(point_cloud) == 0:
@@ -373,12 +397,20 @@ def compute_semantic_pointwise_cloud(
     )
     if resolved_output_mode == "xyz":
         return query_world_xyz.astype(np.float32)
-    if resolved_output_mode == "part_prob":
+    if resolved_output_mode in {"part_prob", "uniform_prob", "shuffled_prob"}:
         logits = semantic_output.get("logits")
         if logits is None:
             raise RuntimeError("Semantic model output does not include logits")
         probabilities = torch.softmax(logits.squeeze(0), dim=-1)
         features = probabilities.detach().cpu().numpy().astype(np.float32)
+        if resolved_output_mode == "uniform_prob":
+            features = np.full_like(features, 1.0 / features.shape[-1])
+        elif resolved_output_mode == "shuffled_prob":
+            order = deterministic_derangement(
+                len(features),
+                seed=int(output_seed) + int(output_frame_index),
+            )
+            features = features[order]
     else:
         features = semantic_output["embedding"].squeeze(0).detach().cpu().numpy().astype(np.float32)
     return np.concatenate([query_world_xyz, features], axis=1)

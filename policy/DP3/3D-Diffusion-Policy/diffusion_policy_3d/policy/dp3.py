@@ -19,6 +19,7 @@ from diffusion_policy_3d.model.diffusion.mask_generator import LowdimMaskGenerat
 from diffusion_policy_3d.common.pytorch_util import dict_apply
 from diffusion_policy_3d.common.model_util import print_params
 from diffusion_policy_3d.model.vision.pointnet_extractor import DP3Encoder
+from diffusion_policy_3d.model.vision.semantic_fusion_encoder import SemanticFusionDP3Encoder
 
 
 class DP3(BasePolicy):
@@ -45,6 +46,13 @@ class DP3(BasePolicy):
         use_pc_color=False,
         pointnet_type="pointnet",
         pointcloud_encoder_cfg=None,
+        pointcloud_fusion_mode="concat",
+        semantic_gate_init=0.0,
+        semantic_gate_trainable=True,
+        semantic_gate_scale=1.0,
+        semantic_attention_heads=4,
+        semantic_attention_dropout=0.0,
+        part_pool_temperature=1.0,
         # parameters passed to step
         **kwargs,
     ):
@@ -65,14 +73,31 @@ class DP3(BasePolicy):
         obs_shape_meta = shape_meta["obs"]
         obs_dict = dict_apply(obs_shape_meta, lambda x: x["shape"])
 
-        obs_encoder = DP3Encoder(
-            observation_space=obs_dict,
-            img_crop_shape=crop_shape,
-            out_channel=encoder_output_dim,
-            pointcloud_encoder_cfg=pointcloud_encoder_cfg,
-            use_pc_color=use_pc_color,
-            pointnet_type=pointnet_type,
-        )
+        if str(pointcloud_fusion_mode) == "concat":
+            obs_encoder = DP3Encoder(
+                observation_space=obs_dict,
+                img_crop_shape=crop_shape,
+                out_channel=encoder_output_dim,
+                pointcloud_encoder_cfg=pointcloud_encoder_cfg,
+                use_pc_color=use_pc_color,
+                pointnet_type=pointnet_type,
+            )
+        else:
+            obs_encoder = SemanticFusionDP3Encoder(
+                observation_space=obs_dict,
+                img_crop_shape=crop_shape,
+                out_channel=encoder_output_dim,
+                pointcloud_encoder_cfg=pointcloud_encoder_cfg,
+                use_pc_color=use_pc_color,
+                pointnet_type=pointnet_type,
+                pointcloud_fusion_mode=pointcloud_fusion_mode,
+                semantic_gate_init=semantic_gate_init,
+                semantic_gate_trainable=semantic_gate_trainable,
+                semantic_gate_scale=semantic_gate_scale,
+                semantic_attention_heads=semantic_attention_heads,
+                semantic_attention_dropout=semantic_attention_dropout,
+                part_pool_temperature=part_pool_temperature,
+            )
 
         # create diffusion model
         obs_feature_dim = obs_encoder.output_shape()
@@ -87,6 +112,7 @@ class DP3(BasePolicy):
 
         self.use_pc_color = use_pc_color
         self.pointnet_type = pointnet_type
+        self.pointcloud_fusion_mode = str(pointcloud_fusion_mode)
         cprint(
             f"[DiffusionUnetHybridPointcloudPolicy] use_pc_color: {self.use_pc_color}",
             "yellow",

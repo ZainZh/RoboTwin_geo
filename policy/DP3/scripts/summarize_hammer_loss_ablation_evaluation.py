@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-VARIANTS = ("full_fixed", "no_ce", "no_supcon", "no_consistency")
+VARIANTS = ("full_fixed", "no_ce", "no_supcon", "no_consistency", "ce_only")
 EXPECTED_CONDITIONS = tuple(
     [f"count_{value}" for value in (128, 256, 512, 1024, 5000)]
     + [f"dropout_{value}" for value in ("0.25", "0.5", "0.75")]
@@ -344,8 +344,9 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
     manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
-    if not manifest.get("matrix_complete") or int(manifest.get("expected_runs", 0)) != 12:
-        raise ValueError("training audit manifest is not a complete 12-run matrix")
+    expected_runs = len(VARIANTS) * 3
+    if not manifest.get("matrix_complete") or int(manifest.get("expected_runs", 0)) != expected_runs:
+        raise ValueError(f"training audit manifest is not a complete {expected_runs}-run matrix")
     reports = load_reports(manifest, args.evaluation_root.expanduser().resolve())
     summary, tables = aggregate_reports(manifest, reports)
     output_dir = args.output_dir.expanduser().resolve()
@@ -357,7 +358,7 @@ def main() -> None:
     )
     for filename, rows in tables.items():
         write_csv(output_dir / filename, rows)
-    print(json.dumps({"summary": str(output_dir / 'summary.json'), "runs": 12}))
+    print(json.dumps({"summary": str(output_dir / 'summary.json'), "runs": expected_runs}))
 
 
 if __name__ == "__main__":

@@ -45,6 +45,7 @@ def _config(
         "test_ratio": test_ratio,
         "seed": seed,
         "epochs": epochs,
+        "save_every": epochs,
         "batch_size": 6,
         "num_support_points": 5000,
         "num_query_surface_points": 2048,
@@ -64,12 +65,20 @@ def _config(
 
 
 def _write_fake_matrix(
-    root: Path, *, val_ratio: float = 0.1, test_ratio: float = 0.0
+    root: Path,
+    *,
+    val_ratio: float = 0.1,
+    test_ratio: float = 0.0,
+    epochs: int = 4000,
+    artifact_epoch_tag: int | None = None,
 ) -> dict[int, Path]:
     roots = {seed: root / f"seed{seed}" for seed in SEEDS}
-    for (seed, variant), entry in expected_paths(roots, 4000, 42).items():
+    artifact_tag = epochs if artifact_epoch_tag is None else artifact_epoch_tag
+    for (seed, variant), entry in expected_paths(roots, artifact_tag, 42).items():
         entry["run_dir"].mkdir(parents=True)
-        config = _config(seed, variant, val_ratio=val_ratio, test_ratio=test_ratio)
+        config = _config(
+            seed, variant, epochs=epochs, val_ratio=val_ratio, test_ratio=test_ratio
+        )
         entry["config"].write_text(json.dumps(config), encoding="utf-8")
         checkpoint_args = {
             key: value for key, value in config.items() if key != "canonical_label_names"
@@ -81,8 +90,13 @@ def _write_fake_matrix(
             "projector_state_dict": {"weight": torch.ones(1)},
             "args": checkpoint_args,
         }
-        torch.save({**base, "epoch": 31}, entry["best_sem"])
-        torch.save({**base, "epoch": 4000}, entry["last"])
+        best_args = dict(checkpoint_args)
+        best_args["epochs"] = artifact_tag
+        best_args["save_every"] = artifact_tag
+        torch.save(
+            {**base, "args": best_args, "epoch": min(31, epochs)}, entry["best_sem"]
+        )
+        torch.save({**base, "epoch": epochs}, entry["last"])
     return roots
 
 
@@ -171,7 +185,8 @@ class TestHammerLossAblationEvaluation(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             manifest = audit_matrix(_write_fake_matrix(Path(directory)))
         self.assertTrue(manifest["matrix_complete"])
-        self.assertEqual(12, len(manifest["entries"]))
+        self.assertEqual(15, manifest["expected_runs"])
+        self.assertEqual(15, len(manifest["entries"]))
 
     def test_audit_rejects_missing_and_loss_mismatch(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -188,8 +203,47 @@ class TestHammerLossAblationEvaluation(unittest.TestCase):
             path.write_text(json.dumps(config), encoding="utf-8")
             with self.assertRaises(ValueError):
                 audit_matrix(roots)
+    def test_historical_best_budget_is_allowed_but_not_arbitrary_or_last(self):
+        with tempfile.TemporaryDirectory() as directory:
+            roots = _write_fake_matrix(
+                Path(directory),
+                test_ratio=0.2,
+                epochs=1750,
+                artifact_epoch_tag=4000,
+            )
+            manifest = audit_matrix(
+                roots,
+                epochs=1750,
+                artifact_epoch_tag=4000,
+                evaluation_protocol="independent_test",
+                expected_test_ratio=0.2,
+            )
+            self.assertEqual(15, len(manifest["entries"]))
+            path = expected_paths(roots, 4000, 42)[(SEEDS[0], "full_fixed")]["best_sem"]
+            payload = torch.load(path, map_location="cpu", weights_only=True)
+            payload["args"]["epochs"] = 3999
+            payload["args"]["save_every"] = 3999
+            torch.save(payload, path)
+            with self.assertRaises(ValueError):
+                audit_matrix(roots, epochs=1750, artifact_epoch_tag=4000)
 
-    def test_plan_has_exactly_24_locked_commands(self):
+        with tempfile.TemporaryDirectory() as directory:
+            roots = _write_fake_matrix(
+                Path(directory),
+                test_ratio=0.2,
+                epochs=1750,
+                artifact_epoch_tag=4000,
+            )
+            path = expected_paths(roots, 4000, 42)[(SEEDS[0], "full_fixed")]["last"]
+            payload = torch.load(path, map_location="cpu", weights_only=True)
+            payload["args"]["epochs"] = 4000
+            payload["args"]["save_every"] = 4000
+            torch.save(payload, path)
+            with self.assertRaises(ValueError):
+                audit_matrix(roots, epochs=1750, artifact_epoch_tag=4000)
+
+
+    def test_plan_has_exactly_30_locked_commands(self):
         manifest = {
             "entries": [
                 {
@@ -212,7 +266,7 @@ class TestHammerLossAblationEvaluation(unittest.TestCase):
             device="cuda:0",
             evaluation_seed=20260805,
         )
-        self.assertEqual(24, len(commands))
+        self.assertEqual(30, len(commands))
         r2 = next(command["argv"] for command in commands if command["kind"] == "r2")
         self.assertIn("--outlier-ratios", r2)
         self.assertIn("--normal-view-keep-ratios", r2)
@@ -224,14 +278,23 @@ class TestHammerLossAblationEvaluation(unittest.TestCase):
             with self.assertRaises(ValueError):
                 audit_matrix(roots, evaluation_protocol="independent_test")
         with tempfile.TemporaryDirectory() as directory:
-            roots = _write_fake_matrix(Path(directory), test_ratio=0.2)
+            roots = _write_fake_matrix(
+                Path(directory),
+                test_ratio=0.2,
+                epochs=1750,
+                artifact_epoch_tag=4000,
+            )
             manifest = audit_matrix(
                 roots,
                 evaluation_protocol="independent_test",
+                epochs=1750,
+                artifact_epoch_tag=4000,
                 expected_test_ratio=0.2,
             )
         self.assertTrue(manifest["paper_claim_eligible"])
         self.assertEqual("test", manifest["evaluation_split"])
+        self.assertEqual(1750, manifest["training_epochs"])
+        self.assertEqual(4000, manifest["artifact_epoch_tag"])
         commands = build_evaluation_commands(
             manifest,
             python_bin=Path("/env/python"),
@@ -335,8 +398,8 @@ class TestHammerLossAblationEvaluation(unittest.TestCase):
         self.assertEqual(
             3, summary["r1"]["full_fixed"]["mean_iou"]["n_training_seeds"]
         )
-        self.assertEqual(12, len(tables["r1_seed_metrics.csv"]))
-        self.assertEqual(24, len(tables["r1_per_part.csv"]))
+        self.assertEqual(15, len(tables["r1_seed_metrics.csv"]))
+        self.assertEqual(30, len(tables["r1_per_part.csv"]))
         reports[SEEDS[0]]["full_fixed"]["r2"]["aggregate_conditions"].pop()
         with self.assertRaises(ValueError):
             validate_matched_protocol(reports)

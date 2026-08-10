@@ -27,6 +27,7 @@ STAGE42_PROGRAMS = {
     "no_ce": "hammer_stage42_remote_no_ce_seed20260806",
     "no_supcon": "hammer_stage42_remote_no_supcon_seed20260806",
     "no_consistency": "hammer_stage42_remote_no_consistency_seed20260806",
+    "ce_only": "hammer_stage42_remote_ce_only_seed20260806",
 }
 
 

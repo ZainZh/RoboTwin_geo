@@ -1,0 +1,61 @@
+# Beat Block Hammer held-out PartNext development evaluation: protocol-equivalent headless fast path.
+# Model IDs 3--7 passed the historical 10-seed scripted-physics screen.
+render_freq: 0
+episode_num: 100
+use_seed: false
+save_freq: 15
+embodiment: [aloha-agilex]
+language_num: 100
+domain_randomization:
+  random_background: false
+  cluttered_table: false
+  clean_background_rate: 1
+  random_head_camera_dis: 0
+  random_table_height: 0
+  random_light: false
+  crazy_random_light_rate: 0
+camera:
+  head_camera_type: Large_L515
+  wrist_camera_type: D435
+  collect_head_camera: true
+  collect_wrist_camera: false
+data_type:
+  camera_config: false
+  rgb: false
+  third_view: false
+  depth: false
+  pointcloud: true
+  combine: true
+  object_pointcloud: true
+  observer: false
+  endpose: true
+  qpos: true
+  mesh_segmentation: false
+  actor_segmentation: false
+object_pointcloud:
+  combine: true
+  point_num: 1024
+pcd_down_sample_num: 1024
+pcd_crop: true
+save_path: ./data
+clear_cache_freq: 5
+collect_data: true
+eval_video_log: false
+
+custom_hammer_eval:
+  enabled: true
+  modelname: partnext_hammer_eval
+  model_id: [3, 4, 5, 6, 7]
+  spawn_pose_mode: match_reference_contact
+
+fixed_seed_protocol:
+  enabled: true
+
+fast_eval:
+  skip_redundant_preflight: true
+  # Rejected for formal evaluation: skipping planner construction changes the
+  # CUDA RNG state consumed later by the stochastic diffusion policy. Keep it
+  # disabled until policy RNG is explicitly isolated and revalidated.
+  skip_eval_planner: false
+  skip_post_action_render: true
+  reuse_last_action_observation: true

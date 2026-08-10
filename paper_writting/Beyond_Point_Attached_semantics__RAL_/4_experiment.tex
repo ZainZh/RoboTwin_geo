@@ -1,0 +1,78 @@
+
+\begin{table}[tbp]
+\centering
+\small
+\setlength{\tabcolsep}{3.4pt}
+\caption{Simulation success rates on four RoboTwin manipulation tasks.}
+\label{tab:sim_results}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+Method & Hang Mug & Beat Hammer & Open Micro. & Put Cabinet \\
+\midrule
+DP3~\cite{ke20243d} & 24\% & 74\% & 22\% & 72\% \\
+2D Lifting~\cite{oquab2023dinov2} & 23\% & 78\% & 21\% & 60\% \\
+3D Point-wise~\cite{zhang2026utonia} & 31\% & 77\% & 26\% & 76\% \\
+Ours & \textbf{37}\% & \textbf{84}\% & \textbf{35}\% & \textbf{83}\% \\
+\bottomrule
+\end{tabular}
+\vspace{-10pt}
+\end{table}
+
+\begin{table}[tbp]
+\centering
+\small
+\caption{Real-world success rates on four manipulation tasks.}
+\label{tab:real_results}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+Method & Grasp Mug & Beat Cube & Stir Mug & Pour Water \\
+\midrule
+DP3~\cite{ke20243d} & 7/20 & 8/20 & 3/20 & 4/20 \\
+3D Point-wise~\citep{zhang2026utonia} & 7/20 & 9/20 & 7/20 & 5/20 \\
+Ours & \textbf{17/20} & \textbf{17/20} & \textbf{10/20} & \textbf{10/20} \\
+\bottomrule
+\end{tabular}
+\vspace{-10pt}
+\end{table}
+
+\begin{figure*}[tbp]
+%\vspace{-20pt}
+\centering
+\includegraphics[width=0.85\linewidth]{Images/real_experiment.png}
+\caption{Real-world tasks and object splits. Policies are trained on training object instances and evaluated on held-out test instances for mug grasping, tool-object contact, grasping and stirring, and pouring-related manipulation.}
+\label{fig:real_world}
+%\vspace{-20pt}
+\end{figure*}
+
+\section{Experiments}
+We evaluate the proposed object-centric continuous semantic field through both simulation and real-world robotic experiments. Our experiments are designed to answer three questions: (1) whether the proposed representation improves the success rate of multi-task manipulation policies; (2) whether it improves policy generalization to unseen object instances; and (3) whether the learned semantic embeddings exhibit stronger cross-instance part consistency than 2D feature lifting and discrete 3D point-wise features.
+
+\subsection{Experiment Setup}
+We evaluate our method on four RoboTwin simulation tasks~\cite{chen2025robotwin} and four real-world bimanual manipulation tasks. The tasks cover mug hanging or grasping, tool-object contact, stirring, and pouring-related manipulation, all of which require localizing functional object parts such as handles, tool heads, openings, or graspable regions.
+
+We use DP3~\cite{ke20243d} as the point-cloud imitation learning policy backbone in all experiments. In simulation, task demonstrations are generated in RoboTwin, and we compare four object representations: raw point-cloud \textbf{DP3}, \textbf{2D Feature Lifting}, \textbf{3D Point-wise Features}, and \textbf{Ours}. The DP3 baseline uses raw point clouds as 3D observations. The 2D Feature Lifting baseline projects DINOv2~\cite{oquab2023dinov2} features from RGB observations onto 3D points. The 3D Point-wise Features baseline extracts dense point-wise features from observed points using the same frozen Utonia encoder~\citep{zhang2026utonia} as our method.
+
+For real-world experiments, demonstrations are collected on our bimanual robot using training object instances, and policies are evaluated on held-out instances with different geometry and appearance. We compare \textbf{DP3}, \textbf{3D Point-wise Features}, and \textbf{Ours}. Across all comparisons, methods share the same demonstrations, policy backbone, training pipeline, and success criteria; only the object-level visual representation differs. Detailed task definitions, object splits, hyperparameters, and success criteria are provided in the appendix.
+
+\subsection{Quantitative Results}
+\textbf{Simulation Results.}
+Table~\ref{tab:sim_results} reports success rates on four RoboTwin simulation tasks. Compared with the raw point-cloud DP3 baseline, adding semantic features through 2D feature lifting or frozen 3D point-wise features does not lead to consistent improvements across tasks. For example, 2D lifting improves performance on Beat Block Hammer but degrades performance on Put Object Cabinet, while 3D point-wise features provide moderate gains but remain limited on tasks requiring precise functional-part localization. These results are consistent with our hypothesis that semantic enrichment alone is insufficient when the features remain attached to observation-dependent point samples. In contrast, our method improves performance on all four tasks, suggesting that querying an object-conditioned semantic field at resampled object locations provides more stable and policy-useful part-aware conditioning.
+
+\textbf{Real-World Evaluation.}
+Table~\ref{tab:real_results} reports real-world success rates, and Figure~\ref{fig:real_world} shows the corresponding task setup and grouped object instances. Real-world observations introduce stronger sampling variation than simulation due to sensor noise, partial views, calibration error, and appearance and geometry changes. Under these conditions, the gap between our method and the baselines becomes more pronounced. While DP3 and 3D Point-wise Features achieve limited success on several tasks, our method substantially improves performance across all four real-world tasks. This suggests that the learned semantic field provides more stable functional-part cues under real observation noise. We further analyze the cross-instance stability of the learned embeddings in Section~\ref{sec:representation_analysis}.
+
+\begin{figure*}[t]
+%\vspace{-20pt}
+\centering
+\includegraphics[width=1\linewidth]{Images/feature_compare.png}
+%\vspace{-10pt}
+\caption{Cross-instance feature visualization on real observations. Colors are obtained from a shared PCA per method and category. Compared with 2D lifting and 3D point-wise features, our field yields more consistent part-level colors across mug and hammer instances.}
+%\vspace{-15pt}
+\label{fig:feature_compare}
+\end{figure*}
+
+\subsection{Representation Analysis}
+\label{sec:representation_analysis}
+To qualitatively analyze the learned representations, Figure~\ref{fig:feature_compare} visualizes feature embeddings on four real mug instances and four real hammer instances. All features are computed from real robot observations; for clarity, we crop the target object regions for visualization. For each method and object category, we fit a shared PCA projection over embeddings from the four instances and map the first three principal components to RGB. Therefore, colors are comparable across instances within the same method-category row, but not necessarily across different methods.
+
+The 2D Feature Lifting and 3D Point-wise Feature baselines produce meaningful local feature variations on individual instances, but the color patterns of corresponding functional parts are less consistent across instances. For example, mug handles and hammer heads do not always preserve stable colors across different object instances. In contrast, our method produces more consistent feature patterns for mug bodies and handles, as well as for hammer heads and handles. This qualitative result suggests that the learned continuous semantic field better aligns part-level embeddings across instances, providing more stable functional-part cues for downstream policy learning.

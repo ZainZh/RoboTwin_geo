@@ -19,12 +19,42 @@ def stable_softmax(values: np.ndarray, axis: int = -1) -> np.ndarray:
     return exponent / np.maximum(exponent.sum(axis=axis, keepdims=True), 1e-12)
 
 
+def _existing_part_probabilities(values: np.ndarray) -> np.ndarray:
+    probabilities = np.asarray(values[..., 3:], dtype=np.float32)
+    if probabilities.shape[-1] < 2:
+        raise ValueError(
+            "semantic control route requires xyz plus at least two probability channels, "
+            f"got {values.shape}"
+        )
+    if not np.all(np.isfinite(probabilities)):
+        raise ValueError("semantic control route has non-finite probabilities")
+    if np.any(probabilities < -1e-6) or not np.allclose(
+        probabilities.sum(axis=-1), 1.0, atol=1e-5
+    ):
+        raise ValueError("semantic control route requires normalized non-negative probabilities")
+    return probabilities
+
+
+def _derangement(size: int, *, seed: int) -> np.ndarray:
+    if size < 2:
+        raise ValueError("within-frame shuffle requires at least two query points")
+    generator = np.random.default_rng(seed)
+    order = generator.permutation(size)
+    if np.any(order == np.arange(size)):
+        # A non-zero cyclic roll is a deterministic derangement. It preserves
+        # the probability multiset while ensuring no query keeps its own row.
+        order = np.roll(np.arange(size), int(generator.integers(1, size)))
+    return order
+
+
 def transform_semantic_cloud(
     cloud: np.ndarray,
     *,
     mode: str,
     logit_weight: np.ndarray | None = None,
     logit_bias: np.ndarray | None = None,
+    frame_offset: int = 0,
+    shuffle_seed: int = 20260807,
 ) -> np.ndarray:
     values = np.asarray(cloud, dtype=np.float32)
     if values.ndim < 2 or values.shape[-1] < 3:
@@ -32,6 +62,22 @@ def transform_semantic_cloud(
     xyz = values[..., :3]
     if mode == "xyz":
         return xyz.copy()
+    if mode == "uniform_prob":
+        probabilities = _existing_part_probabilities(values)
+        uniform = np.full_like(probabilities, 1.0 / probabilities.shape[-1])
+        return np.concatenate([xyz, uniform], axis=-1).astype(np.float32)
+    if mode == "shuffled_prob":
+        probabilities = _existing_part_probabilities(values)
+        shuffled = np.empty_like(probabilities)
+        for local_frame in range(probabilities.shape[0]):
+            shuffled[local_frame] = probabilities[
+                local_frame,
+                _derangement(
+                    probabilities.shape[-2],
+                    seed=int(shuffle_seed) + int(frame_offset) + local_frame,
+                ),
+            ]
+        return np.concatenate([xyz, shuffled], axis=-1).astype(np.float32)
     if mode != "part_prob":
         raise ValueError(f"unsupported semantic ablation mode: {mode}")
     if logit_weight is None or logit_bias is None:
@@ -103,7 +149,6 @@ def _copy_source_zarr(source: Path, destination: Path) -> None:
             shutil.rmtree(destination)
         raise
 
-
 def _copy_reflink_or_regular(source: str, destination: str) -> str:
     # copy2 is portable; filesystems with transparent CoW may deduplicate later.
     return shutil.copy2(source, destination)
@@ -117,6 +162,7 @@ def _replace_array(
     weight: np.ndarray | None,
     bias: np.ndarray | None,
     batch_frames: int,
+    shuffle_seed: int,
 ) -> dict:
     source_array = root[f"data/{key}"]
     source_shape = tuple(int(value) for value in source_array.shape)
@@ -127,6 +173,8 @@ def _replace_array(
         mode=mode,
         logit_weight=weight,
         logit_bias=bias,
+        frame_offset=0,
+        shuffle_seed=shuffle_seed,
     )
     output_channels = int(sample.shape[-1])
     output_shape = (*source_shape[:-1], output_channels)
@@ -152,13 +200,15 @@ def _replace_array(
             mode=mode,
             logit_weight=weight,
             logit_bias=bias,
+            frame_offset=start,
+            shuffle_seed=shuffle_seed,
         )
         output[start:end] = transformed
     source_xyz = np.asarray(source_array[..., :3])
     output_xyz = np.asarray(output[..., :3])
     if not np.array_equal(source_xyz, output_xyz):
         raise RuntimeError(f"query xyz changed while deriving {key}")
-    if mode == "part_prob":
+    if mode in {"part_prob", "uniform_prob", "shuffled_prob"}:
         probability_sum = np.asarray(output[..., 3:]).sum(axis=-1)
         if not np.allclose(probability_sum, 1.0, atol=1e-5):
             raise RuntimeError(f"part probabilities for {key} do not sum to one")
@@ -227,6 +277,7 @@ def build_ablation_zarr(args: argparse.Namespace) -> dict:
             raise KeyError(f"semantic arrays missing from source zarr: {missing}")
         arrays = [
             _replace_array(
+                shuffle_seed=args.shuffle_seed,
                 root=root,
                 key=key,
                 mode=args.mode,
@@ -254,8 +305,12 @@ def build_ablation_zarr(args: argparse.Namespace) -> dict:
             "semantic_checkpoint": checkpoint_manifest,
             "canonical_label_names": labels,
             "semantic_feat_dim": (
-                0 if args.mode == "xyz" else int(len(labels or []))
+                0 if args.mode == "xyz" else int(arrays[0]["output_shape"][-1] - 3)
             ),
+            "shuffle_seed": (
+                int(args.shuffle_seed) if args.mode == "shuffled_prob" else None
+            ),
+            "semantic_control": args.mode in {"uniform_prob", "shuffled_prob"},
             "derived_arrays": arrays,
             "matched_invariants": {
                 "episode_ends_unchanged": True,
@@ -278,6 +333,7 @@ def build_ablation_zarr(args: argparse.Namespace) -> dict:
         "mode": args.mode,
         "arrays": arrays,
         "semantic_checkpoint": checkpoint_manifest,
+        "shuffle_seed": int(args.shuffle_seed) if args.mode == "shuffled_prob" else None,
         "matched_invariants": output_meta["matched_invariants"],
     }
     print(json.dumps(manifest, indent=2, ensure_ascii=False))
@@ -295,10 +351,15 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--output-zarr", type=Path, required=True)
     parser.add_argument("--source-meta", type=Path, default=None)
     parser.add_argument("--output-meta", type=Path, default=None)
-    parser.add_argument("--mode", choices=["xyz", "part_prob"], required=True)
+    parser.add_argument(
+        "--mode",
+        choices=["xyz", "part_prob", "uniform_prob", "shuffled_prob"],
+        required=True,
+    )
     parser.add_argument("--semantic-checkpoint", type=Path, default=None)
     parser.add_argument("--semantic-keys", nargs="*", default=None)
     parser.add_argument("--batch-frames", type=int, default=100)
+    parser.add_argument("--shuffle-seed", type=int, default=20260807)
     return parser
 
 

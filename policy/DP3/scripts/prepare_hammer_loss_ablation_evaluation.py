@@ -25,12 +25,13 @@ import torch
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT_ROOT = REPO_ROOT / "policy" / "DP3" / "scripts"
-VARIANTS = ("full_fixed", "no_ce", "no_supcon", "no_consistency")
+VARIANTS = ("full_fixed", "no_ce", "no_supcon", "no_consistency", "ce_only")
 EXPECTED_WEIGHTS = {
     "full_fixed": (1.0, 0.2, 0.1),
     "no_ce": (0.0, 0.2, 0.1),
     "no_supcon": (1.0, 0.0, 0.1),
     "no_consistency": (1.0, 0.2, 0.0),
+    "ce_only": (1.0, 0.0, 0.0),
 }
 FORMAT_NAME = "semantic_field_weights_only_v1"
 EVALUATION_PROTOCOLS = {
@@ -153,6 +154,7 @@ def audit_matrix(
     seed_roots: dict[int, Path],
     *,
     epochs: int = 4000,
+    artifact_epoch_tag: int | None = None,
     split_seed: int = 42,
     evaluation_protocol: str = "legacy_val",
     expected_val_ratio: float | None = None,
@@ -182,7 +184,11 @@ def audit_matrix(
     if evaluation_protocol == "independent_test" and test_ratio <= 0.0:
         raise ValueError("independent_test protocol requires a positive test ratio")
 
-    matrix_paths = expected_paths(seed_roots, epochs, split_seed)
+    artifact_tag = epochs if artifact_epoch_tag is None else int(artifact_epoch_tag)
+    if artifact_tag <= 0:
+        raise ValueError(f"artifact epoch tag must be positive, got {artifact_tag}")
+
+    matrix_paths = expected_paths(seed_roots, artifact_tag, split_seed)
     missing = missing_paths(matrix_paths)
     if missing:
         preview = "\n".join(str(path) for path in missing[:8])
@@ -205,6 +211,7 @@ def audit_matrix(
             "test_ratio": test_ratio,
             "seed": seed,
             "epochs": epochs,
+            "save_every": epochs,
             "batch_size": 6,
             "num_support_points": 5000,
             "num_query_surface_points": 2048,
@@ -232,10 +239,24 @@ def audit_matrix(
                 raise ValueError(f"unsafe optimizer/scaler state found in {paths[name]}")
             checkpoint_args = checkpoint.get("args", {})
             for key, expected in checks.items():
-                if key == "canonical_label_names":
+                if key in {"canonical_label_names", "epochs", "save_every"}:
                     continue
                 _expect_equal(
                     checkpoint_args.get(key), expected, f"seed={seed} variant={variant} {name}.args.{key}"
+                )
+            try:
+                checkpoint_epochs = int(checkpoint_args["epochs"])
+                checkpoint_save_every = int(checkpoint_args["save_every"])
+            except (KeyError, TypeError, ValueError) as error:
+                raise ValueError(f"{name} budget metadata missing: {paths[name]}") from error
+            allowed_targets = (
+                {epochs, artifact_tag} if name == "best_sem" else {epochs}
+            )
+            if checkpoint_epochs not in allowed_targets or checkpoint_save_every != checkpoint_epochs:
+                raise ValueError(
+                    f"{name} budget mismatch: epochs={checkpoint_epochs}, "
+                    f"save_every={checkpoint_save_every}, allowed={sorted(allowed_targets)}: "
+                    f"{paths[name]}"
                 )
 
         if int(last.get("epoch", -1)) != epochs:
@@ -280,8 +301,9 @@ def audit_matrix(
         "strict_weights_only": True,
         "training_seeds": sorted(seed_roots),
         "variants": list(VARIANTS),
-        "expected_runs": 12,
+        "expected_runs": len(seed_roots) * len(VARIANTS),
         "training_epochs": epochs,
+        "artifact_epoch_tag": artifact_tag,
         "split_seed": split_seed,
         "evaluation_protocol": evaluation_protocol,
         "evaluation_split": protocol_spec["split"],
@@ -508,6 +530,7 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--wait-interval-seconds", type=float, default=30.0)
     parser.add_argument("--wait-timeout-seconds", type=float)
     parser.add_argument("--epochs", type=int, default=4000)
+    parser.add_argument("--artifact-epoch-tag", type=int)
     parser.add_argument("--split-seed", type=int, default=42)
     parser.add_argument(
         "--evaluation-protocol",
@@ -531,7 +554,10 @@ def build_argparser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_argparser().parse_args()
     roots = parse_seed_roots(args.seed_root)
-    paths = expected_paths(roots, args.epochs, args.split_seed)
+    artifact_tag = (
+        args.epochs if args.artifact_epoch_tag is None else args.artifact_epoch_tag
+    )
+    paths = expected_paths(roots, artifact_tag, args.split_seed)
     if args.wait:
         wait_until_complete(
             paths,
@@ -542,6 +568,7 @@ def main() -> None:
         roots,
         epochs=args.epochs,
         split_seed=args.split_seed,
+        artifact_epoch_tag=artifact_tag,
         evaluation_protocol=args.evaluation_protocol,
         expected_val_ratio=args.expected_val_ratio,
         expected_test_ratio=args.expected_test_ratio,
@@ -549,7 +576,7 @@ def main() -> None:
     manifest_path = args.manifest.expanduser().resolve()
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest = write_manifest_fail_closed(manifest_path, manifest)
-    print(json.dumps({"audit": "passed", "runs": 12, "manifest": str(manifest_path)}))
+    print(json.dumps({"audit": "passed", "runs": len(manifest["entries"]), "manifest": str(manifest_path)}))
     if args.mode == "audit":
         return
 

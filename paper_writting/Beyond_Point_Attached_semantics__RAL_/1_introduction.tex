@@ -1,0 +1,30 @@
+\section{Introduction}
+\IEEEPARstart{R}{obot} manipulation is executed in 3D: grasps, contacts, and tool motions must be generated relative to object geometry observed through depth sensors. To generalize across object instances, a policy must understand functional object parts rather than object categories alone. Parts such as handles, tool heads, openings, and contact regions can vary in shape, scale, and location, while preserving their interaction roles~\cite{simeonov2022neural, pan2023tax, tang2025functo}. Learning stable part-level 3D object representations is therefore important for cross-instance generalization and for manipulation policies that can operate beyond the training object distribution.
+
+\begin{figure*}[t]
+    \vspace{-15pt}
+    \centering
+    \includegraphics[width=1\linewidth]{Images/teaser.png}
+    \vspace{1pt}
+    \caption{Teaser of our object-centric continuous semantic field. Existing 2D feature lifting and discrete 3D point-wise features attach semantics to observation-dependent samples. We instead condition a queryable semantic field on the object point cloud and read part-aware embeddings at explicit 3D query locations, producing semantic point clouds for downstream policy learning.}
+    \label{fig:teaser}
+\end{figure*}
+
+Raw point clouds are a natural 3D input for manipulation policies~\cite{ze20243d, ke20243d}, but they are an unstable basis for learning such part-level cues. First, raw points encode geometry without explicit part semantics, forcing policies to infer task-relevant parts and cross-instance correspondences from demonstrations. Second, the sampled points themselves depend on viewpoint, sensor configuration, and instance geometry~\cite{goyal2023rvt}. As a result, policies trained directly on raw point clouds must learn action generation while also handling semantic ambiguity and sampling variability.
+
+A common strategy is to enrich point clouds with semantic features. Prior works project features from 2D vision or vision-language models into 3D~\cite{chen2025g3flow, fan2026any3d, wang2024gendp}, or predict dense point-wise semantic and affordance features on the input points~\cite{chen2026learning, xu2026action}. These methods improve the semantic content of point clouds, but the features usually remain attached to the observed discrete samples. When the raw point distribution changes, the semantic representation presented to the policy changes with it. Moreover, features obtained from view-dependent images or local 3D neighborhoods can still vary with viewpoint, projection quality, and local sampling.
+
+Our key insight is that object representations for manipulation should not merely attach semantic features to the currently observed points. Instead, they should separate object conditioning from semantic readout. We use the observed object point cloud as a geometric condition for the current instance, and use explicit 3D query positions to read out semantic embeddings. This condition-query separation allows semantic features to be generated at controlled object locations rather than only at raw sensor samples. Fig.~\ref{fig:teaser} illustrates this shift from point-attached semantic features to an object-conditioned queryable semantic field.
+
+Based on this idea, we propose an object-centric continuous semantic field for part-aware object representation learning. The field is trained using part-annotated object models from PartNext~\cite{wang2026partnext}. In our experiments, we train one category-level field for each object family, with part labels shared across instances of that family. Given support points from an object instance, the model builds an object-conditioned tri-plane feature cache and predicts semantic embeddings and training-time part logits at explicit query locations. We supervise the queried outputs with part anchoring, cross-instance part alignment, and augmentation stability, which respectively ground predictions in part labels, align corresponding parts across instances, and improve embedding stability under support perturbations.
+
+After training, the semantic field is frozen and used as an object-level representation module for downstream policy learning. At each policy step, we query the field at resampled object locations and pair each query coordinate with its semantic embedding to form a semantic point cloud. This representation preserves 3D spatial structure while providing functional-part cues to the policy. We use it as an additional point-cloud modality without changing the policy objective or action representation.
+
+We evaluate our approach on four RoboTwin simulation tasks and four real-world manipulation tasks. Compared with raw point-cloud policies, 2D feature lifting, and discrete 3D point-wise features, our representation provides more stable part-level conditioning and improves policy performance, especially on tasks that require functional-part localization. Our main contributions are:
+\begin{itemize}
+    \item We propose an object-centric continuous semantic field that represents functional object parts as queryable 3D semantic embeddings, enabling semantic readout at explicit object locations rather than only at observed sensor points.
+
+    \item We train category-level fields from part-annotated object models using part anchoring, cross-instance part alignment, and augmentation stability, producing embeddings that are stable and aligned across object instances.
+
+    \item We export the learned field as policy-ready semantic point clouds and validate its benefits on multi-task and cross-instance manipulation in both RoboTwin simulation and real-world bimanual robot experiments.
+\end{itemize}

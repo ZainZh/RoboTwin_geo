@@ -66,6 +66,7 @@ class Base_Task(gym.Env):
         self.ep_num = kwags.get("now_ep_num", 0)
         self.render_freq = kwags.get("render_freq", 10)
         self.data_type = kwags.get("data_type", None)
+        self.fast_eval = kwags.get("fast_eval") or {}
         self.save_data = kwags.get("save_data", False)
         self.dual_arm = kwags.get("dual_arm", True)
         self.eval_mode = kwags.get("eval_mode", False)
@@ -392,9 +393,17 @@ class Base_Task(gym.Env):
         """
         load aloha robot urdf file, set root pose and set joints
         """
+        skip_eval_planner = bool(
+            self.eval_mode
+            and self.fast_eval.get("skip_eval_planner", False)
+        )
         if not hasattr(self, "robot"):
             self.robot = Robot(self.scene, self.need_topp, **kwags)
-            self.robot.set_planner(self.scene)
+            if not skip_eval_planner:
+                self.robot.set_planner(self.scene)
+            self.robot.init_joints()
+        elif skip_eval_planner:
+            self.robot._init_robot_(self.scene, self.need_topp, **kwags)
             self.robot.init_joints()
         else:
             self.robot.reset(self.scene, self.need_topp, **kwags)
@@ -607,7 +616,8 @@ class Base_Task(gym.Env):
             "endpose": {},
         }
 
-        pkl_dic["observation"] = self.cameras.get_config()
+        if self.data_type.get("camera_config", True):
+            pkl_dic["observation"] = self.cameras.get_config()
         # rgb
         if self.data_type.get("rgb", False):
             rgb = self.cameras.get_rgb()
@@ -1656,7 +1666,14 @@ class Base_Task(gym.Env):
         self.take_action_cnt += 1
         print(f"step: \033[92m{self.take_action_cnt} / {self.step_lim}\033[0m", end="\r")
 
-        self._update_render()
+        skip_post_action_render = bool(
+            self.eval_mode
+            and self.fast_eval.get("skip_post_action_render", False)
+            and not self.render_freq
+            and self.eval_video_path is None
+        )
+        if not skip_post_action_render:
+            self._update_render()
         if self.render_freq:
             self.viewer.render()
 

@@ -29,6 +29,10 @@ def main(cfg):
 class DP3:
 
     def __init__(self, cfg, usr_args) -> None:
+        safe_checkpoint = str(usr_args.get("safe_checkpoint_path", "") or "").strip()
+        self.safe_checkpoint_path = (
+            str(pathlib.Path(safe_checkpoint).expanduser().resolve()) if safe_checkpoint else None
+        )
         self.policy, self.env_runner = self.get_policy_and_runner(cfg, usr_args)
 
     def update_obs(self, observation):

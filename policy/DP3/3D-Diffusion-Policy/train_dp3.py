@@ -8,6 +8,7 @@ if __name__ == "__main__":
     os.chdir(ROOT_DIR)
 
 import os, sys
+import contextlib
 import pdb
 import hydra
 import torch
@@ -43,11 +44,56 @@ from diffusion_policy_3d.common.checkpoint_util import TopKCheckpointManager
 from diffusion_policy_3d.common.pytorch_util import dict_apply, optimizer_to
 from diffusion_policy_3d.model.diffusion.ema_model import EMAModel
 from diffusion_policy_3d.model.common.lr_scheduler import get_scheduler
-from scripts.safe_dp3_checkpoint import save_weights_only_checkpoint
+from scripts.safe_dp3_checkpoint import (
+    load_weights_only_checkpoint,
+    save_weights_only_checkpoint,
+    validate_policy_checkpoint_metadata,
+)
+from scripts.semantic_fusion_warmstart import (
+    freeze_vanilla_backbone_for_adapter,
+    load_shared_vanilla_state,
+    validate_vanilla_warmstart_metadata,
+)
 
 import pdb, random
 
 OmegaConf.register_new_resolver("eval", eval, replace=True)
+
+
+SUPPORTED_TRAINING_PRECISIONS = {"fp32", "bf16"}
+
+
+def resolve_training_precision(training_cfg) -> str:
+    value = training_cfg.get("precision", "fp32")
+    precision = "fp32" if value is None else str(value).strip().lower()
+    if precision not in SUPPORTED_TRAINING_PRECISIONS:
+        raise ValueError(
+            f"training.precision must be one of {sorted(SUPPORTED_TRAINING_PRECISIONS)}, "
+            f"got {value!r}"
+        )
+    return precision
+
+
+def configure_training_tf32(training_cfg) -> bool | None:
+    """Apply an explicit TF32 override, or preserve PyTorch defaults when absent/null."""
+    requested = training_cfg.get("allow_tf32", None)
+    if requested is None:
+        return None
+    if not isinstance(requested, bool):
+        raise ValueError(f"training.allow_tf32 must be true, false, or null; got {requested!r}")
+    torch.backends.cuda.matmul.allow_tf32 = requested
+    torch.backends.cudnn.allow_tf32 = requested
+    return requested
+
+
+def training_autocast_context(device: torch.device, precision: str):
+    if precision == "fp32":
+        return contextlib.nullcontext()
+    if precision != "bf16":
+        raise ValueError(f"Unsupported training precision: {precision!r}")
+    if device.type != "cuda":
+        raise ValueError("training.precision=bf16 currently requires a CUDA device")
+    return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
 
 
 class TrainDP3Workspace:
@@ -75,8 +121,98 @@ class TrainDP3Workspace:
             except:  # minkowski engine could not be copied. recreate it
                 self.ema_model = hydra.utils.instantiate(cfg.policy)
 
-        # configure training state
-        self.optimizer = hydra.utils.instantiate(cfg.optimizer, params=self.model.parameters())
+        self.warmstart_provenance = None
+        warmstart_value = str(
+            cfg.training.get("warmstart_safe_checkpoint", "") or ""
+        ).strip()
+        freeze_vanilla_backbone = bool(
+            cfg.training.get("freeze_vanilla_backbone", False)
+        )
+        warmstart_use_ema = bool(
+            cfg.training.get("warmstart_use_ema_weights", True)
+        )
+        if freeze_vanilla_backbone and not warmstart_value:
+            raise ValueError(
+                "training.freeze_vanilla_backbone=true requires "
+                "training.warmstart_safe_checkpoint"
+            )
+        if warmstart_value:
+            if str(cfg.policy.get("pointcloud_fusion_mode", "concat")) == "concat":
+                raise ValueError(
+                    "Vanilla warm-start is only valid for a semantic fusion policy"
+                )
+            warmstart_path = pathlib.Path(warmstart_value).expanduser().resolve()
+            if not warmstart_path.is_file():
+                raise FileNotFoundError(
+                    f"Warm-start safe checkpoint does not exist: {warmstart_path}"
+                )
+            warmstart_payload = load_weights_only_checkpoint(
+                warmstart_path,
+                mmap=True,
+            )
+            raw_task_name = str(
+                cfg.get("raw_task_name", "") or ""
+            ).strip()
+            if raw_task_name.lower() in {"", "none", "null"}:
+                raw_task_name = str(cfg.task_name)
+            source_metadata = validate_vanilla_warmstart_metadata(
+                warmstart_payload["metadata"],
+                target_shape_meta=OmegaConf.to_container(
+                    cfg.task.shape_meta,
+                    resolve=True,
+                ),
+                expected_raw_task_name=raw_task_name,
+                require_ema=warmstart_use_ema,
+            )
+            if warmstart_use_ema:
+                source_model_state = warmstart_payload.get("ema_model")
+                if source_model_state is None:
+                    raise ValueError(
+                        "Warm-start checkpoint does not contain EMA weights"
+                    )
+            else:
+                source_model_state = warmstart_payload["model"]
+            model_load_report = load_shared_vanilla_state(
+                self.model,
+                source_model_state,
+            )
+            ema_load_report = None
+            if self.ema_model is not None:
+                if warmstart_use_ema:
+                    source_ema_state = source_model_state
+                else:
+                    source_ema_state = (
+                        warmstart_payload.get("ema_model")
+                        or warmstart_payload["model"]
+                    )
+                ema_load_report = load_shared_vanilla_state(
+                    self.ema_model,
+                    source_ema_state,
+                )
+            freeze_report = None
+            if freeze_vanilla_backbone:
+                freeze_report = freeze_vanilla_backbone_for_adapter(self.model)
+            self.warmstart_provenance = {
+                "source_path": str(warmstart_path),
+                "use_ema_weights": warmstart_use_ema,
+                "freeze_vanilla_backbone": freeze_vanilla_backbone,
+                "source_metadata": source_metadata,
+                "model_load": model_load_report,
+                "ema_load": ema_load_report,
+                "freeze": freeze_report,
+            }
+            print(f"[fusion-warmstart] {self.warmstart_provenance}")
+            del warmstart_payload
+
+        trainable_parameters = [
+            parameter for parameter in self.model.parameters() if parameter.requires_grad
+        ]
+        if not trainable_parameters:
+            raise ValueError("DP3 optimizer has no trainable parameters")
+        self.optimizer = hydra.utils.instantiate(
+            cfg.optimizer,
+            params=trainable_parameters,
+        )
 
         # configure training state
         self.global_step = 0
@@ -84,6 +220,18 @@ class TrainDP3Workspace:
 
     def run(self):
         cfg = copy.deepcopy(self.cfg)
+        device = torch.device(cfg.training.device)
+        precision = resolve_training_precision(cfg.training)
+        allow_tf32 = configure_training_tf32(cfg.training)
+        if precision == "bf16":
+            if device.type != "cuda" or not torch.cuda.is_available():
+                raise RuntimeError("training.precision=bf16 requires an available CUDA device")
+            if hasattr(torch.cuda, "is_bf16_supported") and not torch.cuda.is_bf16_supported():
+                raise RuntimeError("The selected CUDA device does not support bfloat16 training")
+        print(
+            f"[training-precision] precision={precision} "
+            f"allow_tf32={allow_tf32 if allow_tf32 is not None else 'torch-default'}"
+        )
 
         WANDB = False
 
@@ -169,7 +317,6 @@ class TrainDP3Workspace:
                                              **cfg.checkpoint.topk)
 
         # device transfer
-        device = torch.device(cfg.training.device)
         self.model.to(device)
         if self.ema_model is not None:
             self.ema_model.to(device)
@@ -200,8 +347,9 @@ class TrainDP3Workspace:
 
                     # compute loss
                     t1_1 = time.time()
-                    raw_loss, loss_dict = self.model.compute_loss(batch)
-                    loss = raw_loss / cfg.training.gradient_accumulate_every
+                    with training_autocast_context(device, precision):
+                        raw_loss, loss_dict = self.model.compute_loss(batch)
+                        loss = raw_loss / cfg.training.gradient_accumulate_every
                     loss.backward()
 
                     t1_2 = time.time()
@@ -270,7 +418,8 @@ class TrainDP3Workspace:
                     ) as tepoch:
                         for batch_idx, batch in enumerate(tepoch):
                             batch = dict_apply(batch, lambda x: x.to(device, non_blocking=True))
-                            loss, loss_dict = self.model.compute_loss(batch)
+                            with training_autocast_context(device, precision):
+                                loss, loss_dict = self.model.compute_loss(batch)
                             val_losses.append(loss)
                             print(f"epoch {self.epoch}, eval loss: ", float(loss.cpu()))
                             if (cfg.training.max_val_steps
@@ -308,8 +457,16 @@ class TrainDP3Workspace:
                     "seed": int(cfg.training.seed),
                     "task_name": str(cfg.task.name),
                     "zarr_path": str(cfg.task.dataset.zarr_path),
+                    "precision": precision,
+                    "allow_tf32": allow_tf32,
                     "shape_meta": OmegaConf.to_container(cfg.task.shape_meta, resolve=True),
                     "use_ema": bool(cfg.training.use_ema),
+                    "pointcloud_fusion_mode": str(cfg.policy.get("pointcloud_fusion_mode", "concat")),
+                    "semantic_gate_trainable": bool(cfg.policy.get("semantic_gate_trainable", True)),
+                    "semantic_gate_scale": float(cfg.policy.get("semantic_gate_scale", 1.0)),
+                    "semantic_attention_heads": int(cfg.policy.get("semantic_attention_heads", 4)),
+                    "part_pool_temperature": float(cfg.policy.get("part_pool_temperature", 1.0)),
+                    "warmstart": copy.deepcopy(self.warmstart_provenance),
                 }
                 saved_weights_path = save_weights_only_checkpoint(
                     resolved_weights_path,
@@ -340,23 +497,50 @@ class TrainDP3Workspace:
 
         env_runner = RobotRunner(n_obs_steps=n_obs_steps, n_action_steps=n_action_steps)
 
-        if not cfg.policy.use_pc_color:
-            ckpt_file = pathlib.Path(
-                os.path.join(
-                    DP3_ROOT,
-                    f"./checkpoints/{usr_args['task_name']}-{usr_args['ckpt_setting']}-{usr_args['expert_data_num']}_{usr_args['seed']}/{usr_args['checkpoint_num']}.ckpt"
-                ))
+        safe_checkpoint_value = str(usr_args.get("safe_checkpoint_path", "") or "").strip()
+        if safe_checkpoint_value:
+            ckpt_file = pathlib.Path(safe_checkpoint_value).expanduser().resolve()
+            if not ckpt_file.is_file():
+                raise FileNotFoundError(f"safe DP3 checkpoint does not exist: {ckpt_file}")
+            payload = load_weights_only_checkpoint(ckpt_file, mmap=True)
+            validate_policy_checkpoint_metadata(
+                payload,
+                expected_task_name=str(cfg.task.name),
+                expected_use_ema=bool(cfg.training.use_ema),
+                expected_shape_meta=OmegaConf.to_container(
+                    cfg.task.shape_meta,
+                    resolve=True,
+                ),
+            )
+            model_state = self._upgrade_legacy_model_state_dict(payload["model"])
+            self.model.load_state_dict(model_state, strict=True)
+            if cfg.training.use_ema:
+                if self.ema_model is None:
+                    raise ValueError(
+                        "Safe DP3 checkpoint requests EMA but workspace has no ema_model"
+                    )
+                ema_state = self._upgrade_legacy_model_state_dict(payload["ema_model"])
+                self.ema_model.load_state_dict(ema_state, strict=True)
+            cprint(f"Loaded safe weights-only checkpoint {ckpt_file}", "magenta")
+            del payload
         else:
-            ckpt_file = pathlib.Path(
-                os.path.join(
-                    DP3_ROOT,
-                    f"./checkpoints/{usr_args['task_name']}-{usr_args['ckpt_setting']}-{usr_args['expert_data_num']}_w_rgb_{usr_args['seed']}/{usr_args['checkpoint_num']}.ckpt"
-                ))
-        assert ckpt_file.is_file(), f"ckpt file doesn't exist, {ckpt_file}"
+            if not cfg.policy.use_pc_color:
+                ckpt_file = pathlib.Path(
+                    os.path.join(
+                        DP3_ROOT,
+                        f"./checkpoints/{usr_args['task_name']}-{usr_args['ckpt_setting']}-{usr_args['expert_data_num']}_{usr_args['seed']}/{usr_args['checkpoint_num']}.ckpt"
+                    ))
+            else:
+                ckpt_file = pathlib.Path(
+                    os.path.join(
+                        DP3_ROOT,
+                        f"./checkpoints/{usr_args['task_name']}-{usr_args['ckpt_setting']}-{usr_args['expert_data_num']}_w_rgb_{usr_args['seed']}/{usr_args['checkpoint_num']}.ckpt"
+                    ))
+            assert ckpt_file.is_file(), f"ckpt file doesn't exist, {ckpt_file}"
 
-        if ckpt_file.is_file():
-            cprint(f"Resuming from checkpoint {ckpt_file}", "magenta")
-            self.load_checkpoint(path=ckpt_file)
+            if ckpt_file.is_file():
+                cprint(f"Resuming from checkpoint {ckpt_file}", "magenta")
+                self.load_checkpoint(path=ckpt_file)
 
         policy = self.model
         if cfg.training.use_ema:

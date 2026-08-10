@@ -1,0 +1,148 @@
+ \section{Method}
+
+We propose an object-centric continuous semantic field for learning part-aware object representations and using them as policy conditioning for robotic manipulation. As illustrated in Fig.~\ref{fig:method}, our method treats the observed object point cloud as a geometric condition and reads semantic embeddings at explicit 3D query locations. This separates where object geometry is observed from where semantic features are evaluated, allowing the downstream policy to condition on resampled, part-aware semantic point clouds rather than only on raw observation samples.
+
+ \subsection{Problem Setup and Training Assumptions}
+
+We learn a category-level object semantic field for each object family used in our experiments. Given an object point cloud, the field is conditioned on the geometry of the current object instance and can be queried at arbitrary 3D locations to produce part-aware semantic embeddings. In this work, we train the semantic field separately for each object family, while requiring the part labels to be consistent across instances within that family. The semantic field is trained using part-annotated object models from PartNext~\cite{wang2026partnext}, while the downstream policy is trained separately from task demonstrations collected in simulation or on the real robot.
+
+For each object instance, we separate the object representation into \emph{support points} and \emph{query points}. The support set $\mathcal{P}_{sup}=\{p_i\in\mathbb{R}^3\}_{i=1}^{N_s}$ provides the geometric condition of the current object instance. During semantic field training, support points are sampled
+from the object surface and used only to construct the object-conditioned field. During policy learning and deployment, support points are sampled from the observed object point cloud. The support points themselves are not the final representation consumed by the policy; they serve as the condition from which the field is built.
+
+The query set $\mathcal{Q}=\{x_j\in\mathbb{R}^3\}_{j=1}^{N_q}$ specifies the 3D locations where semantic outputs are evaluated. During semantic field training, query points are sampled from labeled object surfaces, and each valid query point has a part label $y_j\in\{1,\ldots,C\}$ used for supervision. During policy learning and deployment, part labels are not required. We resample object locations as query points and use the field to produce semantic embeddings at these locations. Thus, support points describe the observed object instance, while query points define where semantic information is read out. This separation allows semantic features to be generated at controlled query locations rather than being restricted to the original sensor samples. Formally, the semantic field is defined as
+\begin{equation}
+  f_\theta(x \mid \mathcal{P}_{sup}) \rightarrow (e_x,\ell_x),
+\end{equation}
+where $x\in\mathbb{R}^3$ is a query coordinate, $e_x\in\mathbb{R}^d$ is an L2-normalized semantic embedding, and $\ell_x\in\mathbb{R}^C$ denotes logits over the part label set of the corresponding object category. The logits are used only for training supervision, while the semantic embedding is used as the object-level representation for downstream policy learning.
+
+
+\begin{figure*}[t]
+    \centering
+    \includegraphics[width=1\linewidth]{Images/method.png}
+   % \vspace{-10pt}
+    \caption{Overview of our object-centric continuous semantic field. Support points condition an object-specific tri-plane cache; 3D query locations read out part-aware embeddings and training-time part logits. The frozen field is then queried at resampled object locations to export semantic point clouds for downstream manipulation policies.}
+    %\vspace{-15pt}
+    \label{fig:method}
+\end{figure*}
+
+  \subsection{Object-Conditioned Continuous Semantic Field}
+  \label{sec:semantic_field}
+
+  \paragraph{Support encoding.}
+   Given the support set $\mathcal{P}_{sup}$, we extract point-wise geometric features using a frozen pre-trained 3D backbone and map them into the semantic field space with a lightweight adapter:
+  \begin{equation}
+      \mathcal{F}_{sup}=E(\mathcal{P}_{sup}), \qquad
+      \tilde{\mathcal{F}}_{sup}=g_\phi(\mathcal{F}_{sup}),
+  \end{equation}
+  where $\mathcal{F}_{sup}=\{f_i\in\mathbb{R}^{d_u}\}_{i=1}^{N_s}$ and $\tilde{\mathcal{F}}_{sup}=\{\tilde{f}_i\in\mathbb{R}^{d_s}\}_{i=1}^{N_s}$. We use
+  Utonia~\citep{zhang2026utonia} as $E(\cdot)$ and keep it frozen, so that semantic field learning builds on general 3D geometric priors rather than relearning low-level geometry.
+
+  \paragraph{Tri-plane feature cache.}
+  To make the representation queryable, we aggregate the adapted support features into an object-conditioned tri-plane cache:
+\begin{equation}
+  \mathcal{T}_{obj}
+  =
+  \Pi(\mathcal{P}_{sup},\tilde{\mathcal{F}}_{sup})
+  =
+  \{T_{xy},T_{xz},T_{yz},F_{glob}\}.
+\end{equation}
+Before aggregation, support coordinates are normalized to the object frame. The three planes $T_{xy},T_{xz},T_{yz}\in\mathbb{R}^{H\times W\times d_t}$ are 2D feature maps defined on the $xy$, $xz$, and $yz$ projections, respectively. The global feature $F_{glob}\in\mathbb{R}^{d_g}$ is obtained by pooling support
+features. This cache is built separately for each object instance and stores the support-conditioned geometry and semantic cues used for querying.
+
+\paragraph{Query decoding.}
+Given the tri-plane cache $\mathcal{T}_{obj}$ and a query coordinate $x$, we project $x$ onto the three planes and bilinearly sample the corresponding plane features. The sampled features are fused into a local feature $F_{loc}(x)$, which is decoded together with the global feature and normalized coordinate:
+\begin{equation}
+  (e_x,\ell_x)
+  =
+  h_\theta\left(x,F_{loc}(x),F_{glob}\right).
+\end{equation}
+The local feature provides support-conditioned information around the query location, while $F_{glob}$ summarizes the object instance. We include the normalized coordinate $x$ as positional context in the object frame, which helps disambiguate spatially similar local patterns.
+
+
+\subsection{Semantic Field Learning Objectives}
+  \label{sec:method_losses}
+
+  We supervise only the queried outputs of the field; support points are used to condition the object instance. Let $\mathcal{Q}_{valid}$ be the set of labeled
+  query points and $y_x\in\{1,\ldots,C\}$ be the part label of query point $x$. For each training object, we generate two augmented support conditions $\mathcal{V}$
+  and optimize a weighted sum of three objectives:
+  \begin{equation}
+      \mathcal{L}
+      =
+      \lambda_{part}\mathcal{L}_{part}
+      +
+      \lambda_{align}\mathcal{L}_{align}
+      +
+      \lambda_{stab}\mathcal{L}_{stab}.
+  \end{equation}
+
+  \paragraph{Part anchoring.}
+  We implement this objective with cross-entropy supervision on the part logits:
+  \begin{equation}
+      \mathcal{L}_{part}
+      =
+      \frac{1}{|\mathcal{V}|}
+      \sum_{v \in \mathcal{V}}
+      \frac{1}{|\mathcal{Q}_{valid}|}
+      \sum_{x \in \mathcal{Q}_{valid}}
+      \mathrm{CE}(\ell_x^{(v)}, y_x).
+  \end{equation}
+  This objective anchors the queried outputs to the predefined part labels of the object family, making each field prediction semantically identifiable.
+
+  \paragraph{Cross-instance part alignment.}
+  Part anchoring supervises logits but does not directly organize the embedding space used by the policy. We implement this objective with supervised contrastive
+  learning on the normalized embeddings. For an anchor query $i$, let $P(i)$ denote valid queries with the same part label, excluding the anchor:
+  \begin{equation}
+      \mathcal{L}_{align}
+      =
+      \frac{1}{|\mathcal{V}|}
+      \sum_{v \in \mathcal{V}}
+      \frac{1}{|\mathcal{I}_v|}
+      \sum_{i \in \mathcal{I}_v}
+      \frac{-1}{|P(i)|}
+      \sum_{p \in P(i)}
+      \log
+      \frac{
+          \exp((e_i^{(v)})^\top e_p^{(v)} / \tau)
+      }{
+          \sum_{a \neq i}
+          \exp((e_i^{(v)})^\top e_a^{(v)} / \tau)
+      },
+  \end{equation}
+  where $\mathcal{I}_v$ contains anchors with at least one positive sample, $P(i)$ excludes the anchor, the denominator is computed over valid query embeddings in the same batch and augmentation, and $\tau$ is a temperature parameter. This objective pulls together embeddings of the
+  same part and separates different parts. Since part labels are consistent across instances within each object family, it encourages corresponding parts from
+  different instances to align in the embedding space.
+
+  \paragraph{Augmentation stability.}
+  To improve stability, we enforce embedding consistency for the same query coordinate under two augmented support conditions while keeping the query coordinate fixed in the normalized object frame. Let $e_x^{(1)}$ and $e_x^{(2)}$ be the
+  embeddings predicted at query point $x$ when conditioning on two augmentations of the same object instance. We minimize
+  \begin{equation}
+      \mathcal{L}_{stab}
+      =
+      \frac{1}{|\mathcal{Q}_{valid}|}
+      \sum_{x \in \mathcal{Q}_{valid}}
+      \left(
+          1 - \langle e_x^{(1)}, e_x^{(2)} \rangle
+      \right).
+  \end{equation}
+  This objective does not add new semantic labels; it regularizes the field to produce stable embeddings under support perturbations and small geometric transformations.
+  Together, $\mathcal{L}_{part}$ anchors queried outputs to part semantics, $\mathcal{L}_{align}$ aligns corresponding parts across instances, and $\mathcal{L}_{stab}$ improves representation stability.
+
+
+
+\subsection{Semantic Point Clouds for Policy Learning}
+\label{sec:method_policy}
+
+
+After semantic field training, we freeze the field and use it as an object-level representation module for policy learning. At each policy step, an observed object point cloud $\mathcal{P}_{obj}$ is used to construct the support set $\mathcal{P}_{sup}$ and the corresponding tri-plane cache. We then resample $M$ object query locations $\{x_i\}_{i=1}^{M}$ from the observed object region and evaluate the embedding branch of the field, producing a semantic point cloud
+  \begin{equation}
+    \mathcal{S}_{obj}=\{(x_i, f_\theta^{emb}(x_i\mid\mathcal{P}_{sup}))\}_{i=1}^{M}.
+  \end{equation}
+
+where each point stores its 3D location and queried semantic embedding. The part logits are discarded at this stage; the policy only receives semantic embeddings. For downstream manipulation, we provide these semantic point clouds as additional object-level observations. The policy observation at time $t$ is
+\begin{equation}
+  o_t=(\mathcal{C}_t,\{\mathcal{S}_t^k\}_{k=1}^{K},q_t),
+\end{equation}
+where $\mathcal{C}_t$ is the scene point cloud, $\mathcal{S}_t^k$ is the semantic point cloud of the $k$-th target object, and $q_t$ is the robot proprioceptive state. The scene point cloud preserves global geometry and spatial context, while the semantic point clouds provide part-aware object cues. We use DP3 as the
+point-cloud policy backbone and treat $\mathcal{S}_t^k$ as an additional point-cloud modality. The training objective and action representation are unchanged. Thus, the policy input is generated by an explicit resampling-and-querying step, rather than being limited to features attached to the original observed points.
+
+

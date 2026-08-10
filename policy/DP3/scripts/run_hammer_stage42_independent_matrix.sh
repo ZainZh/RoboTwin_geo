@@ -14,7 +14,7 @@ MATRIX_LAUNCHER="${SCRIPT_DIR}/run_hammer_semantic_loss_ablation_matrix.sh"
 ROLE="${STAGE42_ROLE:-}"
 RUN_GATE="${RUN_STAGE42:-0}"
 SELECTED_SEEDS="${STAGE42_SEEDS:-}"
-SELECTED_VARIANTS="${STAGE42_VARIANTS:-full_fixed no_ce no_supcon no_consistency}"
+SELECTED_VARIANTS="${STAGE42_VARIANTS:-full_fixed no_ce no_supcon no_consistency ce_only}"
 
 case "${RUN_GATE}" in
   0) DRY_RUN_VALUE=1 ;;
@@ -72,7 +72,7 @@ for seed in "${seed_array[@]}"; do
 done
 for variant in "${variant_array[@]}"; do
   case "${variant}" in
-    full_fixed|no_ce|no_supcon|no_consistency) ;;
+    full_fixed|no_ce|no_supcon|no_consistency|ce_only) ;;
     *) echo "unknown stage42 variant: ${variant}" >&2; exit 2 ;;
   esac
 done

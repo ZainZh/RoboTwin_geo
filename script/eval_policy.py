@@ -1,6 +1,7 @@
 import sys
 import os
 import subprocess
+import time
 
 sys.path.append("./")
 sys.path.append(f"./policy")
@@ -20,6 +21,15 @@ import argparse
 import pdb
 
 from generate_episode_instructions import *
+from eval_policy_results import (
+    EvaluationResultRecorder,
+    evaluation_should_continue,
+    evaluation_start_seed,
+    fixed_seed_protocol_enabled,
+    fast_eval_option_enabled,
+    policy_observation_digest,
+    should_run_expert_check,
+)
 
 current_file_path = os.path.abspath(__file__)
 parent_directory = os.path.dirname(current_file_path)
@@ -41,12 +51,6 @@ def eval_function_decorator(policy_name, model_name):
         return getattr(policy_model, model_name)
     except ImportError as e:
         raise e
-
-
-def should_run_expert_check(args):
-    custom_hammer_eval = args.get("custom_hammer_eval") or {}
-    custom_mug_eval = args.get("custom_mug_eval") or {}
-    return not (bool(custom_hammer_eval.get("enabled")) or bool(custom_mug_eval.get("enabled")))
 
 
 def build_instruction_episode_info(task_name, task_env, episode_info=None):
@@ -129,6 +133,9 @@ def main(usr_args):
     task_name = usr_args["task_name"]
     task_config = usr_args["task_config"]
     ckpt_setting = usr_args["ckpt_setting"]
+    result_label = str(usr_args.get("result_label", ckpt_setting)).strip()
+    if not result_label or Path(result_label).name != result_label or result_label in {".", ".."}:
+        raise ValueError(f"Invalid result_label: {result_label!r}")
     # checkpoint_num = usr_args['checkpoint_num']
     policy_name = usr_args["policy_name"]
     instruction_type = usr_args["instruction_type"]
@@ -144,6 +151,7 @@ def main(usr_args):
     args['task_name'] = task_name
     args["task_config"] = task_config
     args["ckpt_setting"] = ckpt_setting
+    args["eval_observation_digest"] = bool(usr_args.get("eval_observation_digest", False))
     args["policy_start_phase"] = str(usr_args.get("policy_start_phase", "full_task"))
 
     embodiment_type = args.get("embodiment")
@@ -185,7 +193,7 @@ def main(usr_args):
     else:
         embodiment_name = str(embodiment_type[0]) + "+" + str(embodiment_type[1])
 
-    save_dir = Path(f"eval_result/{task_name}/{policy_name}/{task_config}/{ckpt_setting}/{current_time}")
+    save_dir = Path(f"eval_result/{task_name}/{policy_name}/{task_config}/{result_label}/{current_time}")
     save_dir.mkdir(parents=True, exist_ok=True)
 
     if args["eval_video_log"]:
@@ -221,10 +229,12 @@ def main(usr_args):
 
     seed = usr_args["seed"]
 
-    st_seed = 100000 * (1 + seed)
+    st_seed = evaluation_start_seed(seed)
     suc_nums = []
     test_num = int(usr_args.get("test_num", 100))
     topk = 1
+    fixed_seed_protocol = fixed_seed_protocol_enabled(args)
+    result_recorder = EvaluationResultRecorder(save_dir / "episodes.jsonl")
 
     model = get_model(usr_args)
     st_seed, suc_num = eval_policy(task_name,
@@ -234,7 +244,8 @@ def main(usr_args):
                                    st_seed,
                                    test_num=test_num,
                                    video_size=video_size,
-                                   instruction_type=instruction_type)
+                                   instruction_type=instruction_type,
+                                   result_recorder=result_recorder)
     suc_nums.append(suc_num)
 
     topk_success_rate = sorted(suc_nums, reverse=True)[:topk]
@@ -246,7 +257,33 @@ def main(usr_args):
         # file.write(str(task_reward) + '\n')
         file.write("\n".join(map(str, np.array(suc_nums) / test_num)))
 
-    print(f"Data has been saved to {file_path}")
+    summary_path = save_dir / "summary.json"
+    result_recorder.write_summary(
+        summary_path,
+        start_seed=evaluation_start_seed(seed),
+        next_seed=st_seed,
+        requested_test_num=test_num,
+        fixed_seed_protocol=fixed_seed_protocol,
+        metadata={
+            "timestamp": current_time,
+            "task_name": task_name,
+            "policy_name": policy_name,
+            "task_config": task_config,
+            "ckpt_setting": ckpt_setting,
+            "result_label": result_label,
+            "instruction_type": instruction_type,
+            "reported_success_count": int(suc_num),
+            "seed_group": int(seed),
+            "config_name": str(usr_args.get("config_name", "")),
+            "safe_checkpoint_path": str(usr_args.get("safe_checkpoint_path", "") or ""),
+            "semantic_policy_output_mode": str(
+                usr_args.get("semantic_policy_output_mode", "embedding")
+            ),
+            "semantic_gate_scale": float(usr_args.get("semantic_gate_scale", 1.0)),
+        },
+    )
+
+    print(f"Data has been saved to {file_path} and {summary_path}")
     # return task_reward
 
 
@@ -257,7 +294,8 @@ def eval_policy(task_name,
                 st_seed,
                 test_num=100,
                 video_size=None,
-                instruction_type=None):
+                instruction_type=None,
+                result_recorder=None):
     print(f"\033[34mTask Name: {args['task_name']}\033[0m")
     print(f"\033[34mPolicy Name: {args['policy_name']}\033[0m")
 
@@ -268,6 +306,14 @@ def eval_policy(task_name,
     now_id = 0
     succ_seed = 0
     suc_test_seed_list = []
+    candidate_count = 0
+    fixed_seed_protocol = fixed_seed_protocol_enabled(args)
+    skip_redundant_preflight = bool(
+        not expert_check
+        and fixed_seed_protocol
+        and fast_eval_option_enabled(args, "skip_redundant_preflight")
+    )
+    reuse_last_action_observation = fast_eval_option_enabled(args, "reuse_last_action_observation")
 
     policy_name = args["policy_name"]
     eval_func = eval_function_decorator(policy_name, "eval")
@@ -279,19 +325,43 @@ def eval_policy(task_name,
 
     args["eval_mode"] = True
 
-    while succ_seed < test_num:
+    while evaluation_should_continue(
+            candidate_count=candidate_count,
+            accepted_count=succ_seed,
+            test_num=test_num,
+            fixed_seed_protocol=fixed_seed_protocol):
+        candidate_index = candidate_count
+        candidate_started = time.perf_counter()
+        candidate_count += 1
         render_freq = args["render_freq"]
         args["render_freq"] = 0
 
+        episode_info = None
         try:
-            TASK_ENV.setup_demo(now_ep_num=now_id, seed=now_seed, is_test=True, **args)
-            if expert_check:
-                episode_info = TASK_ENV.play_once()
-            else:
-                episode_info = build_instruction_episode_info(task_name, TASK_ENV, episode_info=None)
-            TASK_ENV.close_env()
+            if not skip_redundant_preflight:
+                TASK_ENV.setup_demo(now_ep_num=now_id, seed=now_seed, is_test=True, **args)
+                if expert_check:
+                    episode_info = TASK_ENV.play_once()
+                else:
+                    episode_info = build_instruction_episode_info(task_name, TASK_ENV, episode_info=None)
+                TASK_ENV.close_env()
         except UnStableError as e:
-            TASK_ENV.close_env()
+            try:
+                TASK_ENV.close_env()
+            except Exception:
+                pass
+            if result_recorder is not None:
+                result_recorder.record_candidate(
+                    candidate_index=candidate_index,
+                    candidate_seed=now_seed,
+                    accepted=False,
+                    evaluated=False,
+                    success=None,
+                    status="skipped_unstable",
+                    reason="candidate_setup_unstable",
+                    error_type=type(e).__name__,
+                    error_message=str(e),
+                )
             now_seed += 1
             args["render_freq"] = render_freq
             continue
@@ -299,23 +369,97 @@ def eval_policy(task_name,
             print(" -------------")
             print("Error: ", e)
             print(" -------------")
-            TASK_ENV.close_env()
+            try:
+                TASK_ENV.close_env()
+            except Exception:
+                pass
+            if result_recorder is not None:
+                result_recorder.record_candidate(
+                    candidate_index=candidate_index,
+                    candidate_seed=now_seed,
+                    accepted=False,
+                    evaluated=False,
+                    success=None,
+                    status="skipped_setup_error",
+                    reason="candidate_setup_error",
+                    error_type=type(e).__name__,
+                    error_message=str(e),
+                )
             now_seed += 1
             args["render_freq"] = render_freq
             print("error occurs !")
             continue
 
-        if (not expert_check) or (TASK_ENV.plan_success and TASK_ENV.check_success()):
+        if skip_redundant_preflight:
+            pass
+        elif (not expert_check) or (TASK_ENV.plan_success and TASK_ENV.check_success()):
             succ_seed += 1
             suc_test_seed_list.append(now_seed)
         else:
+            if result_recorder is not None:
+                result_recorder.record_candidate(
+                    candidate_index=candidate_index,
+                    candidate_seed=now_seed,
+                    accepted=False,
+                    evaluated=False,
+                    success=None,
+                    status="skipped_expert_check",
+                    reason="expert_check_failed",
+                )
             now_seed += 1
             args["render_freq"] = render_freq
             continue
 
         args["render_freq"] = render_freq
 
-        TASK_ENV.setup_demo(now_ep_num=now_id, seed=now_seed, is_test=True, **args)
+        try:
+            TASK_ENV.setup_demo(now_ep_num=now_id, seed=now_seed, is_test=True, **args)
+        except UnStableError as e:
+            if result_recorder is not None:
+                result_recorder.record_candidate(
+                    candidate_index=candidate_index,
+                    candidate_seed=now_seed,
+                    accepted=False if skip_redundant_preflight else True,
+                    evaluated=False,
+                    success=None,
+                    status="skipped_unstable" if skip_redundant_preflight else "rollout_setup_error",
+                    reason="candidate_setup_unstable" if skip_redundant_preflight else "rollout_setup_error",
+                    evaluation_index=TASK_ENV.test_num,
+                    error_type=type(e).__name__,
+                    error_message=str(e),
+                )
+            try:
+                TASK_ENV.close_env()
+            except Exception:
+                pass
+            now_seed += 1
+            continue
+        except Exception as e:
+            if result_recorder is not None:
+                result_recorder.record_candidate(
+                    candidate_index=candidate_index,
+                    candidate_seed=now_seed,
+                    accepted=True,
+                    evaluated=False,
+                    success=None,
+                    status="rollout_setup_error",
+                    reason="rollout_setup_error",
+                    evaluation_index=TASK_ENV.test_num,
+                    error_type=type(e).__name__,
+                    error_message=str(e),
+                )
+            if not fixed_seed_protocol:
+                raise
+            try:
+                TASK_ENV.close_env()
+            except Exception:
+                pass
+            now_seed += 1
+            continue
+        if skip_redundant_preflight:
+            succ_seed += 1
+            suc_test_seed_list.append(now_seed)
+            episode_info = build_instruction_episode_info(task_name, TASK_ENV, episode_info=None)
         if args["policy_start_phase"] == "placement":
             prepare_placement = getattr(TASK_ENV, "prepare_policy_placement_phase", None)
             if prepare_placement is None:
@@ -364,13 +508,36 @@ def eval_policy(task_name,
             TASK_ENV._set_eval_video_ffmpeg(ffmpeg)
 
         succ = False
-        reset_func(model)
-        while TASK_ENV.take_action_cnt < TASK_ENV.step_lim:
-            observation = TASK_ENV.get_obs()
-            eval_func(TASK_ENV, model, observation)
-            if TASK_ENV.eval_success:
-                succ = True
-                break
+        observation = None
+        initial_observation_digest = None
+        try:
+            reset_func(model)
+            while TASK_ENV.take_action_cnt < TASK_ENV.step_lim:
+                if observation is None or not reuse_last_action_observation:
+                    observation = TASK_ENV.get_obs()
+                    if initial_observation_digest is None and bool(args.get("eval_observation_digest", False)):
+                        initial_observation_digest = policy_observation_digest(observation)
+                eval_func(TASK_ENV, model, observation)
+                if TASK_ENV.eval_success:
+                    succ = True
+                    break
+                if reuse_last_action_observation:
+                    observation = TASK_ENV.now_obs
+        except Exception as e:
+            if result_recorder is not None:
+                result_recorder.record_candidate(
+                    candidate_index=candidate_index,
+                    candidate_seed=now_seed,
+                    accepted=True,
+                    evaluated=False,
+                    success=None,
+                    status="rollout_error",
+                    reason="policy_rollout_error",
+                    evaluation_index=TASK_ENV.test_num,
+                    error_type=type(e).__name__,
+                    error_message=str(e),
+                )
+            raise
         # task_total_reward += TASK_ENV.episode_score
         if TASK_ENV.eval_video_path is not None:
             TASK_ENV._del_eval_video_ffmpeg()
@@ -380,6 +547,21 @@ def eval_policy(task_name,
             print("\033[92mSuccess!\033[0m")
         else:
             print("\033[91mFail!\033[0m")
+
+        if result_recorder is not None:
+            result_recorder.record_candidate(
+                candidate_index=candidate_index,
+                candidate_seed=now_seed,
+                accepted=True,
+                evaluated=True,
+                success=succ,
+                status="evaluated_success" if succ else "evaluated_failure",
+                reason=None if succ else "policy_did_not_reach_success_before_step_limit",
+                evaluation_index=TASK_ENV.test_num,
+                policy_steps=TASK_ENV.take_action_cnt,
+                elapsed_seconds=time.perf_counter() - candidate_started,
+                initial_observation_digest=initial_observation_digest,
+            )
 
         now_id += 1
         TASK_ENV.close_env(clear_cache=((succ_seed + 1) % clear_cache_freq == 0))

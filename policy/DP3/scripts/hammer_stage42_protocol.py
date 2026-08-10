@@ -30,6 +30,7 @@ VARIANT_LOSSES = {
     "no_ce": (0.0, 0.2, 0.1),
     "no_supcon": (1.0, 0.0, 0.1),
     "no_consistency": (1.0, 0.2, 0.0),
+    "ce_only": (1.0, 0.0, 0.0),
 }
 VARIANTS = tuple(VARIANT_LOSSES)
 DEFAULT_LOCAL_TEMPLATE = str(
@@ -255,6 +256,48 @@ def expected_config(task: Stage42Task) -> dict[str, Any]:
         "output_dir": str(task.output_root),
     }
 
+def expected_checkpoint_args(task: Stage42Task) -> dict[str, Any]:
+    """Checkpoint args omit labels stored in the checkpoint top level."""
+    return {
+        key: value for key, value in expected_config(task).items()
+        if key not in {"canonical_label_names", "resume", "epochs", "save_every"}
+    }
+
+
+def expected_audited_config(task: Stage42Task) -> dict[str, Any]:
+    """Scientific config plus fixed controls, excluding the resolved resume source."""
+    return {
+        key: value for key, value in expected_config(task).items() if key != "resume"
+    }
+
+
+def _require_same_run_resume(values: dict[str, Any], task: Stage42Task, source: Path) -> None:
+    if "resume" not in values:
+        raise RuntimeError(f"stage42 identity mismatch in {source}: resume=<missing>")
+    resolved = values["resume"]
+    if resolved is None:
+        return
+    expected = (task.run_dir / "resume.pt").resolve()
+    if Path(resolved).expanduser().resolve() != expected:
+        raise RuntimeError(
+            f"stage42 identity mismatch in {source}: resume={resolved!r} expected None or {str(expected)!r}"
+        )
+
+
+def _require_checkpoint_budget(
+    values: dict[str, Any], source: Path, *, allow_historical_target: bool
+) -> None:
+    try:
+        epochs = int(values["epochs"])
+        save_every = int(values["save_every"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise RuntimeError(f"checkpoint budget metadata missing from {source}") from error
+    allowed = {EPOCHS, ARTIFACT_EPOCH_TAG} if allow_historical_target else {EPOCHS}
+    if epochs not in allowed or save_every != epochs:
+        raise RuntimeError(
+            f"stage42 checkpoint budget mismatch in {source}: "
+            f"epochs={epochs}, save_every={save_every}, allowed={sorted(allowed)}"
+        )
 
 def _load_weights_only(path: Path) -> dict[str, Any]:
     import torch  # Imported only by explicit artifact audits, never by queues.
@@ -274,7 +317,8 @@ def audit_completed_run(task: Stage42Task, *, require_outer: bool = False) -> di
     if not config_path.is_file() or not task.completion.is_file():
         raise RuntimeError(f"incomplete stage42 run: {task.run_dir}")
     config = json.loads(config_path.read_text(encoding="utf-8"))
-    _require_values(config, expected_config(task), config_path)
+    _require_values(config, expected_audited_config(task), config_path)
+    _require_same_run_resume(config, task, config_path)
 
     marker = json.loads(task.completion.read_text(encoding="utf-8"))
     _require_values(
@@ -308,16 +352,22 @@ def audit_completed_run(task: Stage42Task, *, require_outer: bool = False) -> di
             {
                 "format": "semantic_field_weights_only_v1",
                 "training_resume_supported": False,
+                "canonical_label_names": ["Handle", "Head"],
             },
             path,
         )
         args = payload.get("args")
         if not isinstance(args, dict):
             raise RuntimeError(f"checkpoint args missing from {path}")
-        _require_values(args, expected_config(task), path)
+        _require_values(args, expected_checkpoint_args(task), path)
+        _require_same_run_resume(args, task, path)
         checkpoint_epochs[name] = int(payload.get("epoch", -1))
-    if checkpoint_epochs["last.pt"] < EPOCHS:
-        raise RuntimeError(f"last checkpoint has not reached e{EPOCHS}: {task.run_dir}")
+        _require_checkpoint_budget(args, path, allow_historical_target=name != "last.pt")
+    if checkpoint_epochs["last.pt"] != EPOCHS:
+        raise RuntimeError(f"last checkpoint is not exactly e{EPOCHS}: {task.run_dir}")
+    for name in ("best.pt", "best_sem.pt"):
+        if not 1 <= checkpoint_epochs[name] <= EPOCHS:
+            raise RuntimeError(f"invalid {name} epoch for fixed e{EPOCHS} budget: {task.run_dir}")
 
     resume_path = task.run_dir / "resume.pt"
     resume = _load_weights_only(resume_path)
@@ -327,6 +377,7 @@ def audit_completed_run(task: Stage42Task, *, require_outer: bool = False) -> di
             "format": "semantic_field_training_state_v1",
             "training_resume_supported": True,
             "resume_epoch_boundary": True,
+            "canonical_label_names": ["Handle", "Head"],
         },
         resume_path,
     )
@@ -334,7 +385,11 @@ def audit_completed_run(task: Stage42Task, *, require_outer: bool = False) -> di
     identity = resume.get("run_identity")
     if not isinstance(resume_args, dict) or not isinstance(identity, dict):
         raise RuntimeError(f"resume identity missing from {resume_path}")
-    _require_values(resume_args, expected_config(task), resume_path)
+    _require_values(resume_args, expected_checkpoint_args(task), resume_path)
+    _require_same_run_resume(resume_args, task, resume_path)
+    _require_checkpoint_budget(
+        resume_args, resume_path, allow_historical_target=False
+    )
     _require_values(
         identity,
         {"run_name": task.run_name, "seed": int(task.seed)},
@@ -345,12 +400,13 @@ def audit_completed_run(task: Stage42Task, *, require_outer: bool = False) -> di
         raise RuntimeError(f"resume config identity missing from {resume_path}")
     identity_expected = {
         key: value
-        for key, value in expected_config(task).items()
+        for key, value in expected_checkpoint_args(task).items()
         if key not in {"resume", "resume_additional_epochs", "resume_from", "auto_resume"}
     }
     _require_values(identity_config, identity_expected, resume_path)
-    if int(resume.get("epoch", -1)) < EPOCHS:
-        raise RuntimeError(f"resume state has not reached e{EPOCHS}: {resume_path}")
+    _require_checkpoint_budget(identity_config, resume_path, allow_historical_target=False)
+    if int(resume.get("epoch", -1)) != EPOCHS:
+        raise RuntimeError(f"resume state is not exactly e{EPOCHS}: {resume_path}")
 
     if require_outer:
         if not task.outer_completion.is_file() or not task.outer_manifest.is_file():
@@ -384,6 +440,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--role", choices=("local", "remote", "all"), default="all")
     parser.add_argument("--seed", action="append")
     parser.add_argument("--variant", action="append", choices=VARIANTS)
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        help="Audit the realized worker count; defaults to local=0, remote=8.",
+    )
     parser.add_argument("--mode", choices=("plan", "audit"), default="plan")
     parser.add_argument("--require-outer", action="store_true")
     return parser.parse_args()
@@ -398,7 +459,10 @@ def main() -> None:
         selected = None if args.seed is None else [seed for seed in args.seed if seed in allowed]
         if args.seed is not None and not selected:
             continue
-        tasks.extend(build_tasks(role, seeds=selected, variants=args.variant))
+        workers = args.num_workers
+        if workers is None:
+            workers = 0 if role == "local" else 8
+        tasks.extend(build_tasks(role, seeds=selected, variants=args.variant, num_workers=workers))
     if args.seed is not None:
         known = {task.seed for task in tasks}
         unknown = set(args.seed).difference(known)

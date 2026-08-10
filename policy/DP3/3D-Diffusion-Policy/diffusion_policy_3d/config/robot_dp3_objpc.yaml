@@ -94,6 +94,8 @@ optimizer:
 
 training:
   device: "cuda:0"
+  precision: fp32
+  allow_tf32: null
   seed: 42
   debug: False
   resume: True

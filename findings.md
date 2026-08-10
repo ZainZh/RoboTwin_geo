@@ -1,4 +1,18 @@
 # 调查发现
+## Planner 初始化与扩散策略共享 CUDA RNG（2026-08-09）
+
+- `skip_eval_planner` 不能直接用于正式结果：Base_Task 每回合先 `torch.manual_seed(seed)`，planner 构造随后会推进 CUDA RNG，而 DP3 的随机扩散采样使用同一全局生成器。跳过 planner 后初始观测摘要不变，动作采样却改变；本机 field 从原协议 14/100 变为 0/100，远端不同表征路线也一致归零。该项必须关闭，或先实现独立的 policy RNG 后把所有方法在新协议下完整重评，不能混用两套结果。
+
+## RoboTwin 闭环评估渲染瓶颈与等价性边界（2026-08-09）
+
+- `eval()` 每次预测输出 6 个动作，旧实现却在每个动作后执行完整 render/take_picture/scene+object point cloud/semantic-field forward；`RobotRunner` 下一次预测只 stack 最后 `n_obs_steps=3`，所以动作块前三帧最终从 deque 丢弃。
+- fixed-100 门禁已经否决 `retain_action_tail_observations`：相同前34 seeds 得到0/34，而原协议同区间有5次成功。原因是即使 deque 不消费前三帧，执行其点云/语义编码仍会推进全局 NumPy 采样状态；省略后保留帧的采样发生变化。正式 YAML 已删除该开关，53.2s/117.9s仅为不可采用的性能上界。
+- fast 路径只生成块末 3 帧观测，但仍执行全部物理动作；`semantic_policy_frame_index` 对跳过帧显式递增，保持 shuffled control 的帧索引语义。全局 NumPy 采样流仍可能因省略无用观测而变化，因此不能凭单 seed 成败认定协议等价，必须用 fixed-100 分布门禁。
+- 单进程实测显存仅约 6--7GiB，4090 利用率约27%、RTX6000约5%（采样时刻），证明显存不是瓶颈；以独立进程并行不同 policy seed/route 比单纯增大 batch 更适合该串行闭环工作负载。
+- planner-free 初始化必须保留夹爪 `plan_grippers` 的 200-step `np.linspace` 契约；缺少该回退会在 setup 阶段 fail-closed，表现为 accepted 但 evaluated=0，不能当 0% success。
+- 远端冷启动额外慢来自 `envs.robot.__init__` 的 `from .planner import *`：即使 `skip_eval_planner=true`，package import 仍会触发 Curobo CUDA extension JIT。移除通配导入并在 `Robot.reset/set_planner` 内懒加载后，fast eval 导入不再编译 planner；这是启动优化，不改变 qpos 闭环数值路径。
+- 使用 `rsync --relative` 同时传显式文件与仓库根目录会造成目标覆盖状态不可依赖；本轮因此产生两份 `evaluated_count=0` 的无效远端目录。后续关键运行文件改为逐个精确目的路径同步，并以本地/远端 SHA-256 相等作为启动门禁。
+
 
 ## 远程RTX 6000 Ada实例复查（2026-08-06）
 
@@ -803,3 +817,306 @@
 - 敏感信息扫描覆盖待提交Python、Shell、Supervisor/Systemd、YAML和Markdown，未发现私钥、AWS/GitHub/OpenAI token、带值API key或密码。
 - 语法门禁为全部待提交`.py`执行`py_compile`、全部`.sh`执行`bash -n`，均通过。
 - CPU聚焦回归85/85通过；完整97项尝试的5个非绿项中，EEF wrapper的3项来自HEAD既有缺失脚本/旧suffix断言，另2项是环境未安装Utonia而无法collection，不属于本次新增代码逻辑失败。
+
+## Stage42 CE-only扩展与回传边界（2026-08-07）
+
+- 正式四变体×三seed已12/12完成；远端seed20260806目录约152MB、48个文件，包含四组completion记录的best/best_sem/last/resume/config SHA，可安全整目录回传。
+- 现有Stage42协议只含Full/No-CE/No-SupCon/No-Consistency；缺少同时关闭SupCon与Consistency的CE-only，因此当前逐项删除不能识别两个辅助损失的交互。
+- CE-only必须保持CE=1.0、SupCon=0、Consistency=0，其余split424242、val=.1、test=.2、batch6、e1750和training seeds完全冻结；只能新增variant，不能改写既有四组身份。
+- variant白名单分布在protocol、底层matrix、Stage42 shell wrapper、local/remote queue与评测准备/汇总工具；新增前必须先覆盖训练dry-run和completion identity测试，避免只改launcher造成评测拒绝。
+
+## Stage42正式评估并行启动与证据门禁（2026-08-07）
+
+- 真实完成checkpoint存在两类合法预算metadata：训练早期保存的best/best_sem仍记录启动时e4000，而最终config/last/resume/identity在用户缩短决策后严格为e1750。审计必须允许前者的历史记录，但不能允许其checkpoint epoch超过1750，也不能放宽最终状态。
+- canonical label truth位于checkpoint top-level；只检查args会误拒真实产物，完全不检查又会放过label漂移。当前同时要求top-level恰为Handle/Head，并对科学配置逐项验证。
+- resume字段在恢复完成run中可记录同一run的绝对`resume.pt`，因此合法集合是None或精确同run路径；任意其他路径继续fail-closed。
+- partial evaluator明确不产生complete-matrix manifest。论文表格资格仍由最终15-run prepare/validate控制，避免已有12-run先跑结果后被误写成完整五变体三seed证据。
+- 独立test的R1每个run固定10个held-out objects、5 repeats、FP32，产出overall/per-part/per-model/confusion；R2固定同一test split与5 trials，覆盖support/viewpoint/sampling及dropout/noise/crop/outlier。
+- 本机Full两个seed的R1/R2已经完成；远端Full seed06的R1完成。远端日志中首个repeat显示多数实例mIoU约0.69--0.97，但一个held-out实例约0.15--0.17，说明最终必须报告per-instance分布与失败案例，不能只给平均数。
+- 正式评估和CE-only训练可以同卡并行：两者各自显存约1.1--1.7GB，且评估命令具有完成结果严格验证/跳过语义；服务重启不会覆盖完整结果。
+- 显存富余不代表应无界增加同类训练。当前CE-only主路径已是三seed并行，更多重复训练会改变预注册矩阵；空余算力优先提前生产已冻结的R1/R2，而不是随结果追加seed。
+- 远端首次评估ImportError来自`/workspace/Utonia`未进入PYTHONPATH；训练入口不显式展示该依赖而环境曾由部署流程满足。将路径写进Supervisor环境后，独立import和真实R1都成功，模型/数据/checkpoint无需改动。
+- Vast `/workspace`仍视为非持久；既有四run已本地SHA校验，CE-only远端run与新评估结果完成后也必须回传验证，之后才能安全释放节点。
+
+## Final gate修复与DINOv2 baseline工程门禁（2026-08-07）
+
+- final prepare和per-run protocol必须共享同一预算语义：最终config/last/resume严格e1750，历史best_sem允许保留启动时e4000，但只允许artifact tag这个已知值且save_every必须相等；任意3999或last4000继续拒绝。
+- 现有远端Full的best_sem实际为epoch248、args epochs/save_every=4000，而last/config为1750；该真实case触发并验证了窄兼容规则，不能简单删除epochs检查。
+- 跨机已完成Full结果的held-out 10个model_id顺序、split424242/.1/.2、evaluation seed20260805、FP32、R1 repeats5、R2 trials5及40条件签名一致；checkpoint以SHA而非机器绝对路径匹配。
+- final链路固定为：无`--delete`合并远端training/evaluation目录；本机prepare `mode=validate, epochs1750, artifact_tag4000, split424242, independent_test, val.1,test.2`；再由summarize生成summary与CSV。
+- 通用protocol CLI的worker默认必须反映真正运行配置：local queue为0、remote wrapper为8。build_tasks默认4仍服务launcher dry-run，不应直接代表已实现run。
+- 远端旧四组outer marker缺失不是checkpoint缺失：inner completion、config/last/best/resume及SHA都已验证。修复审计后wrapper通过run-lock跳过训练，仅对run目录哈希并原子发布outer manifest/completion。
+- 本地旧四变体16/16 R1/R2完成；No-CE的held-out R1在seed05/07分别mIoU 0.2583/0.2417，并各自塌缩为单一类别，直接证明CE监督是必要条件。
+- Full held-out R1在seed05/07分别mIoU 0.7535/0.7790；同seed No-SupCon为0.7297/0.6967，No-Consistency seed05为0.7345。三seed齐全后再作辅助损失统计结论。
+- Full seed05 R2表明轻度随机缺失/噪声稳定：dropout50/75%与noise0.005/0.01的mIoU delta约+0.005到+0.010、cosine约0.993--0.998；这是相对固定reference的随机波动，不应写成噪声提升性能。
+- 更强结构性不完整性明显退化：support crop keep50/25%的mIoU delta为-0.255/-0.449，normal-view keep50/25%为-0.162/-0.209，outlier replace10/20%为-0.236/-0.195。
+- 单帧DINOv2 smoke使用真实car双相机RGB/depth/内外参/SAM2 mask，生成128点×384维融合特征；5项CPU几何测试和GPU真实链路均通过。
+- smoke summary目前只记录feature_method/model输出维度，没有完整DINO model/阈值/相机provenance；已单独安排最小向后兼容补丁与CPU测试，修复前该产物不能作为正式baseline证据。
+- Phase45既有XYZ/part-prob/field三路线e3000×3seed已经完成；attached/no-resampling缺少不改变normal估计的采样模式，且Beat raw support不可用，所以当前不能公平补跑。
+- visibility-aware DINO正式比较需要与field完全相同query coordinates、zarr builder和policy launcher；当前viz里的独立FPS只能作工程smoke。
+- 远端RTX6000没有RGB-D raw数据；即使显存空闲也不能直接启动DINO baseline。应先在本机构建compact matched zarr，再同步到远端训练。
+- D3Fields/F3RM风格方法当前仓库完全无代码/权重/入口；下一步需要pin外部版本、适配相同query/split和记录provenance，不能用弱2D lifting冒充。
+
+## DINOv2 visualization provenance修复（2026-08-07）
+
+- 旧summary只有通用feature method和点数，无法从产物恢复DINO模型、resize、相机选择和遮挡阈值；正式baseline证据需要把这些配置直接固化在summary，而不能依赖命令历史。
+- DINO真实resolved image size受模型patch size整除约束，因此同时记录requested/resolved image size与patch size；相机labels在显式参数为空时来自dataset/manifest/calibration，需在首次context解析后回写实际使用值。
+- `compute_depth_visibility`和`fuse_multiview_features`已提供全部所需中间量，无需重算或近似：逐视角可报告in-frame、depth-valid、foreground、z-buffer、visible与confidence，融合可报告valid coverage、weight sum和每点visible-view count。
+- 私有DINO backend从ndarray升级为`{"point_cloud", "visibility"}`结构化返回；调用层同时接受旧ndarray，使现有mock/潜在旧backend不因provenance补丁失效。
+- 顶层`summary["dinov2"]`只在选择DINO方法时填配置，非DINO运行写None；逐对象`dinov2_visibility`仅DINO记录有内容，其他方法保持None。
+- CPU回归覆盖旧ndarray解包、结构化metadata向返回summary和落盘JSON传播，以及全部关键参数值；原纯NumPy visibility几何测试继续5/5通过。
+
+## DINOv2 back相机外参失效诊断（2026-08-07）
+
+- back并非物体不可见或SAM2空mask：episode0/frame0的A mask有20,088像素，bbox约x838--1091/y544--641；A/B在两个相机均有独立人工bbox初始化。
+- 同一HDF对象点云投到global时5000/5000点通过mask和depth consistency；投到back的bbox约x902--1164/y290--412，与真实mask垂直错位，mask overlap与depth-consistent均为0。
+- 用保存back外参从mask depth重建时，A/B平均workspace z约-0.094/-0.068m，全部被z>=0 crop删除；global A/B约+0.017/+0.015m。因此现有HDF object pointcloud实质来自global视角。
+- global/back serial分别38968158/37856216，manifest和calibration映射一致；DINO实际使用变换与raw NPZ保存变换max差约2.4e-8，排除相机交换和读取错误。
+- 标定snapshot创建于2026-05-14、任务采集于2026-07-17，相隔约64天；最符合证据的解释是back相机物理移动后仍沿用旧外参。
+- 在修复前，所有当前产物必须标为`visibility-aware DINOv2, single valid global view`；双相机参数虽传入，但不能称有效multi-view baseline。
+- 物理重做global/back标定是最干净方案；需要固定相机后的workspace calibration snapshot、serial映射，最好还有同步Charuco/AprilTag多姿态序列。
+- 若不能重录，可用现有同步RGB-D/masks在独立training calibration subset上以多帧静态背景或A+B做一次固定back→global SE(3)优化，然后冻结给所有方法。
+- 任何按test frame或held-out instance单独ICP都利用测试对象几何，构成泄漏且比较不公平，禁止用于论文正式baseline。
+- global-only provenance smoke已完成：DINOv2-S/14、224分辨率、patch14、128点、global单相机，128/128融合点有效，完整遮挡阈值和visibility统计落盘。
+- multi-view修复后仍需matched query zarr/policy launcher和DINO代码commit provenance；当前smoke不能直接进入策略成功率表。
+- 现有四变体24/24 R1/R2已在本机合并并checksum确认；CE-only六结果完成后才能运行15-run final validate/summary。
+
+## Stage42 15-run最终结论（2026-08-07）
+
+- 最终15个训练run与30个held-out R1/R2结果均通过checkpoint SHA、split424242/.1/.2、FP32、evaluation seed、repeat/trial count和结果schema验证；统计单位明确为三个training seeds。
+- clean R1中CE-only均值77.43%高于Full 75.82%，但CE-only sample std为5.30%、Full为1.89%；paired方向在三个seed不一致，不能声称CE-only或Full在clean上显著优于对方。
+- No-CE 24.72%且每seed塌缩为单类，是最强因果消融证据；CE应被描述为必要语义监督。
+- No-SupCon 71.04%，Full在三个paired seeds均更高，平均差4.78 points；SupCon在Consistency存在时提供一致收益。
+- No-Consistency 74.77%，Full平均仅高1.06 points且一个seed反向；Consistency的clean增益较弱。
+- CE-only在support扰动下embedding geometry明显更不稳定。例如crop keep25%时Full/CE-only cosine为0.903/0.277、L2为0.349/1.019；这为辅助损失的稳定化定位提供直接证据。
+- Full对random dropout50--75%和Gaussian noise.005--.01基本稳定，但对crop、normal-facing partial view和outlier显著退化；论文必须同时报告强项与弱点。
+- `275ceccff41a4160b0537e1b875d670b`在Full三seed平均mIoU约19.15%，应作为稳定失败案例分析，不能只报告整体均值。
+- DINO多视角仍受back旧外参阻塞；global-only smoke可作为工程证据，但正式比较需重新标定与matched policy pipeline。
+- 推荐主张：辅助loss是representation-stabilizing regularizers，不是保证clean accuracy improvement的组件。
+
+## RoboTwin仿真迁移审计（2026-08-07）
+
+- 仿真主比较可统一使用仓库script/eval_policy.py；它支持固定测试seed、test_num和任务成功率闭环统计。
+- beat_block_hammer/demo_clean_3d_object_pc已有50条1024点对象点云演示（约681MB）；hanging_mug已有50条1024点和50条5000点对象点云演示，可作为第二任务。
+- 现有e3000模型来自实机beat_cube/demo_real_zed，任务名、坐标/观测分布和数据协议不同，不能直接作为仿真闭环模型；必须从仿真演示生成matched zarr并重训。
+- RoboTwin仿真可提供GT对象点云、精确相机内外参与深度，能解除实机raw support和back相机标定对matched Utonia/DINO工程的阻塞；论文需明确是否所有路线共享oracle object mask。
+- 仿真计划以Beat Block Hammer先做单seed/e300 smoke，再扩三seed正式矩阵；第二任务Hanging Mug随后复用同协议。
+- semantic control构建器首次扩展时无上下文补丁位置漂移：编译门禁捕获参数插入错误；修复后核心文件可编译，但uniform/shuffled分支仍被旧mode guard挡住，新测试也误落在__main__后，只运行原4项。未生成数据、未启动训练，下一步必须先修复并要求7项测试实际执行。
+
+## 双GPU资源状态（2026-08-07）
+
+- 本机RTX4090为24,564MiB，检查时109MiB/0%且无训练进程；主存available约55GiB、磁盘可用623GB。
+- 远端RTX6000 Ada为49,140MiB，检查时0MiB/3%；主存available约437GiB、overlay可用136GB，足以并发训练但需要以aggregate推进率选择进程数。
+- 远端workspace_is_volume=false，recycle/destroy会丢失全部结果；所有完成模型和评测必须持续回传本机并校验。当前/workspace/RoboTwin_geo约752MB但不是Git checkout且未发现仿真数据，不能直接启动正式训练；已有geo-utonia venv约7GB。
+
+## Semantic control构建器修复（2026-08-07）
+
+- uniform/shuffled分支已移到part_prob专用logit guard之前，原part_prob和XYZ行为未改变；逐帧shuffle使用固定seed派生的derangement，保证不改变每帧概率多重集合且无query保留自身概率行。RoboTwin环境实际执行7/7定向测试通过。
+
+## Beat Block Hammer数据/动作审计（2026-08-07）
+
+- episode0有116帧，object_pointcloud A/B均为1024×6，scene point cloud为1024×6，同时保存joint_action与双臂endpose；A明确映射hammer、B映射block。
+- semantic hybrid预处理会让A同时留在scene context并额外产生128点semantic branch；XYZ/part-prob/field可从同一field zarr派生，满足query/action/state逐元素一致。
+
+## 仿真动作协议决策（2026-08-07）
+
+- script/eval_policy调用DP3 eval后，逐action直接执行TASK_ENV.take_action(action)，没有传action_type=ee或20D到14D IK解码；Base_Task.take_action默认qpos并按双臂6关节+双夹爪切分14D。
+- 因此现有20D EEF absolute-6D配置不具备RoboTwin闭环可执行性；仿真主矩阵冻结为原生14D joint action。所有路线使用同一action/state，实机部分仍保留EEF20并在论文中分别说明。
+
+## 远端训练环境差异（2026-08-07）
+
+- 本机冻结版本为torch2.4.1+cu121、Hydra1.3.2、OmegaConf2.3.0、Diffusers0.11.1、Zarr2.18.3/numcodecs0.13.1；远端geo-utonia已有torch2.7.0+cu126但缺其余训练包，默认/venv/main为torch2.11.0+cu128同样缺DP3依赖。远端使用geo-utonia并按本机版本补齐，不替换CUDA/torch。
+
+## 远端依赖与本地预处理状态（2026-08-07）
+
+- 远端geo-utonia保留torch2.7.0+cu126，补齐本机匹配Hydra/OmegaConf/Diffusers/Zarr等29个Python包后，GPU可用和完整DP3 import smoke通过；没有更换torch或系统CUDA。
+- 本机Beat field预处理服务NRestarts=0、GPU占用约1072MiB，zarr已从17MB推进到123MB；说明checkpoint、Utonia依赖、HDF5和增量写入链路均已越过初始化。
+- 仿真应使用process_data_semantic_pointwise_hybrid.sh与robot_dp3_semantic_pointwise_hybrid.yaml，不使用带实机标定的EEF-global wrapper。
+- 现有EEF-global shell默认传实机三相机/机器人标定路径；不能直接用于RoboTwin仿真。仿真闭环入口当前直接把policy action交给TASK_ENV.take_action，必须先证明20D EEF动作有仿真IK解码；否则主矩阵统一使用RoboTwin原生14D joint action，不能把实机EEF标定混入仿真数据。
+- 用户授权两张卡全权用于本轮论文实验并要求尽可能并行；执行上先做每卡1/2/4进程短profile，使用总updates/s而非显存占用决定最优并发。
+
+## 2026-08-07（Beat Hammer五路线数据与本地并发实测）
+
+- field预处理约7分20秒完成，产物405MB；50个episode共5718帧，action/state均为14D，scene为1024×6，semantic query为128×131，所有数组finite。
+- XYZ、part-prob、uniform-prob、shuffled-prob均由同一field zarr派生，大小116--121MB；没有重复采样演示或query，因此可做严格paired policy比较。
+- 独立validator证明五路线episode_ends、action、state、scene point cloud和query XYZ bitwise一致；part概率归一、uniform精确为0.5，shuffle按seed20260807逐帧无固定索引且保持概率多重集。
+- field e1真实训练成功，273.69M参数、21个train batch与3个val batch，约10.1秒含初始化，安全weights-only产物生成。
+- 4090上part-prob与XYZ两个batch256 FP32进程同时完成e3，墙钟约14秒，采样显存峰值约18.1GB、SM最高100%，证明本批低维路线可本地双并发；正式并发仍需较长profile比较aggregate updates/s。
+- 吞吐审计发现训练循环没有AMP，matmul TF32也关闭；远端cgroup CPU配额仅7.68核，workers4会每epoch反复建进程并过订阅，正式任务应先用workers0。
+- 远端48.5GiB显存、136GiB磁盘与418GiB可用RAM满足训练；旧hammer slot-filler已停止，管理服务未动。由于workspace非持久，完成权重需立即同步回本机。
+
+## 2026-08-07（Beat Hammer DINOv2输入可行性初审）
+
+- 现有`visualize_semantic_field_on_dataset.py`的visibility-aware backend依赖真实ZED的raw manifest/NPZ、dense depth、相机标定和可选SAM2 mask；其深度投影、query z-buffer、bilinear token采样及加权多视角融合可复用，但数据加载器不能直接套到RoboTwin HDF5。
+- Beat Hammer代表性episode 0/1/49均有同步`head_camera`与`front_camera` RGB，以及逐帧`intrinsic_cv`、`extrinsic_cv`、`cam2world_gl`；action/object cloud/scene cloud和两相机帧数对齐。
+- 三个代表性HDF5都没有任何depth/depth_m/depth_mm数据，也没有actor/object segmentation；`third_view_rgb`亦无配套相机内外参。
+- 因此当前文件至少缺少严格scene-occlusion-aware lifting所需的dense measured depth。不能把1024点稀疏scene cloud或query自身z-buffer伪装成原始depth；需继续对50/50 episode做机器审计后决定fail-closed。
+- 仿真采集代码仅在`data_type.depth=true`时调用`get_depth()`；HDF5转换器不会从point cloud反推depth，只会原样保存每帧pkl中已存在的键。因此缺少depth不是loader别名遗漏，而是采集时未启用该模态。
+- 每episode保留的`_traj_data/episode*.pkl`只含左右关节路径，不含逐帧RGB-D；不能从这些小pkl恢复和当前RGB严格同步的dense depth。
+- `pointcloud`和`object_pointcloud`均已被下采样为每帧1024点。它们可用于几何query或稀疏投影sanity check，但不足以作为640×480 measured depth的等价替代，也不能可靠处理机器人/桌面/物体间的像素遮挡。
+- 全量50/50 episode审计结果：两相机各覆盖50 episodes/5768 frames；所有episode的唯一相机keyset都是`cam2world_gl,extrinsic_cv,intrinsic_cv,rgb`，depth命中0、segmentation/mask命中0、帧对齐错误0。
+- 每个episode抽样JPEG均成功解码；两相机全部内参、外参和cam2world矩阵finite。因此阻塞项只有缺dense depth/foreground mask，不是RGB损坏、相机不足或标定缺失。
+- 当前field zarr有50 episodes/5718 policy frames，每条HDF5轨迹恰好对应`T-1`帧；这是next-action监督预处理的预期映射。query键为`semantic_point_cloud_A [5718,128,131]`，matched DINO应直接复用其前3维，不得再次FPS。
+- 阶段84结论：当前Beat数据不满足论文级visibility-aware DINOv2构建条件。阶段85必须在补采/确定性重渲染出与RGB同步的dense depth之后继续；在此之前只能实现fail-closed输入审计，不能生成或训练DINO路线。
+- 采集配置`task_config/demo_clean_3d_object_pc.yml`明确写有`rgb: true`、`depth: false`、`object_pointcloud: true`，与50份HDF5 schema完全一致；缺depth是显式采集协议，不是单个文件损坏。
+- 最终全帧审计解码了head/front各5768帧（共11536帧），报告为`outputs/paper_revision/robotwin_sim_policy_v1/beat_block_hammer_dinov2_input_audit.json`，SHA256=`fb48cf80...425b4b`；唯一blocking code为`missing_dense_depth`，计数100（50 episodes×2 cameras）。
+
+## Beat Hammer正式策略矩阵与资源配置（2026-08-08）
+
+- 正式可运行路线为field(131D)、XYZ(3D)、part-prob(5D)、uniform-prob(5D)、shuffled-prob(5D)与Utonia(579D)；六者使用同一5718帧joint14 supervision和相同128个query XYZ。
+- Utonia zarr约860MB，保留完整raw support并标记`formal_comparison_eligible=true`；不再使用早期context-nearest工程占位数据。
+- 4090双低维route在约23GB显存下持续99--100%利用率；RTX6000 Ada双route+workers1 persistent在约23GB显存下也持续99--100%。显存剩余不代表可免费增加训练lane，当前瓶颈已转为计算/CPU供给。
+- 正式矩阵用training seeds 20260805/06/07、e300、batch256、BF16、TF32、dataset split seed424242；每个完成权重必须通过epoch/seed/task/zarr/precision/tf32 metadata门禁。
+- DINOv2不进入本轮六路线策略表：缺dense depth是已机器验证的输入协议缺口，任何用1024点稀疏cloud冒充dense visibility depth的结果均不具备论文比较资格。
+
+## 2026-08-08（Beat Hammer formal-fixed 闭环协议）
+
+- 旧 `eval_policy.py` 的 `test_num` 是 accepted-seed budget；遇到 unstable/expert reject 会用后续 seed 替换，所以不能保证 seed0/100 精确等于 100000..100099。
+- 新 formal config 通过 `fixed_seed_protocol.enabled=true` 将预算改为 candidate count；初始化失败记为该 seed 的跳过/失败，不用区间外 seed 替换。
+- `custom_hammer_eval` 复用标准 `020_hammer/base0` 并使 expert screening 关闭；`match_reference_contact` 在 reference=custom 时保持标准 spawn pose。
+- 新结果协议为 `episodes.jsonl` + 原子 `summary.json`；summary 显式保存 candidate/accepted/evaluated/success seeds 和跳过原因，同时不改旧 `_result.txt` 成功率输出。
+## Matched Utonia 在线闭环路由审计（2026-08-08）
+
+- `deploy_policy.encode_obs` 当前把 semantic 与 legacy Utonia 当成两个独立 route：semantic 生成并重采 query 后写 `semantic_point_cloud_*`，legacy Utonia 自己重采 query 后写 `utonia_point_cloud_*`；因此不能直接评测用 semantic query XYZ 离线构建的 matched Utonia Zarr。
+- safe checkpoint 的 metadata 在构造 DP3 前与运行时 Hydra `cfg.task.shape_meta` 做完全字典相等检查；新增路由必须在该检查前把 observation key 改成 `utonia_point_cloud_A:[128,579]`，否则会严格失败。
+- 最小兼容方案应仅给 semantic config 增加显式 `semantic_policy_output_mode=matched_utonia`：继续加载 semantic model以生成 query，同时额外加载一个共享 Utonia artifact；不设置 legacy `use_utonia_pointwise`，避免旧路由和 context 行为改变。
+- 旧输出模式集合目前为 `embedding/xyz/part_prob/uniform_prob/shuffled_prob`；legacy Utonia由 config 名中的 `utonia_pointwise` 独立触发。二者必须保持原样。
+- `matched_utonia_feature_utils.compute_utonia_features_at_queries` 已提供所需契约：输入任意 `[Q,3]` world query 与原始 object support，返回 `[Q,3+feature_dim]`，并在空 support 时仍逐值保留 query XYZ；默认 `debug_placeholder` color 与 `fallback` normal 正好匹配正式离线 builder。
+- 在线实现应令 semantic helper 仅以 `output_mode="xyz"` 生成 query，再调用上述 helper；matched 路由的 output key 必须改为 `utonia_point_cloud_*`。Utonia artifact 可复用已有 `resolve_utonia_spec/load_utonia_model`，但加载条件应是 `legacy_utonia OR matched_utonia`，matched placeholders只取已有 semantic checkpoint 的对象，避免凭空为 B 生成新 modality。
+- 仿真训练入口的 matched Utonia safe checkpoint shape 为 `utonia_point_cloud_A:[128,579]`；严格 shape_meta 检查已经存在，无需放宽，只需在校验前正确构造该 key。
+- 已实现的路由只在 `semantic_policy_output_mode=matched_utonia` 时加载 matched helper，并强制 semantic config、拒绝与 legacy `utonia_pointwise` 同时启用；旧模式分支及 legacy Utonia encode 分支均未改写。
+- CPU mock 已验证 semantic helper 收到 `output_mode=xyz`，其 query 数组逐值原样传入 matched Utonia helper，输出只写 `utonia_point_cloud_A` 且 shape 为 `[128,579]` 契约；safe checkpoint 测试验证配置侧只生成 Utonia key并同时加载 semantic/Utonia artifacts。
+- 正式 RoboTwin 仿真 eval 已通过 `script/eval_policy.py --config policy/DP3/deploy_policy.yml --overrides` 将 `semantic_policy_output_mode` 直接传给 `get_model`；matched 路由可沿用 semantic config，并由 `utonia_checkpoint=auto` 默认加载缓存。现有训练后 smoke 脚本当前只调用 xyz/partprob，未擅自扩展其任务调度。
+
+## RoboTwin formal-fixed 评测热路径（2026-08-08）
+
+- 当前关闭视频和viewer仍不等于无渲染：每次`get_obs()`必须`scene.update_render()+camera.take_picture()`以生成scene/object point cloud，这是策略输入所需，不能整体删除。
+- formal配置却额外启用`rgb:true`和`third_view:true`；在`use_rgb=False`且semantic/matched-Utonia都使用debug-placeholder颜色时，前者把所有静态相机Color复制为NumPy，后者又单独触发observer camera拍照。这两项不进入DP3输入，是明确的冗余候选。
+- `get_obs()`还每步重算所有相机内外参；当前semantic/XYZ/part-prob/Utonia六路线只消费scene/object point cloud和机器人状态，可通过默认兼容的`data_type.camera_config:false`在formal fast配置中关闭。
+- 最大的结构性冗余是`eval_policy()`在expert screening已关闭时仍为每个candidate调用两次`setup_demo()`并在中间销毁scene；第一次只为构造语言metadata。Hammer/Hanging已有纯当前scene metadata构造器，因此可在唯一rollout scene创建后生成同一instruction info。
+- `take_action()`在无viewer、无视频时仍每个action无条件`scene.update_render()`；下一次策略观测又立即更新一次render。动作chunk中间不读取camera，该post-action render可在显式fast-eval且headless条件下跳过，保留下一次`get_obs()`的必需render。
+- Beat Hammer固定step limit为400、Hanging Mug为500。不能通过缩短step limit、动作执行或成功判定来提速，否则会改变论文协议。
+- `deploy_policy.eval()`在每个action后已经调用`get_obs()`并更新模型观测缓存；旧外层循环下一轮仍对同一状态再次`get_obs()`，其encode结果在缓存非空时不被采用。fast路径复用`TASK_ENV.now_obs`，消除这次废弃渲染。
+- PyTorch3D `sample_farthest_points`默认`random_start_point=False`，删除废弃采集不会改变采样随机流；A-B仍记录首帧scene/object point cloud和joint vector的SHA-256摘要作逐值等价门禁。
+- fast配置是独立YAML，旧配置和默认代码路径不变；只有fixed-seed、expert-check关闭且显式fast option时才跳过preflight scene。无viewer/视频条件不满足时post-action render也不会被跳过。
+
+## 2026-08-09：闭环评测优化的可比性与部署发现
+
+- 关闭 RGB、third-view 和 camera_config 后，首帧 policy-relevant raw observation digest 与原配置逐字节一致；这些模态不进入当前 DP3 六路线输入。
+- 同一 baseline、同一候选 seed 和同一首帧 digest 仍可能一次成功、一次在400步失败，因此闭环执行具有运行级非确定性。优化等价性应以100候选的 paired success rate/置信区间与输入契约判断，不能要求单回合轨迹逐步一致。
+- eval_policy 的 DP3 eval 在 action chunk 内每步已经 get_obs 并更新缓存；外层下一轮旧代码再次 get_obs 的结果不会进入非空缓存。复用 TASK_ENV.now_obs 删除的是同一状态的废弃观测。
+- Base_Task.load_robot 原来在 eval_mode 仍初始化 Curobo/MPlib，而 qpos policy rollout 只调用 take_action，不调用规划器。skip_eval_planner 仅在显式 fast_eval 下启用，并保留机器人 URDF、关节、相机、物理控制和成功判定。
+- 远端训练副本最初缺完整 envs/assets/task_config/semantic release 及仿真依赖；补齐最小运行树后 Render/FPS smoke通过。Aloha Curobo YAML 含本机绝对路径，远端通过显式兼容 symlink 映射到实际 workspace，未更改机器人参数。
+- RTX6000 的 Vulkan capability 与 vulkaninfo 均确认 NVIDIA proprietary device；早期 SAPIEN ICD warning 不等于软件渲染。原版单候选400步约284秒的主要额外成本包含每候选双场景和规划器初始化，需以新增无规划器 fast 路径复测。
+
+
+## Beat Hammer strict Vanilla / GT oracle / Utonia-128审计（2026-08-09）
+
+- 当前XYZ路线不是strict Vanilla：它保留主A+B点云、14D机器人状态以及独立128点Hammer query PointNet分支；strict Vanilla应只有1024点A+B主点云与14D状态，encoder输出192D，参数262.43M。hybrid各路线encoder输出320D，参数约273.69M。
+- strict Vanilla可直接读取现有field zarr并由robot_dp3_objpc.yaml忽略额外semantic数组；这样action、state和主point cloud与六路线逐值相同，不需要复制一份伪新数据。
+- 标准020_hammer只有单一geometry/material；model_data0.json和points_info.json只给handle抓取功能点与head敲击功能点，不含逐面或逐点Handle/Head标签。
+- 标准020_hammer GLB SHA256为708bd0cd...26f282d，在本地PartNext Hammer GLB中无精确副本。因此不能把PartNext标签迁移后称为当前任务GT。
+- GT part one-hot已fail-closed；在人工逐面标注和独立复核前，argmax(part-prob)只能称hard pseudo-label。
+- Utonia公平容量控制采用固定随机正交投影576→128、seed20260809，并乘sqrt(576/128)保持期望范数；投影不拟合任何数据，不存在split泄漏。
+- 正式projection matrix SHA256为66d7467b5c220ab4f90aa5dfbae7f20a725f5eb252eec02e82e8f5e02c51640f；两机matrix逐值一致。
+- Utonia-128 zarr为5718帧、128×131；action/state/main point cloud/episode_ends逐值一致，query XYZ bitwise一致，formal_comparison_eligible=true。
+- 在线matched_utonia128先生成相同query XYZ，再计算576D Utonia并应用同一投影；safe shape为utonia_point_cloud_A:[128,131]。
+- 两路线在两机各完成e1 batch256 BF16/TF32 smoke及completion-v2归档，无OOM/NaN。
+- 正式三seed已启动：本机systemd seed05、远端Supervisor seed06/07，均先Vanilla e300再自动接Utonia-128 e300。
+
+## PA3FF首轮论文事实（2026-08-10）
+
+- 指定PDF为ICLR 2026正式论文，共23页；PA3FF以Sonata/PTv3为3D backbone，前置自蒸馏使用约14万点云，而非从单个PartNext类别的小数据field开始训练。
+- part-aware refinement联合PartNet-Mobility、3DCoMPaT和PartObjaverse-Tiny，并引入SigLIP编码的部件文本语义，通过跨对象正负对的对比学习形成稠密部件特征。
+- PA3FF的泛化机制同时依赖大规模3D预训练、多个部件数据源、开放词汇文本锚点和跨对象对比学习；与本项目逐类别PartNext监督、冻结Utonia后仅训练adapter/tri-plane decoder的机制有本质差异。
+- PADP不只是额外拼接一个孤立feature cloud：图示表明点云经PA3FF、语言经SigLIP、机器人状态经MLP共同条件化扩散策略；是否存在特征降维、点数和训练冻结策略需继续从正文/附录核对。
+- 论文宣称在16个PartInstruct任务和8个真实任务上评测，并额外给 correspondence、segmentation 等直接表征应用；这类独立representation evidence正是当前稿件最缺的证据链。
+
+## PA3FF方法、消融与协议事实（2026-08-10）
+
+- PA3FF不使用tri-plane；它改造Sonata的PTv3，删除多数下采样层并堆叠更多Transformer blocks以保留物体小部件的点级分辨率，再以浅层逐点MLP refinement输出稠密特征。
+- refinement包含同部件/异部件的监督对比几何损失和点特征到SigLIP部件名称文本的InfoNCE语义损失；本项目则是part CE、同标签SupCon和双视图consistency，缺开放词汇文本锚点。
+- PADP冻结PA3FF，以任务关键部件名称的语义embedding作为CLS token，用可训练Transformer对逐点特征做任务相关聚合；再和proprioception拼接、两层MLP压缩后条件化diffusion head。本项目仅用无语言/无任务关键部件查询的独立PointNet压缩128个field点。
+- PartInstruct协议包含513对象、14类别、1302细粒度任务、16任务类及OS/OI/TP/TC/OC五级泛化；当前RoboTwin Beat Hammer只是单任务、单标准资产与位置随机化，语义信息是否为任务瓶颈完全不同。
+- Table 6显示DP3=37、Sonata+DP3=39，直接拼预训练3D特征只增2点；Full=62，去高分辨率Transformer堆叠=58、去几何损失=54、去语义损失=46。论文自己的证据说明“类似表示+直接接DP3”本来就不会自动有效。
+- PA3FF在PartNetE分割mAP50平均70.6，优于PartSlip++ 62.6；它还展示跨形状correspondence。当前field虽held-out Hammer mIoU约75.8%，但策略输入域、任务相关聚合和跨类别/任务证据不匹配。
+- RLBench附录采用至少2000 epoch训练DP/DP3后，用10回合筛选成功率最高的3个checkpoint再取均值；PADP只在epoch300--400内同样筛选。该协议比本项目固定checkpoint、固定100 seeds更乐观，绝对成功率不能直接横向比较。
+- 文档补丁首轮因新增行数计算错误被git apply在写入前拒绝，修正hunk后成功；无部分写入。
+
+## PA3FF与当前方法效果差异的因果诊断（2026-08-10）
+
+- 两者主要是动机相似，技术路线并不等价：PA3FF是高分辨率PTv3逐输入点的feed-forward dense feature，当前方法是support-conditioned tri-plane连续查询场；后者的坐标归一化和场缓存会随support的可见范围变化。
+- 最强已证实原因是当前Beat Hammer任务没有制造“语义是必要信息”的条件：strict Vanilla只用仿真器提供的干净A+B目标物点云与机器人状态已达80/100，而任务只有单资产、单技能和固定语义，几何姿态本身足够。PA3FF主要在多对象、多任务、语言指定关键部件和五级OOD协议中体现收益。
+- 第二个已证实原因是策略接口：当前额外128点分支经独立PointNet逐点MLP+全局maxpool后晚期拼接，无语言、无任务关键部件查询、无主点云交互。PA3FF用部件文本embedding作CLS token，由Transformer任务相关聚合。其Table 6也显示Sonata直接接DP3仅39 vs DP3 37，完整PADP才62。
+- 闭环控制已证明问题先于128D特征质量：同样附加query分支的XYZ约58--59、uniform 60、shuffled 66，均低于strict Vanilla 80；正确语义预测part-prob仅26--30，原始field仅14--16。额外随机query/独立分支及其融合本身就会伤害策略，不能只靠提高mIoU解决。
+- 当前训练/部署存在明显采样不匹配：zarr训练把query抽样一次后固定，在线闭环每次调用默认用全局NumPy随机重抽128点；因此策略看到的是训练中未出现的高频输入置换与采样漂移。
+- 当前表征输入存在明确域差：训练support为PartNext完整mesh surface 5000点和真实mesh normals；部署约1024个不完整观测点、默认debug placeholder颜色、radial fallback normals，query又只有128个当前可见点。
+- R2直接支持上述域差诊断：Full clean held-out mIoU为75.82%，但support降至128点下降13.22pp、crop keep25%下降45.74pp、normal-view keep25%下降20.05pp、10% outlier下降22.31pp；另有一个held-out实例平均mIoU仅19.15%。部署正位于“结构性缺失+OOD实例”区域。
+- tri-plane使用每次support的AABB min/max确定bounds；同一世界query在support被裁剪或含outlier时会映射到不同plane坐标。这解释了crop/outlier比随机dropout/小噪声更致命，也使表征所谓“连续”不等于跨视角稳定。
+- 当前Hammer只有Handle/Head两类，CE/SupCon更容易学习部件可分性，却未显式保留同一部件内抓取点、末端距离、轴向和接触几何；高mIoU不保证扩散策略获得控制充分统计量。CE-only clean mIoU甚至略高于Full，但稳定性与闭环并未随之改善。
+- 标准RoboTwin Hammer mesh并非PartNext标注资产的精确副本且没有逐点真值；part-prob低于shuffled提示其在该mesh上可能系统性错标或置信度失真，但在人工标注该mesh前，这一点仍是假设而非结论。
+- PA3FF的数据与监督明显更强：Sonata约14万点云自监督预训练，随后联合PartNet-Mobility、3DCoMPaT和PartObjaverse-Tiny，以跨对象部件对比和SigLIP部件名InfoNCE细化；当前是冻结Utonia后逐类别PartNext训练，无开放词汇文本锚点，跨类别/任务泛化证据更弱。
+- PA3FF还专门删除多数PTv3下采样并增加Transformer blocks保存小部件分辨率；其消融Full 62、去堆叠58、去几何损失54、去语义损失46，说明收益是backbone分辨率、监督和task-aware adapter的组合，不是“有一个part feature field”这一单项。
+- PA3FF绝对成功率也不能直接照搬：其RLBench附录对DP/DP3训练至少2000 epochs，以10回合筛选最高的3个checkpoint取均值；当前使用固定checkpoint、固定100 seeds，更严格且方差更可审计。但协议差异只解释数值不可横比，不能解释当前field显著低于自身Vanilla。
+- 修复优先级应是：P0确定性query/训练时重采样并做zero-branch门禁；P1用任务关键部件或阶段token的Transformer/cross-attention替代blind maxpool；P1对完整mesh训练加入与部署一致的crop/view/outlier/point-count/normal/color增强并稳定bounds；P1人工标注标准Hammer小测试集核查OOD mIoU和跨帧漂移；P2换到多资产、多任务或有语义歧义的RoboTwin协议验证真正增益。
+- 止损条件：若确定性query、task-aware聚合和partial-observation训练后，field在至少两个真正需要部件语义的任务、3个training seeds上仍不能稳定胜过object-centric Vanilla，则不应继续主张通用策略增益；应把论文重定位为表征/稳定性方法，或重新设计field而不是继续堆训练epoch。
+
+## 双GPU重新排程与策略接口审计（2026-08-10 14:23 HKT）
+
+- 本机RTX 4090已经空闲，并不存在需要强制终止的训练；仅保留桌面图形进程和不占GPU的结果同步服务。
+- 远端RTX 6000当时运行的是旧part-prob fixed-100评测而非训练，另有successor等待自动接力；两者均已按用户要求通过Supervisor停止，停机后远端显存0 MiB且无compute process。
+- 两机旧权重、partial/final结果和日志均保留，因此之后仍可恢复或引用已完成数据。
+- 第一阶段不能只比较field/part-prob的离线imitation loss；历史上part-prob离线loss最好但闭环最差，候选接口必须通过paired短闭环门禁。
+- 为避免把接口容量变化误判为语义收益，至少保留strict Vanilla、zero-feature matched、XYZ matched和真实semantic四级对照，并共享action/state/main cloud/query/split/training seed。
+- 当前DP3Encoder为每个point-cloud key创建完全独立的PointNet并分别global-maxpool，最后才与state feature拼接；没有跨模态交互或语义门控。
+- 增加semantic key会把obs feature从Vanilla的192D扩到320D，进而改变diffusion UNet的global condition维度；现有hybrid并非只在相同Vanilla策略上增加一条可忽略的信息通道。
+- 第一种安全候选应保持192D输出和Vanilla主干不变，以零初始化残差门控把语义聚合投影到主点云128D特征；gate=0时必须与Vanilla encoder逐值等价，训练后只在有用时偏离。
+
+- 现有所谓FPS并不确定：初始farthest点由全局`np.random.randint`选择，点数不足时也由`np.random.choice`补点；仅把在线模式从reference切到dp3不能消除跨帧随机性，必须显式传入局部seed或采用确定性起点。
+- RobotDataset会把所有extra observation key一并交给LinearNormalizer按末维拟合；part-prob的两个概率通道进入encoder前并不保证仍满足非负、和为1，soft part pooling需要显式保留/恢复概率语义。
+- 首次zarr审计误用了系统`python3`，该环境无zarr；应改用`/home/zheng/miniforge3/envs/RoboTwin/bin/python`或项目现有geo-utonia环境，不安装重复依赖。
+- 一次只读命令误写了不存在的`policy/DP3/dp3_policy.py`；实际封装位于`policy/DP3/3D-Diffusion-Policy/dp3_policy.py`，已按正确路径读取。
+
+## 确定性query与稳定融合原型（2026-08-10）
+
+- 在线semantic query的随机FPS会消耗全局NumPy RNG；它不仅改变extra branch自身采样，还可能间接改变后续主点云采样序列，是旧hybrid相对Vanilla的额外混杂因素。
+- 新`deterministic`模式以离点云质心最远点作为FPS固定起点；短点云使用固定索引补齐，不读取或推进全局NumPy RNG。4项测试覆盖跨seed重复和RNG状态不变。
+- 三种新融合接口都先构造完全不含semantic key的原始DP3Encoder，再以同维度残差注入semantic信息；因此base state_dict、输出维度和下游diffusion condition维度均可与Strict Vanilla保持一致。
+- `tanh(gate)=0`时，residual PointNet、state-conditioned cross-attention、part soft pooling均逐值等价Vanilla；门控可训练时零点梯度非零，能让优化器只在semantic信号有用时打开通路。
+- `part_soft_pool`当前对进入encoder后的channel score做softmax；由于dataset normalizer会逐channel仿射变换原始part概率，它是一个稳定的几何token候选，但在恢复概率语义前不能表述为严格概率加权。
+- 4090足够完成e1、短预算训练和小规模paired闭环筛选；RTX6000应在候选收敛到1--2个后再恢复，用于三training-seed和fixed-100扩展。
+
+## 融合模式发布边界（2026-08-10）
+
+- 新接口不能复用旧field/partprob run目录，否则safe checkpoint只校验epoch/seed/task/zarr时可能把旧concat权重误认为完成；非concat必须进入带fusion mode和gate状态的独立run/tag。
+- 部署端必须在Hydra实例化DP3之前从safe checkpoint恢复fusion mode；请求模式与checkpoint metadata冲突时fail-closed，旧checkpoint保持concat兼容。
+
+## Zero-gate控制的完整初始化条件（2026-08-10）
+
+- 仅证明encoder前向在gate=0时等价还不够：DP3先构造obs encoder、再构造diffusion UNet，额外semantic module的随机初始化会推进torch RNG，使UNet初始权重不同。
+- 有效的capacity-matched zero control必须同时满足：base encoder共享参数相同、obs输出逐值相同、外部torch RNG流相同、下游UNet共享权重相同。语义模块构造现被RNG snapshot/restore隔离，专门测试已验证前三项；真实同seed e1将核对训练后共享checkpoint。
+- 四种e1均在4090 batch256下约10秒完成，证明本阶段瓶颈不是显存，单卡足以快速串行筛选；闭环仿真仍是后续主要耗时。
+
+## Capacity-matched zero control最终证据（2026-08-10）
+
+- 同seed真实训练证明frozen-zero residual不仅初始前向等价，而且训练后Vanilla的全部188个raw共享张量和188个EMA共享张量均bitwise相等；额外semantic extractor存在但无法改变主干、UNet或动作策略。
+- 因此后续trainable gate相对frozen-zero/Vanilla的差异可以归因于语义通路被优化器打开，而不是obs feature从192D增到320D、UNet宽度变化或随机初始化序列漂移。
+
+## Vanilla warm-start作为稳定语义接入的下一候选（2026-08-10）
+
+- 从零训练e50适合检查优化稳定性，但不能保证闭环已达到可筛选的成功率；现有Strict Vanilla e300已有80/100，最省时且最强的稳定接入方式是把其共享base encoder、diffusion UNet和EMA逐张量移植到zero-gate fusion policy，只随机初始化语义adapter。
+- train_dp3在构造model/EMA后、构造optimizer前存在安全插入点，且已导入weights-only loader；可在该点完成fail-closed shared-state映射，并选择只训练semantic gate/adapter或全量低学习率微调。
+- Vanilla到fusion的唯一结构映射是`obs_encoder.* -> obs_encoder.base_encoder.*`，其余UNet键保持同名；移植必须要求Vanilla全部共享键存在、shape一致，禁止silent missing。
+- 第一阶段优先冻结Vanilla backbone，仅优化semantic gates/extractors/attention/pool：gate=0起点保留80/100基线策略，若语义无用则理论上可维持关闭；再视结果决定是否小学习率联合微调。
+
+## Warm-start adapter-only首轮结论（2026-08-10）
+
+- 相比from-scratch e50约0.0016--0.0042的validation范围，已训练Vanilla e300 warm-start在e0/e25约0.00053--0.00089；这主要证明基线技能被保留，不能单独证明semantic收益。
+- adapter-only provenance显示共享262.43M参数全部冻结，三个接口只训练0.248M/0.174M/0.019M参数；这是比旧hybrid额外改变UNet条件维度更干净的策略接口消融。
+- residual e26的validation相对e0略升，cross/part-pool也没有明显离线改善；可能意味着当前单资产Hammer演示对语义没有额外监督信号。闭环若保持Vanilla而不增益，仍支持“安全接入已解决、任务语义需求不足”的论文诊断。
+- safe formal-fixed-fast仅关闭不进入策略的RGB/third-view/camera-config，并启用已验证的冗余preflight/post-render/last-observation优化；skip_eval_planner明确为false，已否决的tail-observation开关不存在，可用于快速筛选但最终候选仍需fixed-100。
+
+## 首个paired闭环信号（2026-08-10）
+
+- 在seed100000上，Vanilla与三种warm-start语义adapter均成功，且都在110--122 policy steps结束；相较旧from-scratch field/partprob大幅退化，warm-start zero-gate接口至少实现了“保留已有技能”的目标。
+- 由于同一模型同一seed曾存在运行级成功/失败波动，不能把114 vs112 vs110 vs122解释为语义增益。需要前5/10相同candidate分布筛选，最终仍需3 training seeds fixed-100。
