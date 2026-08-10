@@ -151,6 +151,25 @@ class TrainDP3Workspace:
                 if module is None or state is None:
                     continue
                 state = self._upgrade_legacy_model_state_dict(state)
+                target_state = module.state_dict()
+                allowed_shape_mismatches = []
+                filtered_state = OrderedDict()
+                for name, value in state.items():
+                    target_value = target_state.get(name)
+                    if (
+                        target_value is not None
+                        and tuple(value.shape) != tuple(target_value.shape)
+                    ):
+                        if name.startswith("binary_gripper_retention_head."):
+                            allowed_shape_mismatches.append(name)
+                            continue
+                        raise RuntimeError(
+                            "init checkpoint parameter shape mismatch: "
+                            f"{name}: source={tuple(value.shape)}, "
+                            f"target={tuple(target_value.shape)}"
+                        )
+                    filtered_state[name] = value
+                state = filtered_state
                 incompatible = module.load_state_dict(state, strict=False)
                 unexpected = list(incompatible.unexpected_keys)
                 missing = list(incompatible.missing_keys)
@@ -167,7 +186,8 @@ class TrainDP3Workspace:
                     )
                 print(
                     f"Initialized {key} from {init_checkpoint}; "
-                    f"new parameters={missing}"
+                    f"new parameters={missing}, "
+                    f"reinitialized shape mismatches={allowed_shape_mismatches}"
                 )
 
         if resumed_from_epoch_checkpoint:
@@ -198,10 +218,43 @@ class TrainDP3Workspace:
                 cfg, "training.binary_gripper_head_only", default=False
             )
         )
-        if geometry_adapter_only and binary_gripper_head_only:
+        motion_only = bool(
+            OmegaConf.select(cfg, "training.motion_only", default=False)
+        )
+        if sum((geometry_adapter_only, binary_gripper_head_only, motion_only)) > 1:
             raise ValueError(
-                "geometry_adapter_only and binary_gripper_head_only are mutually exclusive"
+                "geometry_adapter_only, binary_gripper_head_only, and motion_only "
+                "are mutually exclusive"
             )
+
+        partial_training = geometry_adapter_only or binary_gripper_head_only or motion_only
+        partial_training_start_from_ema = bool(
+            OmegaConf.select(
+                cfg,
+                "training.partial_training_start_from_ema",
+                default=False,
+            )
+        )
+        if partial_training_start_from_ema and not partial_training:
+            raise ValueError(
+                "partial_training_start_from_ema requires geometry_adapter_only "
+                "binary_gripper_head_only, or motion_only"
+            )
+        if partial_training_start_from_ema:
+            if self.ema_model is None:
+                raise ValueError(
+                    "partial_training_start_from_ema requires training.use_ema=true"
+                )
+            # Evaluation and deployment consume ema_model.  A saved checkpoint's
+            # raw model can differ materially from its EMA counterpart.  Starting
+            # a partial fine-tune from the raw model would make EMAModel.step()
+            # copy those different *frozen* parameters into ema_model on the first
+            # batch, silently changing the supposedly frozen policy.  Align the
+            # trainable copy with the deployed EMA before selecting trainable
+            # parameters so only the requested adapter/head can change.
+            self.model.load_state_dict(self.ema_model.state_dict(), strict=True)
+            print("Initialized partial-training model from deployed EMA weights")
+
         if binary_gripper_head_only:
             self.model.freeze_base_for_binary_gripper()
             if self.ema_model is not None:
@@ -212,6 +265,18 @@ class TrainDP3Workspace:
             ]
             print(
                 "Binary-gripper-head-only training: "
+                f"{sum(parameter.numel() for parameter in trainable)} trainable parameters"
+            )
+        if motion_only:
+            self.model.freeze_binary_gripper_heads()
+            if self.ema_model is not None:
+                self.ema_model.freeze_binary_gripper_heads()
+            trainable = [
+                parameter for parameter in self.model.parameters()
+                if parameter.requires_grad
+            ]
+            print(
+                "Motion-only training with fixed gripper heads: "
                 f"{sum(parameter.numel() for parameter in trainable)} trainable parameters"
             )
 
@@ -238,9 +303,16 @@ class TrainDP3Workspace:
         val_dataset = dataset.get_validation_dataset()
         val_dataloader = DataLoader(val_dataset, **cfg.val_dataloader)
 
-        self.model.set_normalizer(normalizer)
-        if cfg.training.use_ema:
-            self.ema_model.set_normalizer(normalizer)
+        if partial_training_start_from_ema:
+            # The normalizer is part of the deployed policy contract.  Replacing
+            # it with statistics from the head-only fine-tuning subset changes
+            # both normalized observations and unnormalized diffusion actions,
+            # even though every motion parameter is frozen.
+            print("Preserved deployed EMA normalizer for partial training")
+        else:
+            self.model.set_normalizer(normalizer)
+            if cfg.training.use_ema:
+                self.ema_model.set_normalizer(normalizer)
 
         # configure lr scheduler
         scheduler_training_epochs = int(cfg.training.num_epochs)

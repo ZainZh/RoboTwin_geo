@@ -82,6 +82,9 @@ policy:
   binary_gripper_hidden_dim: 128
   binary_gripper_loss_weight: 0.0
   binary_gripper_positive_weight: 3.0
+  # Closed-state hold/release has a different class balance from grasping.
+  # Null preserves the main-head weight; terminal-release training uses 1.0.
+  binary_gripper_retention_positive_weight: null
   binary_gripper_threshold: 0.5
   binary_gripper_geometry_key: null
   binary_gripper_geometry_confidence_key: null
@@ -91,6 +94,10 @@ policy:
   binary_gripper_retention_state_key: null
   binary_gripper_retention_state_indices: []
   binary_gripper_retention_closed_threshold: 0.0
+  binary_gripper_retention_current_only: false
+  # Optionally decode hold/release only from SE(3)-invariant goal distance
+  # (translation norm, rotation geodesic angle, confidence).
+  binary_gripper_retention_invariant: false
 
   pointcloud_encoder_cfg:
     in_channels: 3
@@ -139,6 +146,12 @@ training:
   num_epochs: 3000
   gradient_accumulate_every: 1
   use_ema: True
+  # Partial fine-tuning deploys EMA weights. Align the raw training copy with
+  # the checkpoint EMA first so frozen policy parameters remain bit-identical.
+  partial_training_start_from_ema: true
+  # Optional motion recovery fine-tuning that keeps both learned gripper heads
+  # bit-identical to the deployed checkpoint.
+  motion_only: false
   rollout_every: 200
   checkpoint_every: 3000
   val_every: 50

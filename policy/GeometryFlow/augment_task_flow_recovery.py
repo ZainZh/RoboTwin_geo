@@ -188,8 +188,14 @@ def augment_recovery_sample(
     translation: np.ndarray,
     rotation: Rotation,
     goal_object_pose9: np.ndarray | None = None,
+    release_at_goal: bool = False,
+    release_immediately: bool = False,
 ) -> dict[str, np.ndarray]:
     """Apply one grasp-preserving perturbation and construct recovery labels."""
+    if release_at_goal and release_immediately:
+        raise ValueError("release_at_goal and release_immediately are mutually exclusive")
+    if (release_at_goal or release_immediately) and goal_object_pose9 is None:
+        raise ValueError("release supervision requires a geometry goal")
     result = {key: np.asarray(value).copy() for key, value in sample.items()}
     object_pose9 = np.asarray(sample["current_object_pose9"], dtype=np.float64)
     object_center = object_pose9[:3]
@@ -272,6 +278,11 @@ def augment_recovery_sample(
         else:
             next_left_gripper = left_gripper
             next_right_gripper = right_gripper
+            if release_immediately or (release_at_goal and step == horizon - 1):
+                if active_arm == 0:
+                    next_left_gripper = 1.0
+                else:
+                    next_right_gripper = 1.0
         recovery_actions.append(
             eef_delta_action14(
                 previous[0],
@@ -332,6 +343,53 @@ def parser() -> argparse.ArgumentParser:
         choices=("nominal_future", "geometry_goal"),
         default="nominal_future",
     )
+    result.add_argument(
+        "--release-at-goal",
+        action="store_true",
+        help=(
+            "For geometry-goal recovery, label only the final active-gripper "
+            "action as open. This teaches release after completing the learned "
+            "recovery chunk without adding a deployment-time threshold."
+        ),
+    )
+    result.add_argument(
+        "--release-immediately",
+        action="store_true",
+        help=(
+            "For geometry-goal samples already restricted to the terminal "
+            "success neighborhood, label the active gripper open at every "
+            "step. Use small perturbations and strict remaining-error filters."
+        ),
+    )
+    result.add_argument(
+        "--remaining-translation-max-cm",
+        type=float,
+        default=None,
+        help="Optionally restrict donors to near-goal remaining translation.",
+    )
+    result.add_argument(
+        "--remaining-rotation-max-deg",
+        type=float,
+        default=None,
+        help="Optionally restrict donors to near-goal remaining rotation.",
+    )
+    result.add_argument(
+        "--active-gripper-max",
+        type=float,
+        default=None,
+        help=(
+            "Optionally require the currently active gripper state to be at "
+            "or below this value. Terminal release augmentation should use a "
+            "small value (for example 0.1) so supervision reaches the learned "
+            "closed-gripper retention branch rather than the already-open head."
+        ),
+    )
+    result.add_argument(
+        "--active-arm",
+        choices=("any", "left", "right"),
+        default="any",
+        help="Optionally balance recovery augmentation toward one grasping arm.",
+    )
     result.add_argument("--overwrite", action="store_true")
     return result
 
@@ -346,6 +404,27 @@ def main() -> None:
         raise ValueError("sample-fraction must be in (0,1]")
     if not 0.0 <= args.rotation_min_deg <= args.rotation_max_deg <= 180.0:
         raise ValueError("rotation magnitude bounds must satisfy 0 <= min <= max <= 180")
+    if args.release_at_goal and args.release_immediately:
+        raise ValueError("release supervision modes are mutually exclusive")
+    if (
+        (args.release_at_goal or args.release_immediately)
+        and args.recovery_target != "geometry_goal"
+    ):
+        raise ValueError("release supervision requires --recovery-target geometry_goal")
+    if (
+        args.remaining_translation_max_cm is not None
+        and float(args.remaining_translation_max_cm) <= 0.0
+    ):
+        raise ValueError("remaining-translation-max-cm must be positive")
+    if (
+        args.remaining_rotation_max_deg is not None
+        and float(args.remaining_rotation_max_deg) <= 0.0
+    ):
+        raise ValueError("remaining-rotation-max-deg must be positive")
+    if args.active_gripper_max is not None and not (
+        0.0 <= float(args.active_gripper_max) <= 1.0
+    ):
+        raise ValueError("active-gripper-max must be in [0,1]")
     with np.load(args.input, allow_pickle=False) as archive:
         payload = {key: archive[key] for key in archive.files}
     sample_count = int(len(payload["state"]))
@@ -364,6 +443,54 @@ def main() -> None:
         source_indices = source_indices[
             np.isclose(payload["relation_phase"][source_indices], 1.0)
         ]
+    if args.active_arm != "any":
+        if "active_arm_right" not in payload:
+            raise KeyError("active-arm filtering requires active_arm_right")
+        active_right = np.asarray(payload["active_arm_right"]).reshape(-1) >= 0.5
+        desired_right = args.active_arm == "right"
+        source_indices = source_indices[
+            active_right[source_indices] == desired_right
+        ]
+    if args.active_gripper_max is not None:
+        if "active_arm_right" not in payload or "state" not in payload:
+            raise KeyError(
+                "active gripper filtering requires active_arm_right and state"
+            )
+        active_right = np.asarray(payload["active_arm_right"]).reshape(-1) >= 0.5
+        active_gripper = np.where(
+            active_right,
+            np.asarray(payload["state"])[:, 19],
+            np.asarray(payload["state"])[:, 9],
+        )
+        source_indices = source_indices[
+            active_gripper[source_indices] <= float(args.active_gripper_max)
+        ]
+    if args.remaining_translation_max_cm is not None:
+        if "target_frame9" not in payload:
+            raise KeyError("remaining translation filtering requires target_frame9")
+        remaining_translation_cm = 100.0 * np.linalg.norm(
+            np.asarray(payload["target_frame9"][:, :3], dtype=np.float64), axis=-1
+        )
+        source_indices = source_indices[
+            remaining_translation_cm[source_indices]
+            <= float(args.remaining_translation_max_cm)
+        ]
+    if args.remaining_rotation_max_deg is not None:
+        if "target_frame9" not in payload:
+            raise KeyError("remaining rotation filtering requires target_frame9")
+        remaining_rotation_deg = np.asarray(
+            [
+                np.rad2deg(functional_frame9_transform(frame)[1].magnitude())
+                for frame in payload["target_frame9"]
+            ],
+            dtype=np.float64,
+        )
+        source_indices = source_indices[
+            remaining_rotation_deg[source_indices]
+            <= float(args.remaining_rotation_max_deg)
+        ]
+    if len(source_indices) == 0:
+        raise ValueError("recovery donor filters selected no samples")
 
     generator = np.random.default_rng(int(args.seed))
     selected_count = max(1, int(round(len(source_indices) * float(args.sample_fraction))))
@@ -408,6 +535,8 @@ def main() -> None:
                 translation=translation,
                 rotation=rotation,
                 goal_object_pose9=goal_object_pose9,
+                release_at_goal=bool(args.release_at_goal),
+                release_immediately=bool(args.release_immediately),
             )
             for key in sample_keys:
                 appended[key].append(augmented[key])
@@ -471,8 +600,27 @@ def main() -> None:
         "copies": int(args.copies),
         "sample_fraction": float(args.sample_fraction),
         "relation_only": bool(args.relation_only),
+        "eligible_samples": int(len(source_indices)),
+        "remaining_translation_max_cm": (
+            None
+            if args.remaining_translation_max_cm is None
+            else float(args.remaining_translation_max_cm)
+        ),
+        "remaining_rotation_max_deg": (
+            None
+            if args.remaining_rotation_max_deg is None
+            else float(args.remaining_rotation_max_deg)
+        ),
+        "active_gripper_max": (
+            None
+            if args.active_gripper_max is None
+            else float(args.active_gripper_max)
+        ),
+        "active_arm": str(args.active_arm),
         "allowed_shoes": sorted(allowed_shoes),
         "recovery_target": str(args.recovery_target),
+        "release_at_goal": bool(args.release_at_goal),
+        "release_immediately": bool(args.release_immediately),
         "translation_std_cm": float(args.translation_std_cm),
         "rotation_std_deg": float(args.rotation_std_deg),
         "rotation_sampling": str(args.rotation_sampling),

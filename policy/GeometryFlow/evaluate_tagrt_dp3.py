@@ -35,6 +35,12 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--batch-size", type=int, default=256)
     result.add_argument("--sample-repeats", type=int, default=3)
     result.add_argument(
+        "--split",
+        choices=("train", "val", "test"),
+        default="test",
+        help="Object-disjoint dataset split to evaluate.",
+    )
+    result.add_argument(
         "--history-stride",
         type=int,
         default=1,
@@ -67,7 +73,13 @@ def _endpoint_error(
     return translation_cm, rotation_deg
 
 
-def _condition_dataset(cfg, path: Path, condition: str, history_stride: int = 1):
+def _condition_dataset(
+    cfg,
+    path: Path,
+    condition: str,
+    history_stride: int = 1,
+    split: str = "test",
+):
     dataset = TaskAlignedGeometryDataset(
         str(path.resolve()),
         horizon=int(cfg.horizon),
@@ -76,7 +88,7 @@ def _condition_dataset(cfg, path: Path, condition: str, history_stride: int = 1)
         train_object_ids=list(cfg.task.dataset.train_object_ids),
         val_object_ids=list(cfg.task.dataset.val_object_ids),
         test_object_ids=list(cfg.task.dataset.test_object_ids),
-        split="test",
+        split=str(split),
         condition_mode=str(condition),
         use_color=bool(cfg.task.dataset.get("use_color", False)),
         history_stride=int(history_stride),
@@ -108,7 +120,11 @@ def main() -> None:
     with torch.no_grad():
         for condition in args.conditions:
             dataset = _condition_dataset(
-                cfg, args.npz, str(condition), int(args.history_stride)
+                cfg,
+                args.npz,
+                str(condition),
+                int(args.history_stride),
+                str(args.split),
             )
             loader = DataLoader(
                 dataset,
@@ -128,7 +144,11 @@ def main() -> None:
                     )
                     # Identical diffusion noise for every causal condition.
                     torch.manual_seed(420_000 + repeat * 10_000 + batch_index)
-                    prediction = policy.predict_action(batch["obs"])["action"]
+                    prediction_result = policy.predict_action(batch["obs"])
+                    prediction = prediction_result["action"]
+                    gripper_probability = prediction_result.get(
+                        "binary_gripper_closed_probability"
+                    )
                     target = batch["action"][:, start : start + steps]
                     pred_np = prediction.cpu().numpy()
                     target_np = target.cpu().numpy()
@@ -155,6 +175,16 @@ def main() -> None:
                         target_closed = (
                             target_np[local_index, :, gripper_index] < 0.5
                         )
+                        active_probability = None
+                        if gripper_probability is not None:
+                            active_probability = (
+                                gripper_probability[
+                                    local_index, :, 1 if active_right else 0
+                                ]
+                                .detach()
+                                .cpu()
+                                .numpy()
+                            )
                         condition_records.append(
                             {
                                 "repeat": int(repeat),
@@ -165,6 +195,14 @@ def main() -> None:
                                         dataset.payload.get(
                                             "relation_phase",
                                             np.ones(len(dataset.payload["action"])),
+                                        )
+                                    )[row]
+                                ),
+                                "is_recovery_augmented": float(
+                                    np.asarray(
+                                        dataset.payload.get(
+                                            "is_recovery_augmented",
+                                            np.zeros(len(dataset.payload["action"])),
                                         )
                                     )[row]
                                 ),
@@ -191,6 +229,11 @@ def main() -> None:
                                 ),
                                 "active_gripper_true_positive": int(
                                     np.sum(predicted_closed & target_closed)
+                                ),
+                                "active_gripper_closed_probability": (
+                                    None
+                                    if active_probability is None
+                                    else active_probability.astype(float).tolist()
                                 ),
                             }
                         )
@@ -314,7 +357,32 @@ def main() -> None:
         "checkpoint": str(args.checkpoint.resolve()),
         "npz": str(args.npz.resolve()),
         "test_objects": list(cfg.task.dataset.test_object_ids),
-        "test_rows": int(len(_condition_dataset(cfg, args.npz, "correct"))),
+        "test_rows": int(
+            len(
+                _condition_dataset(
+                    cfg,
+                    args.npz,
+                    "correct",
+                    int(args.history_stride),
+                    "test",
+                )
+            )
+        ),
+        "split": str(args.split),
+        "split_objects": list(
+            getattr(cfg.task.dataset, f"{args.split}_object_ids")
+        ),
+        "split_rows": int(
+            len(
+                _condition_dataset(
+                    cfg,
+                    args.npz,
+                    "correct",
+                    int(args.history_stride),
+                    str(args.split),
+                )
+            )
+        ),
         "sample_repeats": int(args.sample_repeats),
         "history_stride": int(args.history_stride),
         "summaries": summaries,

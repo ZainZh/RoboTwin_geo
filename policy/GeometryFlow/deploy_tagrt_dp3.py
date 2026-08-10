@@ -69,6 +69,7 @@ class TagrtDP3Runtime:
         frame_provider: OnlineNdfFunctionalFrameProvider,
         device: str = "cuda:0",
         condition: str = "correct",
+        binary_gripper_threshold: float | None = None,
     ) -> None:
         if condition not in {"correct", "zero"}:
             raise ValueError("online condition must be correct or zero")
@@ -93,6 +94,11 @@ class TagrtDP3Runtime:
         )
         self.device = torch.device(device)
         self.policy.to(self.device).eval()
+        if binary_gripper_threshold is not None:
+            threshold = float(binary_gripper_threshold)
+            if not 0.0 < threshold < 1.0:
+                raise ValueError("binary gripper threshold must be in (0, 1)")
+            self.policy.binary_gripper_threshold = threshold
         geometry_dataset = TaskAlignedGeometryDataset(
             str(self.dataset_path),
             horizon=int(self.cfg.horizon),
@@ -104,6 +110,7 @@ class TagrtDP3Runtime:
             split="train",
             condition_mode="correct",
             use_color=bool(self.cfg.task.dataset.get("use_color", False)),
+            geometry_scale_m=self.cfg.task.dataset.get("geometry_scale_m", None),
         )
         self.geometry_scale_m = float(geometry_dataset.geometry_scale_m)
         self.observation_points = int(
@@ -119,6 +126,13 @@ class TagrtDP3Runtime:
         self.cached_target: np.ndarray | None = None
         self.cached_operated: np.ndarray | None = None
         self.last_diagnostic: dict = {}
+        self.last_gripper_closed_probability: np.ndarray | None = None
+        self.last_gripper_retention_active: np.ndarray | None = None
+        self.last_gripper_retention_normalized_state: np.ndarray | None = None
+        self.last_gripper_retention_geometry: np.ndarray | None = None
+        self.binary_gripper_threshold = float(
+            getattr(self.policy, "binary_gripper_threshold", 0.5)
+        )
 
     def reset(self) -> None:
         self.history.clear()
@@ -126,6 +140,10 @@ class TagrtDP3Runtime:
         self.cached_target = None
         self.cached_operated = None
         self.last_diagnostic = {}
+        self.last_gripper_closed_probability = None
+        self.last_gripper_retention_active = None
+        self.last_gripper_retention_normalized_state = None
+        self.last_gripper_retention_geometry = None
         self.frame_provider.reset()
 
     def latch_target(self, point_cloud: np.ndarray) -> None:
@@ -233,7 +251,34 @@ class TagrtDP3Runtime:
             stacked,
             lambda value: torch.from_numpy(value).to(self.device, non_blocking=True),
         )
-        return self.policy.predict_action(tensor)["action"][0].cpu().numpy()
+        prediction = self.policy.predict_action(tensor)
+        probability = prediction.get("binary_gripper_closed_probability")
+        self.last_gripper_closed_probability = (
+            None
+            if probability is None
+            else probability[0].detach().cpu().numpy().astype(np.float64)
+        )
+        retention_active = prediction.get("binary_gripper_retention_active")
+        retention_state = prediction.get(
+            "binary_gripper_retention_normalized_state"
+        )
+        retention_geometry = prediction.get("binary_gripper_retention_geometry")
+        self.last_gripper_retention_active = (
+            None
+            if retention_active is None
+            else retention_active[0].detach().cpu().numpy().astype(bool)
+        )
+        self.last_gripper_retention_normalized_state = (
+            None
+            if retention_state is None
+            else retention_state[0].detach().cpu().numpy().astype(np.float64)
+        )
+        self.last_gripper_retention_geometry = (
+            None
+            if retention_geometry is None
+            else retention_geometry[0].detach().cpu().numpy().astype(np.float64)
+        )
+        return prediction["action"][0].cpu().numpy()
 
 
 def get_model(usr_args):
@@ -253,6 +298,11 @@ def get_model(usr_args):
         frame_provider=provider,
         device=device,
         condition=str(usr_args.get("tagrt_dp3_condition", "correct")),
+        binary_gripper_threshold=(
+            None
+            if usr_args.get("tagrt_dp3_binary_gripper_threshold") is None
+            else float(usr_args["tagrt_dp3_binary_gripper_threshold"])
+        ),
     )
     model = SimpleNamespace(
         runtime=runtime,
@@ -274,6 +324,13 @@ def get_model(usr_args):
         predicted_rotation_norm_max=0.0,
         predicted_gripper_sum=np.zeros(2, dtype=np.float64),
         predicted_gripper_closed=np.zeros(2, dtype=np.int64),
+        predicted_gripper_closed_probability_sum=np.zeros(2, dtype=np.float64),
+        predicted_gripper_closed_probability_min=np.full(2, np.inf, dtype=np.float64),
+        predicted_gripper_closed_probability_max=np.full(2, -np.inf, dtype=np.float64),
+        predicted_gripper_closed_probability_count=0,
+        retention_geometry_at_min_left_probability=None,
+        estimated_translation_norm_min=np.inf,
+        estimated_rotation_deg_min=np.inf,
         first_active_release_step=None,
         first_active_release_geometry_translation_m=None,
         first_active_release_geometry_rotation_deg=None,
@@ -285,6 +342,9 @@ def get_model(usr_args):
         return {
             "tagrt_dp3_checkpoint": str(runtime.checkpoint),
             "tagrt_dp3_condition": runtime.condition,
+            "tagrt_dp3_binary_gripper_threshold": (
+                runtime.binary_gripper_threshold
+            ),
             "tagrt_dp3_action_chunks": int(model.action_chunks),
             "tagrt_dp3_executed_actions": int(model.executed_actions),
             "tagrt_dp3_mean_confidence": float(model.confidence_sum / count),
@@ -321,6 +381,54 @@ def get_model(usr_args):
                 model.predicted_gripper_closed[1]
                 / max(model.executed_actions, 1)
             ),
+            "tagrt_dp3_min_estimated_translation_norm_m": (
+                None
+                if not np.isfinite(model.estimated_translation_norm_min)
+                else float(model.estimated_translation_norm_min)
+            ),
+            "tagrt_dp3_min_estimated_rotation_deg": (
+                None
+                if not np.isfinite(model.estimated_rotation_deg_min)
+                else float(model.estimated_rotation_deg_min)
+            ),
+            "tagrt_dp3_mean_gripper_closed_probability": (
+                model.predicted_gripper_closed_probability_sum
+                / max(model.predicted_gripper_closed_probability_count, 1)
+            ).astype(float).tolist(),
+            "tagrt_dp3_min_gripper_closed_probability": np.where(
+                np.isfinite(model.predicted_gripper_closed_probability_min),
+                model.predicted_gripper_closed_probability_min,
+                np.nan,
+            ).astype(float).tolist(),
+            "tagrt_dp3_max_gripper_closed_probability": np.where(
+                np.isfinite(model.predicted_gripper_closed_probability_max),
+                model.predicted_gripper_closed_probability_max,
+                np.nan,
+            ).astype(float).tolist(),
+            "tagrt_dp3_last_gripper_retention_active": (
+                None
+                if runtime.last_gripper_retention_active is None
+                else runtime.last_gripper_retention_active.tolist()
+            ),
+            "tagrt_dp3_last_gripper_retention_normalized_state": (
+                None
+                if runtime.last_gripper_retention_normalized_state is None
+                else runtime.last_gripper_retention_normalized_state.astype(
+                    float
+                ).tolist()
+            ),
+            "tagrt_dp3_last_gripper_retention_geometry": (
+                None
+                if runtime.last_gripper_retention_geometry is None
+                else runtime.last_gripper_retention_geometry.astype(float).tolist()
+            ),
+            "tagrt_dp3_retention_geometry_at_min_left_probability": (
+                None
+                if model.retention_geometry_at_min_left_probability is None
+                else model.retention_geometry_at_min_left_probability.astype(
+                    float
+                ).tolist()
+            ),
             "tagrt_dp3_first_active_release_step": model.first_active_release_step,
             "tagrt_dp3_first_active_release_geometry_translation_m": (
                 model.first_active_release_geometry_translation_m
@@ -350,8 +458,21 @@ def eval(TASK_ENV, model, observation):
     model.valid_geometry_chunks += int(
         float(model.runtime.last_diagnostic.get("confidence", 0.0)) > 0.0
     )
+    estimated_translation = model.runtime.last_diagnostic.get(
+        "estimated_translation_norm_m"
+    )
+    estimated_rotation = model.runtime.last_diagnostic.get("estimated_rotation_deg")
+    if estimated_translation is not None:
+        model.estimated_translation_norm_min = min(
+            model.estimated_translation_norm_min, float(estimated_translation)
+        )
+    if estimated_rotation is not None:
+        model.estimated_rotation_deg_min = min(
+            model.estimated_rotation_deg_min, float(estimated_rotation)
+        )
     endpose = dict(observation["endpose"])
-    for raw_action in actions[: model.execute_steps]:
+    probabilities = model.runtime.last_gripper_closed_probability
+    for action_index, raw_action in enumerate(actions[: model.execute_steps]):
         action = np.asarray(raw_action, dtype=np.float32).copy()
         action[6] = np.clip(action[6], 0.0, 1.0)
         action[13] = np.clip(action[13], 0.0, 1.0)
@@ -392,6 +513,21 @@ def eval(TASK_ENV, model, observation):
         model.predicted_gripper_closed += (action[[6, 13]] < 0.5).astype(
             np.int64
         )
+        if probabilities is not None:
+            probability = np.asarray(probabilities[action_index], dtype=np.float64)
+            if probability[0] < model.predicted_gripper_closed_probability_min[0]:
+                geometry = model.runtime.last_gripper_retention_geometry
+                model.retention_geometry_at_min_left_probability = (
+                    None if geometry is None else geometry[-1].copy()
+                )
+            model.predicted_gripper_closed_probability_sum += probability
+            model.predicted_gripper_closed_probability_min = np.minimum(
+                model.predicted_gripper_closed_probability_min, probability
+            )
+            model.predicted_gripper_closed_probability_max = np.maximum(
+                model.predicted_gripper_closed_probability_max, probability
+            )
+            model.predicted_gripper_closed_probability_count += 1
         decoded = decode_eef_delta_action16(
             action,
             endpose["left_endpose"],
@@ -428,6 +564,13 @@ def reset_model(model):
     model.predicted_rotation_norm_max = 0.0
     model.predicted_gripper_sum.fill(0.0)
     model.predicted_gripper_closed.fill(0)
+    model.predicted_gripper_closed_probability_sum.fill(0.0)
+    model.predicted_gripper_closed_probability_min.fill(np.inf)
+    model.predicted_gripper_closed_probability_max.fill(-np.inf)
+    model.predicted_gripper_closed_probability_count = 0
+    model.retention_geometry_at_min_left_probability = None
+    model.estimated_translation_norm_min = np.inf
+    model.estimated_rotation_deg_min = np.inf
     model.first_active_release_step = None
     model.first_active_release_geometry_translation_m = None
     model.first_active_release_geometry_rotation_deg = None

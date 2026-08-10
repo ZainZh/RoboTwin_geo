@@ -257,6 +257,85 @@ class TaskFlowTest(unittest.TestCase):
         np.testing.assert_allclose(actual_eef, expected_eef, atol=2e-6)
         self.assertTrue(np.allclose(augmented["action"][:, 13], 0.0))
 
+    def test_geometry_goal_recovery_can_release_only_at_endpoint(self):
+        horizon = 4
+        object_pose = pose([0.2, -0.1, 0.7], [0.0, 0.0, 0.2])
+        active_pose = pose([0.25, -0.05, 0.8], [0.1, 0.0, 0.2])
+        inactive_pose = pose([-0.3, 0.0, 0.8], [0.0, 0.0, 0.0])
+        object_matrix = pose7_wxyz_to_matrix(object_pose)
+        goal_pose = pose([0.3, 0.0, 0.75], [0.0, 0.0, 0.6])
+        goal_matrix = pose7_wxyz_to_matrix(goal_pose)
+        state = np.zeros(20, dtype=np.float32)
+        state[9] = 1.0
+        state[19] = 0.0
+        points = np.asarray([[0.2, -0.1, 0.7]], dtype=np.float32)
+        sample = {
+            "points_a": points,
+            "points_b": points.copy(),
+            "state": state,
+            "action": np.zeros((horizon, 14), dtype=np.float32),
+            "current_anchors": points.copy(),
+            "current_object_pose9": np.concatenate(
+                (object_pose[:3], object_matrix[:3, :3][:, :2].reshape(6))
+            ).astype(np.float32),
+            "current_eef_pose7": np.stack((inactive_pose, active_pose)).astype(np.float32),
+            "future_eef_pose7": np.repeat(
+                np.stack((inactive_pose, active_pose))[None], horizon, axis=0
+            ).astype(np.float32),
+            "active_arm_right": np.asarray(1.0, dtype=np.float32),
+            "relation_phase": np.asarray(1.0, dtype=np.float32),
+        }
+        augmented = augment_recovery_sample(
+            sample,
+            translation=np.zeros(3),
+            rotation=Rotation.identity(),
+            goal_object_pose9=np.concatenate(
+                (goal_pose[:3], goal_matrix[:3, :3][:, :2].reshape(6))
+            ),
+            release_at_goal=True,
+        )
+
+        np.testing.assert_allclose(augmented["action"][:-1, 13], 0.0)
+        self.assertEqual(float(augmented["action"][-1, 13]), 1.0)
+        np.testing.assert_allclose(augmented["action"][:, 6], 1.0)
+
+    def test_terminal_recovery_can_label_immediate_release(self):
+        horizon = 3
+        object_pose = pose([0.2, -0.1, 0.7], [0.0, 0.0, 0.2])
+        active_pose = pose([0.25, -0.05, 0.8], [0.1, 0.0, 0.2])
+        inactive_pose = pose([-0.3, 0.0, 0.8], [0.0, 0.0, 0.0])
+        object_matrix = pose7_wxyz_to_matrix(object_pose)
+        state = np.zeros(20, dtype=np.float32)
+        state[9] = 1.0
+        state[19] = 0.0
+        points = np.asarray([[0.2, -0.1, 0.7]], dtype=np.float32)
+        sample = {
+            "points_a": points,
+            "points_b": points.copy(),
+            "state": state,
+            "action": np.zeros((horizon, 14), dtype=np.float32),
+            "current_anchors": points.copy(),
+            "current_object_pose9": np.concatenate(
+                (object_pose[:3], object_matrix[:3, :3][:, :2].reshape(6))
+            ).astype(np.float32),
+            "current_eef_pose7": np.stack((inactive_pose, active_pose)).astype(np.float32),
+            "future_eef_pose7": np.repeat(
+                np.stack((inactive_pose, active_pose))[None], horizon, axis=0
+            ).astype(np.float32),
+            "active_arm_right": np.asarray(1.0, dtype=np.float32),
+            "relation_phase": np.asarray(1.0, dtype=np.float32),
+        }
+        augmented = augment_recovery_sample(
+            sample,
+            translation=np.zeros(3),
+            rotation=Rotation.identity(),
+            goal_object_pose9=sample["current_object_pose9"],
+            release_immediately=True,
+        )
+
+        np.testing.assert_allclose(augmented["action"][:, 13], 1.0)
+        np.testing.assert_allclose(augmented["action"][:, 6], 1.0)
+
     def test_recovery_updates_camera_relative_frame_and_intended_goal(self):
         horizon = 3
         object_pose = pose([0.2, -0.1, 0.7], [0.0, 0.0, 0.2])

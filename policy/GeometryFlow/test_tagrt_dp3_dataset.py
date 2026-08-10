@@ -85,6 +85,13 @@ class TaskAlignedGeometryDatasetTest(unittest.TestCase):
             normalizer["tagrt_global"].normalize(relation), relation
         )
 
+    def test_explicit_geometry_scale_freezes_token_contract(self):
+        dataset = self.dataset(geometry_scale_m=0.25)
+        self.assertAlmostEqual(dataset.geometry_scale_m, 0.25)
+        self.assertNotAlmostEqual(dataset.computed_geometry_scale_m, 0.25)
+        with self.assertRaisesRegex(ValueError, "geometry_scale_m"):
+            self.dataset(geometry_scale_m=0.0)
+
     def test_shuffle_changes_episode_and_preserves_phase(self):
         dataset = self.dataset(condition_mode="shuffled").get_test_dataset()
         for row, donor in zip(dataset.active_indices, dataset.shuffled_indices["test"]):

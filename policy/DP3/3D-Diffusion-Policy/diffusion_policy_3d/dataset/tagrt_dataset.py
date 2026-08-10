@@ -159,6 +159,7 @@ class TaskAlignedGeometryDataset(BaseDataset):
         condition_mode: str = "correct",
         use_color: bool = False,
         history_stride: int = 1,
+        geometry_scale_m: float | None = None,
         task_name=None,
     ):
         super().__init__()
@@ -230,7 +231,15 @@ class TaskAlignedGeometryDataset(BaseDataset):
             axis=1,
         )
         xyz_std = np.std(train_points.reshape(-1, 3), axis=0)
-        self.geometry_scale_m = float(np.mean(np.maximum(xyz_std, 1e-4)))
+        computed_geometry_scale_m = float(np.mean(np.maximum(xyz_std, 1e-4)))
+        if geometry_scale_m is not None and float(geometry_scale_m) <= 0.0:
+            raise ValueError("geometry_scale_m must be positive")
+        self.geometry_scale_m = (
+            computed_geometry_scale_m
+            if geometry_scale_m is None
+            else float(geometry_scale_m)
+        )
+        self.computed_geometry_scale_m = computed_geometry_scale_m
         # A deterministic, stage-matched cross-episode permutation for
         # wrong-relation controls.
         self.shuffled_indices = {}
