@@ -49,9 +49,10 @@ Build the paper split without trajectory leakage:
 - held-out test shoes: 0/5.
 
 Target at least 120 replay-admitted training demonstrations, balanced by shoe
-and active arm.  Validation/test demonstrations are used only to identify
-feasible evaluation seeds and measure expert/replay ceilings, never for policy
-training or checkpoint selection.
+and active arm.  Validation-shoe demonstrations may select checkpoints and
+hyperparameters but are never optimized as training samples.  Test-shoe
+demonstrations are used only to identify feasible evaluation seeds and measure
+expert/replay ceilings, never for training, selection, or tuning.
 
 Run paired Raw/TAGRT evaluation with confidence intervals.  The primary metric
 is full-task success; grasp, placement, stable hold, and pose error are
