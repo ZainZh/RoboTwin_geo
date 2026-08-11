@@ -247,6 +247,10 @@ def run(TASK_ENV, args):
             args["left_joint_path"] = traj_data["left_joint_path"]
             args["right_joint_path"] = traj_data["right_joint_path"]
             TASK_ENV.set_path_lst(args)
+            if bool(args.get("record_dense_control", False)):
+                # Exclude initialization/homing commands.  The trace begins at
+                # the first command after the initial demonstration frame.
+                TASK_ENV.reset_dense_control_trace()
 
             info = TASK_ENV.play_once()
             if not TASK_ENV.check_success():

@@ -1,0 +1,58 @@
+render_freq: 0
+episode_num: 1
+initial_seed: 2
+use_seed: false
+save_freq: 15
+record_dense_control: true
+generate_instructions: false
+embodiment: [aloha-agilex]
+language_num: 1
+domain_randomization:
+  random_background: false
+  cluttered_table: false
+  clean_background_rate: 1
+  random_head_camera_dis: 0
+  random_table_height: 0
+  random_light: false
+  crazy_random_light_rate: 0
+camera:
+  head_camera_type: Large_L515
+  wrist_camera_type: D435
+  collect_head_camera: true
+  collect_wrist_camera: false
+data_type:
+  rgb: true
+  third_view: true
+  depth: false
+  pointcloud: true
+  combine: true
+  object_pointcloud: true
+  observer: false
+  endpose: true
+  qpos: true
+  mesh_segmentation: false
+  actor_segmentation: false
+object_pointcloud:
+  combine: true
+  point_num: 1024
+  targets:
+    "{A}": shoe
+    "{B}": target_block
+geometry_marker:
+  ramp_pitch_deg: 10.0
+  ramp_half_length: 0.18
+  ramp_half_width: 0.13
+  marker_x_limit: 0.06
+  marker_y_limit: 0.035
+  marker_yaw_limit_deg: 60.0
+placement_success:
+  require_contact: true
+  stable_steps: 25
+  max_linear_speed_mps: 0.02
+  max_angular_speed_radps: 0.2
+pcd_down_sample_num: 1024
+pcd_crop: true
+save_path: ./data
+clear_cache_freq: 1
+collect_data: true
+eval_video_log: true

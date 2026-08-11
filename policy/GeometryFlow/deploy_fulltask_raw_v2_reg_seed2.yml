@@ -1,0 +1,20 @@
+policy_name: GeometryFlow.deploy_fulltask_tagrt_v2
+task_name: place_shoe_geometry_marker
+task_config: demo_clean_3d_object_pc_geometry_marker_unseen05
+ckpt_setting: fulltask-raw-v2-reg-seed2
+seed: 0
+instruction_type: unseen
+test_num: 1
+expert_data_num: 50
+checkpoint_num: 0
+policy_start_phase: full_task
+skip_expert_check_on_replay: true
+evaluation_seed_file: outputs/geometry_flow/tagrt_dp3_online_contract_fix/paired_seeds.json
+eval_video_log: true
+
+fulltask_tagrt_checkpoint: outputs/geometry_flow/fulltask_tagrt_v2/pilot_2x2_seed2_e20/raw_reg_seed2.pt
+fulltask_tagrt_device: cuda:0
+fulltask_tagrt_execute_steps: 2
+fulltask_tagrt_max_policy_steps: 220
+max_eef_translation_delta_m: 0.08
+max_eef_rotation_delta_rad: 0.5

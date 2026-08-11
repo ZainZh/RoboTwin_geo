@@ -1,0 +1,20 @@
+policy_name: GeometryFlow.deploy_fulltask_action_replay
+task_name: place_shoe_geometry_marker
+task_config: demo_clean_3d_object_pc_geometry_marker_densecontrol_pilot
+ckpt_setting: fulltask-expert-dense-control-contract-pilot10
+seed: 0
+instruction_type: unseen
+test_num: 10
+expert_data_num: 10
+checkpoint_num: 0
+policy_start_phase: full_task
+skip_expert_check_on_replay: true
+evaluation_seed_file: policy/GeometryFlow/eval_seeds_densecontrol_pilot10.json
+evaluation_start_episode_index: 0
+eval_video_log: false
+
+expert_replay_dense_control_data_dir: /shared2/sz/robotwin_data/data/place_shoe_geometry_marker/demo_clean_3d_object_pc_geometry_marker_densecontrol_pilot/data
+expert_replay_episode: 0
+# Replay is privileged and needs no intermediate camera observations.  The
+# environment still checks task success after every physics command.
+expert_replay_execute_steps: 100000

@@ -1,0 +1,20 @@
+policy_name: GeometryFlow.deploy_fulltask_action_replay
+task_name: place_shoe_geometry_marker
+task_config: demo_clean_3d_object_pc_geometry_marker
+ckpt_setting: fulltask-expert-action-contract-episode2
+seed: 0
+instruction_type: unseen
+test_num: 1
+expert_data_num: 50
+checkpoint_num: 0
+policy_start_phase: full_task
+skip_expert_check_on_replay: true
+evaluation_seed_file: policy/GeometryFlow/eval_seed_episode2.json
+evaluation_start_episode_index: 2
+eval_video_log: true
+
+expert_replay_dataset: outputs/geometry_flow/fulltask_tagrt_v2/place_shoe_marker_fold0_camera_history3_stride2.npz
+expert_replay_episode: 2
+expert_replay_execute_steps: 2
+max_eef_translation_delta_m: 0.08
+max_eef_rotation_delta_rad: 0.5

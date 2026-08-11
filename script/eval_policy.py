@@ -230,6 +230,9 @@ def main(usr_args):
     args["skip_expert_check_on_replay"] = parse_bool(
         usr_args.get("skip_expert_check_on_replay", False)
     )
+    args["evaluation_start_episode_index"] = int(
+        usr_args.get("evaluation_start_episode_index", 0)
+    )
     args["seed_discovery_only"] = parse_bool(
         usr_args.get("seed_discovery_only", False)
     )
@@ -337,6 +340,9 @@ def main(usr_args):
         "expert_data_num": int(usr_args["expert_data_num"]),
         "training_seed": int(seed),
         "evaluation_start_seed": int(evaluation_seeds[0] if evaluation_seeds else st_seed),
+        "evaluation_start_episode_index": int(
+            usr_args.get("evaluation_start_episode_index", 0)
+        ),
         "evaluation_seed_file": (
             str(Path(evaluation_seed_file).expanduser().resolve())
             if evaluation_seed_file
@@ -459,7 +465,7 @@ def eval_policy(task_name,
     TASK_ENV.suc = 0
     TASK_ENV.test_num = 0
 
-    now_id = 0
+    now_id = int(args.get("evaluation_start_episode_index", 0))
     succ_seed = 0
     suc_test_seed_list = []
 

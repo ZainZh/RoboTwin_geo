@@ -24,6 +24,7 @@ from pathlib import Path
 import trimesh
 import imageio
 import glob
+import h5py
 
 
 from ._GLOBAL_CONFIGS import *
@@ -67,6 +68,11 @@ class Base_Task(gym.Env):
         self.render_freq = kwags.get("render_freq", 10)
         self.data_type = kwags.get("data_type", None)
         self.save_data = kwags.get("save_data", False)
+        self.record_dense_control = bool(kwags.get("record_dense_control", False))
+        self.dense_control_position = []
+        self.dense_control_arm_velocity = []
+        self._dense_control_left_velocity = None
+        self._dense_control_right_velocity = None
         self.dual_arm = kwags.get("dual_arm", True)
         self.eval_mode = kwags.get("eval_mode", False)
 
@@ -126,6 +132,8 @@ class Base_Task(gym.Env):
         self.load_robot(**kwags)
         self.load_camera(**kwags)
         self.robot.move_to_homestate()
+
+        self.reset_dense_control_trace()
 
         render_freq = self.render_freq
         self.render_freq = 0
@@ -606,6 +614,14 @@ class Base_Task(gym.Env):
             "joint_action": {},
             "endpose": {},
         }
+        if self.record_dense_control:
+            # Index of the last low-level command applied before this camera
+            # observation.  -1 denotes the initial observation.
+            pkl_dic["dense_control"] = {
+                "observation_last_step_index": np.asarray(
+                    [len(self.dense_control_position) - 1], dtype=np.int64
+                )
+            }
 
         pkl_dic["observation"] = self.cameras.get_config()
         # rgb
@@ -718,6 +734,30 @@ class Base_Task(gym.Env):
 
         os.makedirs(f"{self.save_dir}/data", exist_ok=True)
         process_folder_to_hdf5_video(cache_path, target_file_path, target_video_path)
+        if self.record_dense_control:
+            positions = np.asarray(self.dense_control_position, dtype=np.float32)
+            velocities = np.asarray(
+                self.dense_control_arm_velocity, dtype=np.float32
+            )
+            if positions.ndim != 2 or positions.shape[1] != 14:
+                raise RuntimeError(
+                    "dense control trace must have shape [steps, 14], got "
+                    f"{positions.shape}"
+                )
+            if velocities.shape != (positions.shape[0], 12):
+                raise RuntimeError(
+                    "dense arm-velocity trace must have shape [steps, 12], got "
+                    f"{velocities.shape}"
+                )
+            with h5py.File(target_file_path, "a") as archive:
+                group = archive.require_group("dense_control")
+                for name, value in (
+                    ("position", positions),
+                    ("arm_velocity", velocities),
+                ):
+                    if name in group:
+                        del group[name]
+                    group.create_dataset(name, data=value, compression="gzip")
 
     def remove_data_cache(self):
         folder_path = self.folder_path["cache"]
@@ -740,6 +780,36 @@ class Base_Task(gym.Env):
         self.need_plan = args.get("need_plan", True)
         self.left_joint_path = args.get("left_joint_path", [])
         self.right_joint_path = args.get("right_joint_path", [])
+
+    def reset_dense_control_trace(self):
+        """Reset the exact low-level command stream used by demonstrations."""
+        self.dense_control_position = []
+        self.dense_control_arm_velocity = []
+        left_dim = len(getattr(self.robot, "left_arm_joints", []))
+        right_dim = len(getattr(self.robot, "right_arm_joints", []))
+        self._dense_control_left_velocity = np.zeros(left_dim, dtype=np.float64)
+        self._dense_control_right_velocity = np.zeros(right_dim, dtype=np.float64)
+
+    def _record_dense_control_step(self):
+        if not self.record_dense_control:
+            return
+        left = np.asarray(self.robot.get_left_arm_jointState(), dtype=np.float64)
+        right = np.asarray(self.robot.get_right_arm_jointState(), dtype=np.float64)
+        # The cached gripper value is the high-level target.  Record the actual
+        # normalized drive target after per-step clipping instead.
+        gripper_drive = np.asarray(
+            self.robot.get_normal_real_gripper_val(), dtype=np.float64
+        )
+        left[-1], right[-1] = gripper_drive
+        self.dense_control_position.append(np.concatenate((left, right)))
+        self.dense_control_arm_velocity.append(
+            np.concatenate(
+                (
+                    self._dense_control_left_velocity,
+                    self._dense_control_right_velocity,
+                )
+            )
+        )
 
     def _set_eval_video_ffmpeg(self, ffmpeg):
         self.eval_video_ffmpeg = ffmpeg
@@ -1603,9 +1673,12 @@ class Base_Task(gym.Env):
         for control_idx in range(max_control_len):
 
             if (left_arm is not None and control_idx < left_arm["position"].shape[0]):  # control left arm
+                self._dense_control_left_velocity = np.asarray(
+                    left_arm["velocity"][control_idx], dtype=np.float64
+                ).copy()
                 self.robot.set_arm_joints(
                     left_arm["position"][control_idx],
-                    left_arm["velocity"][control_idx],
+                    self._dense_control_left_velocity,
                     "left",
                 )
 
@@ -1617,9 +1690,12 @@ class Base_Task(gym.Env):
                 )  # TODO
 
             if (right_arm is not None and control_idx < right_arm["position"].shape[0]):  # control right arm
+                self._dense_control_right_velocity = np.asarray(
+                    right_arm["velocity"][control_idx], dtype=np.float64
+                ).copy()
                 self.robot.set_arm_joints(
                     right_arm["position"][control_idx],
-                    right_arm["velocity"][control_idx],
+                    self._dense_control_right_velocity,
                     "right",
                 )
 
@@ -1630,6 +1706,7 @@ class Base_Task(gym.Env):
                     right_gripper["per_step"],
                 )  # TODO
 
+            self._record_dense_control_step()
             self.scene.step()
 
             if self.render_freq and control_idx % self.render_freq == 0:
@@ -1644,6 +1721,41 @@ class Base_Task(gym.Env):
             self._take_picture()
 
         return True  # TODO: maybe need try error
+
+    def take_low_level_joint_action_chunk(self, position, arm_velocity):
+        """Execute a learned/replayed dense joint command chunk without replanning.
+
+        `position` is [T, 14] in the standard RoboTwin order and
+        `arm_velocity` is [T, 12].  One chunk counts as one policy step while
+        every row remains one simulator physics step.
+        """
+        if self.take_action_cnt == self.step_lim or self.eval_success:
+            return
+        position = np.asarray(position, dtype=np.float64)
+        arm_velocity = np.asarray(arm_velocity, dtype=np.float64)
+        if position.ndim != 2 or position.shape[1] != 14:
+            raise ValueError(f"position must have shape [T, 14], got {position.shape}")
+        if arm_velocity.shape != (position.shape[0], 12):
+            raise ValueError(
+                "arm_velocity must have shape [T, 12], got "
+                f"{arm_velocity.shape}"
+            )
+        if self.eval_video_path is not None:
+            self.eval_video_ffmpeg.stdin.write(
+                self.now_obs["observation"]["head_camera"]["rgb"].tobytes()
+            )
+        self.take_action_cnt += 1
+        for command, velocity in zip(position, arm_velocity):
+            self.robot.set_arm_joints(command[:6], velocity[:6], "left")
+            self.robot.set_gripper(command[6], "left", gripper_eps=0.0)
+            self.robot.set_arm_joints(command[7:13], velocity[6:12], "right")
+            self.robot.set_gripper(command[13], "right", gripper_eps=0.0)
+            self.scene.step()
+            if self.check_success():
+                self.eval_success = True
+                self.get_obs()
+                return
+        self._update_render()
 
     def take_action(self, action, action_type:Literal['qpos', 'ee']='qpos'):  # action_type: qpos or ee
         if self.take_action_cnt == self.step_lim or self.eval_success:
