@@ -17,7 +17,10 @@ from policy.DP3.scripts.eef_delta_action_utils import decode_eef_delta_action16
 
 
 def get_model(usr_args):
-    episode = int(usr_args["expert_replay_episode"])
+    # A directory-backed dense replay is an ordered episode bank and does not
+    # select a single episode here.  Keep zero as the harmless default for
+    # that batch mode; single-episode NPZ replay can still override it.
+    episode = int(usr_args.get("expert_replay_episode", 0))
     dense_data_dir = usr_args.get("expert_replay_dense_control_data_dir")
     dense_hdf5_path = usr_args.get("expert_replay_dense_control_hdf5")
     hdf5_path = usr_args.get("expert_replay_hdf5")

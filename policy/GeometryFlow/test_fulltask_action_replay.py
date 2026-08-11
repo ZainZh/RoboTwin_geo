@@ -97,6 +97,31 @@ def test_dense_replay_executes_one_low_level_chunk_without_replanning():
         np.testing.assert_array_equal(task.chunks[0][1], velocity[:3])
 
 
+def test_dense_replay_directory_does_not_require_single_episode_selector():
+    with TemporaryDirectory() as directory:
+        data_dir = Path(directory)
+        for episode in range(2):
+            with h5py.File(data_dir / f"episode{episode}.hdf5", "w") as archive:
+                archive.create_dataset(
+                    "dense_control/position",
+                    data=np.full((episode + 2, 14), episode, dtype=np.float32),
+                )
+                archive.create_dataset(
+                    "dense_control/arm_velocity",
+                    data=np.full((episode + 2, 12), episode, dtype=np.float32),
+                )
+        model = get_model(
+            {
+                "expert_replay_dense_control_data_dir": str(data_dir),
+                "evaluation_start_episode_index": 0,
+                "test_num": 2,
+            }
+        )
+        assert model.replay_mode == "dense_joint_control"
+        assert len(model.replay_bank) == 2
+        assert model.transitions.shape == (2, 14)
+
+
 def test_dense_replay_can_match_collection_success_postroll():
     with TemporaryDirectory() as directory:
         path = Path(directory) / "episode0.hdf5"
