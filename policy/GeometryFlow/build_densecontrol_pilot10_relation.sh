@@ -2,12 +2,13 @@
 set -euo pipefail
 
 python_bin="${PYTHON_BIN:-/root/miniconda3/envs/RoboTwin/bin/python}"
+artifact_root="${TAGRT_ARTIFACT_ROOT:-/shared2/sz/TAGRT-v1}"
 episode_count="${EPISODES:-10}"
 run_name="${RUN_NAME:-densecontrol_pilot10}"
-root="outputs/geometry_flow/fulltask_tagrt_v2/${run_name}"
-data_dir="/shared2/sz/robotwin_data/data/place_shoe_geometry_marker/demo_clean_3d_object_pc_geometry_marker_densecontrol_pilot/data"
-ndf_checkpoint="/shared2/sz/model/ndf/shoe.pth"
-frame_root="outputs/geometry_flow/ndf_pretraining_ablation_local50_fold0_full_seeds012"
+root="${artifact_root}/processed_datasets/fulltask_tagrt_v2/${run_name}"
+data_dir="${artifact_root}/simulator_data/place_shoe_geometry_marker/demo_clean_3d_object_pc_geometry_marker_densecontrol_pilot/data"
+ndf_checkpoint="${artifact_root}/models/ndf/shoe.pth"
+frame_root="${artifact_root}/models/ndf_functional_frames/fold0_local50_seeds012"
 mkdir -p "${root}"
 
 base="${root}/task_flow_base.npz"
