@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 
 from .deploy_fulltask_tagrt_v2 import gripper_command_from_probability
@@ -13,6 +14,7 @@ from .train_fulltask_tagrt_v2 import (
     apply_deterministic_gripper_state_delay,
     augment_gripper_state_delay,
     augment_open_approach_eef_translation,
+    split_by_episode,
 )
 
 
@@ -66,6 +68,27 @@ def test_dense_joint_action_roundtrip_and_model_shape():
     output = model(_batch(), noisy_motion=torch.randn(2, 15, 24))
     assert output.motion.shape == (2, 15, 24)
     assert output.gripper_logits.shape == (2, 15, 2)
+
+
+def test_episode_split_is_deterministic_and_has_no_trajectory_leakage():
+    episode_id = np.repeat(np.arange(10), 4)
+    first, definition = split_by_episode(
+        episode_id, seed=7, validation_episodes=2, test_episodes=2
+    )
+    second, second_definition = split_by_episode(
+        episode_id, seed=7, validation_episodes=2, test_episodes=2
+    )
+    assert definition == second_definition
+    assert all(np.array_equal(first[name], second[name]) for name in first)
+    split_episodes = {
+        name: set(episode_id[indices].tolist()) for name, indices in first.items()
+    }
+    assert len(split_episodes["train"]) == 6
+    assert len(split_episodes["validation"]) == 2
+    assert len(split_episodes["test"]) == 2
+    assert not (split_episodes["train"] & split_episodes["validation"])
+    assert not (split_episodes["train"] & split_episodes["test"])
+    assert not (split_episodes["validation"] & split_episodes["test"])
 
 
 def test_dense_gripper_decoder_preserves_continuous_drive_target():

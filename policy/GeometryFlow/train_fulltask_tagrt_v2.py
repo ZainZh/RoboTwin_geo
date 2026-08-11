@@ -78,6 +78,17 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--device", default="cuda:0")
     result.add_argument("--num-workers", type=int, default=0)
     result.add_argument(
+        "--episode-split",
+        action="store_true",
+        help=(
+            "Use a deterministic trajectory-level split for a train-object-only "
+            "replication batch instead of the strict object-generalization split."
+        ),
+    )
+    result.add_argument("--episode-split-seed", type=int, default=20260811)
+    result.add_argument("--validation-episodes", type=int, default=3)
+    result.add_argument("--test-episodes", type=int, default=3)
+    result.add_argument(
         "--overfit-episodes",
         nargs="+",
         type=int,
@@ -88,6 +99,40 @@ def parser() -> argparse.ArgumentParser:
         ),
     )
     return result
+
+
+def split_by_episode(
+    episode_id: np.ndarray,
+    *,
+    seed: int,
+    validation_episodes: int,
+    test_episodes: int,
+) -> tuple[dict[str, np.ndarray], dict[str, list[int]]]:
+    """Make leakage-free sample splits from complete demonstration episodes."""
+
+    episodes = np.unique(np.asarray(episode_id, dtype=np.int64))
+    validation_count = int(validation_episodes)
+    test_count = int(test_episodes)
+    if validation_count < 1 or test_count < 1:
+        raise ValueError("episode validation/test counts must be positive")
+    if len(episodes) <= validation_count + test_count:
+        raise ValueError("episode split leaves no training trajectory")
+    generator = np.random.default_rng(int(seed))
+    shuffled = generator.permutation(episodes)
+    selected = {
+        "test": np.sort(shuffled[:test_count]),
+        "validation": np.sort(shuffled[test_count : test_count + validation_count]),
+        "train": np.sort(shuffled[test_count + validation_count :]),
+    }
+    split = {
+        name: np.flatnonzero(np.isin(episode_id, values))
+        for name, values in selected.items()
+    }
+    definition = {
+        name: [int(value) for value in values]
+        for name, values in selected.items()
+    }
+    return split, definition
 
 
 @dataclass
@@ -737,11 +782,23 @@ def main() -> None:
     args = parser().parse_args()
     with np.load(args.dataset, allow_pickle=False) as archive:
         payload = {key: np.asarray(archive[key]) for key in archive.files}
+    split_definition = None
     if args.overfit_episodes:
         overfit = np.flatnonzero(
             np.isin(payload["episode_id"], np.asarray(args.overfit_episodes))
         )
         split = {name: overfit.copy() for name in ("train", "validation", "test")}
+        split_definition = {
+            name: [int(value) for value in args.overfit_episodes]
+            for name in split
+        }
+    elif args.episode_split:
+        split, split_definition = split_by_episode(
+            payload["episode_id"],
+            seed=args.episode_split_seed,
+            validation_episodes=args.validation_episodes,
+            test_episodes=args.test_episodes,
+        )
     else:
         split = {
             name: np.flatnonzero(np.isin(payload["shoe_id"], np.asarray(ids)))
@@ -767,7 +824,8 @@ def main() -> None:
     ]
     summary = {
         "dataset": str(args.dataset.resolve()),
-        "fold": FOLD0,
+        "fold": FOLD0 if not args.episode_split else None,
+        "episode_split": split_definition,
         "statistics": asdict(statistics),
         "results": results,
     }
