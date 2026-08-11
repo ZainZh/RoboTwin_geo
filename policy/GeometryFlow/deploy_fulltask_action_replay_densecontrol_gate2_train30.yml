@@ -1,0 +1,18 @@
+policy_name: GeometryFlow.deploy_fulltask_action_replay
+task_name: place_shoe_geometry_marker
+task_config: demo_clean_3d_object_pc_geometry_marker_densecontrol_gate2_train30
+ckpt_setting: dense-replay-gate2-train30
+seed: 0
+instruction_type: unseen
+test_num: 30
+expert_data_num: 30
+checkpoint_num: 0
+policy_start_phase: full_task
+skip_expert_check_on_replay: true
+evaluation_seed_file: /shared2/sz/TAGRT-v1/experiment_outputs/fulltask_tagrt_v2/gate2_train30/final_audit/candidate_seeds.json
+evaluation_start_episode_index: 0
+eval_video_log: false
+
+expert_replay_dense_control_data_dir: /shared2/sz/TAGRT-v1/simulator_data/place_shoe_geometry_marker/demo_clean_3d_object_pc_geometry_marker_densecontrol_gate2_train30/data
+expert_replay_execute_steps: 15
+expert_replay_postroll_steps: 0

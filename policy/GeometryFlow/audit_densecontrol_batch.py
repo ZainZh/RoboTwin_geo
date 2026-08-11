@@ -21,6 +21,8 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--data-root", type=Path, required=True)
     result.add_argument("--output-dir", type=Path, required=True)
     result.add_argument("--expected-episodes", type=int, default=None)
+    result.add_argument("--require-complete", action="store_true")
+    result.add_argument("--require-all-valid", action="store_true")
     return result
 
 
@@ -155,6 +157,10 @@ def main() -> None:
         encoding="utf-8",
     )
     print(json.dumps({key: manifest[key] for key in manifest if key != "episodes"}))
+    if args.require_complete and not manifest["complete"]:
+        raise SystemExit(2)
+    if args.require_all_valid and len(valid) != len(episodes):
+        raise SystemExit(3)
 
 
 if __name__ == "__main__":
