@@ -8,6 +8,8 @@ from .place_shoe_geometry_marker import (
     geometry_marker_local_transform,
     oriented_rectangles_overlap,
     place_shoe_geometry_marker,
+    resolve_episode_shoe_arm,
+    resolve_fixed_arm,
     resolve_shoe_id_candidates,
     resolve_shoe_modelname,
 )
@@ -38,6 +40,48 @@ class TestPlaceShoeGeometryMarker(unittest.TestCase):
             resolve_shoe_id_candidates({"shoe_modelname": "gso_shoe_blind_v1"})
         with self.assertRaisesRegex(ValueError, "invalid"):
             resolve_shoe_modelname({"shoe_modelname": "../041_shoe"})
+
+    def test_episode_shoe_arm_schedule_only_applies_to_requested_range(self):
+        config = {
+            "allowed_shoe_ids": [2, 7],
+            "episode_shoe_arm_schedule_start": 30,
+            "episode_shoe_arm_schedule": [
+                {"shoe_id": 2, "arm": "right"},
+                {"shoe_id": 7, "arm": "left"},
+            ],
+        }
+        self.assertIsNone(resolve_episode_shoe_arm(config, 29))
+        self.assertEqual(resolve_episode_shoe_arm(config, 30), (2, "right"))
+        self.assertEqual(resolve_episode_shoe_arm(config, 31), (7, "left"))
+        self.assertIsNone(resolve_episode_shoe_arm(config, 32))
+
+    def test_episode_shoe_arm_schedule_rejects_invalid_entries(self):
+        with self.assertRaisesRegex(ValueError, "not in allowed"):
+            resolve_episode_shoe_arm(
+                {
+                    "allowed_shoe_ids": [2],
+                    "episode_shoe_arm_schedule": [
+                        {"shoe_id": 7, "arm": "right"}
+                    ],
+                },
+                0,
+            )
+        with self.assertRaisesRegex(ValueError, "left or right"):
+            resolve_episode_shoe_arm(
+                {
+                    "allowed_shoe_ids": [2],
+                    "episode_shoe_arm_schedule": [
+                        {"shoe_id": 2, "arm": "both"}
+                    ],
+                },
+                0,
+            )
+
+    def test_fixed_arm_is_optional_and_validated(self):
+        self.assertIsNone(resolve_fixed_arm({}))
+        self.assertEqual(resolve_fixed_arm({"fixed_arm": "left"}), "left")
+        with self.assertRaisesRegex(ValueError, "left or right"):
+            resolve_fixed_arm({"fixed_arm": "both"})
 
     def test_marker_transform_contains_requested_xy_and_yaw(self):
         transform = geometry_marker_local_transform(0.04, -0.02, np.pi / 2.0)

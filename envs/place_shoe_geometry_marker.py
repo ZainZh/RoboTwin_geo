@@ -55,6 +55,58 @@ def resolve_shoe_modelname(config: dict) -> str:
     return modelname
 
 
+def resolve_episode_shoe_arm(
+    config: dict, episode_index: int
+) -> tuple[int, str] | None:
+    """Resolve an optional collection-only shoe/arm schedule.
+
+    The schedule controls dataset coverage; it is never exposed to the policy.
+    Episodes outside the configured range retain the benchmark's random
+    sampling behavior.
+    """
+
+    schedule = config.get("episode_shoe_arm_schedule")
+    if schedule is None:
+        return None
+    if not isinstance(schedule, list) or not schedule:
+        raise ValueError(
+            "geometry_marker.episode_shoe_arm_schedule must be a non-empty list"
+        )
+    start = int(config.get("episode_shoe_arm_schedule_start", 0))
+    if start < 0:
+        raise ValueError(
+            "geometry_marker.episode_shoe_arm_schedule_start must be non-negative"
+        )
+    allowed = set(resolve_shoe_id_candidates(config))
+    normalized: list[tuple[int, str]] = []
+    for item in schedule:
+        if not isinstance(item, dict) or set(item) != {"shoe_id", "arm"}:
+            raise ValueError(
+                "each episode shoe/arm schedule item must contain exactly shoe_id and arm"
+            )
+        shoe_id = int(item["shoe_id"])
+        arm = str(item["arm"])
+        if shoe_id not in allowed:
+            raise ValueError(
+                f"scheduled shoe ID {shoe_id} is not in allowed_shoe_ids"
+            )
+        if arm not in {"left", "right"}:
+            raise ValueError("scheduled arm must be left or right")
+        normalized.append((shoe_id, arm))
+    offset = int(episode_index) - start
+    return normalized[offset] if 0 <= offset < len(normalized) else None
+
+
+def resolve_fixed_arm(config: dict) -> str | None:
+    value = config.get("fixed_arm")
+    if value is None:
+        return None
+    arm = str(value)
+    if arm not in {"left", "right"}:
+        raise ValueError("geometry_marker.fixed_arm must be left or right")
+    return arm
+
+
 def loaded_shoe_footprint(modelname: str, model_id: int) -> np.ndarray:
     """Return the shoe's loaded half width/length in its local X/Z plane."""
     path = Path("assets/objects") / modelname / f"model_data{int(model_id)}.json"
@@ -236,6 +288,19 @@ class place_shoe_geometry_marker(place_shoe_rotating_block):
 
     def load_actors(self):
         config = self.geometry_marker_config
+        scheduled_shoe_arm = resolve_episode_shoe_arm(config, self.ep_num)
+        scheduled_shoe_id = (
+            None if scheduled_shoe_arm is None else scheduled_shoe_arm[0]
+        )
+        scheduled_arm = None if scheduled_shoe_arm is None else scheduled_shoe_arm[1]
+        fixed_arm = resolve_fixed_arm(config)
+        if (
+            scheduled_arm is not None
+            and fixed_arm is not None
+            and scheduled_arm != fixed_arm
+        ):
+            raise ValueError("scheduled arm conflicts with geometry_marker.fixed_arm")
+        requested_arm = scheduled_arm or fixed_arm
         target_yaw = np.random.uniform(-np.pi, np.pi)
         ramp_pitch = np.deg2rad(float(config.get("ramp_pitch_deg", 10.0)))
         half_length = float(config.get("ramp_half_length", 0.18))
@@ -264,8 +329,13 @@ class place_shoe_geometry_marker(place_shoe_rotating_block):
         )
 
         def sample_shoe_pose():
+            xlim = [-0.25, 0.25]
+            if requested_arm == "left":
+                xlim = [-0.25, -np.finfo(np.float64).eps]
+            elif requested_arm == "right":
+                xlim = [np.finfo(np.float64).eps, 0.25]
             return rand_pose(
-                xlim=[-0.25, 0.25],
+                xlim=xlim,
                 ylim=[-0.1, 0.05],
                 ylim_prop=True,
                 rotate_rand=True,
@@ -285,7 +355,11 @@ class place_shoe_geometry_marker(place_shoe_rotating_block):
             )
 
         self.shoe_modelname = resolve_shoe_modelname(config)
-        self.shoe_id = int(np.random.choice(resolve_shoe_id_candidates(config)))
+        self.shoe_id = int(
+            scheduled_shoe_id
+            if scheduled_shoe_id is not None
+            else np.random.choice(resolve_shoe_id_candidates(config))
+        )
         shoe_half_extents = loaded_shoe_footprint(self.shoe_modelname, self.shoe_id)
         ramp_half_extents = np.asarray([half_length, half_width], dtype=np.float64)
         for _ in range(1000):

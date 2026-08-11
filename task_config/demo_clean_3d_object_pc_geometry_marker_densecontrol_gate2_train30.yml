@@ -41,6 +41,28 @@ object_pointcloud:
 geometry_marker:
   shoe_modelname: 041_shoe
   allowed_shoe_ids: [2, 3, 4, 7, 8, 9]
+  # Keep arm routing outside the research question. Existing files 0--29 are
+  # immutable; new collection and evaluation use the left arm only.
+  fixed_arm: left
+  # The existing data contain 15 left-arm episodes. These 15 append-only
+  # episodes bring every training shoe identity to five left-arm examples.
+  episode_shoe_arm_schedule_start: 30
+  episode_shoe_arm_schedule:
+    - {shoe_id: 2, arm: left}
+    - {shoe_id: 3, arm: left}
+    - {shoe_id: 4, arm: left}
+    - {shoe_id: 7, arm: left}
+    - {shoe_id: 9, arm: left}
+    - {shoe_id: 2, arm: left}
+    - {shoe_id: 3, arm: left}
+    - {shoe_id: 4, arm: left}
+    - {shoe_id: 7, arm: left}
+    - {shoe_id: 9, arm: left}
+    - {shoe_id: 2, arm: left}
+    - {shoe_id: 3, arm: left}
+    - {shoe_id: 4, arm: left}
+    - {shoe_id: 7, arm: left}
+    - {shoe_id: 3, arm: left}
   ramp_pitch_deg: 10.0
   ramp_half_length: 0.18
   ramp_half_width: 0.13
