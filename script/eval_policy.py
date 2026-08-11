@@ -39,6 +39,22 @@ def parse_bool(value, *, default=False):
     raise ValueError(f"expected a boolean value, got {value!r}")
 
 
+def resolve_evaluation_output_root(usr_args, environ=None):
+    """Keep generated evaluation artifacts on the configured data disk."""
+    env = os.environ if environ is None else environ
+    configured = str(usr_args.get("evaluation_output_root", "") or "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    artifact_root = str(env.get("TAGRT_ARTIFACT_ROOT", "") or "").strip()
+    if artifact_root:
+        return (
+            Path(artifact_root).expanduser().resolve()
+            / "experiment_outputs"
+            / "robotwin_eval_result"
+        )
+    return Path("eval_result")
+
+
 def load_evaluation_seed_file(path, *, test_num):
     if path in {None, ""}:
         return None
@@ -278,9 +294,14 @@ def main(usr_args):
 
     token_ablation = str(usr_args.get("se3_relation_token_ablation", "none"))
     evaluation_variant = "standard" if token_ablation == "none" else f"ablation-{token_ablation}"
-    save_dir = Path(
-        f"eval_result/{task_name}/{policy_name}/{task_config}/{ckpt_setting}/"
-        f"{evaluation_variant}/{current_time}"
+    save_dir = (
+        resolve_evaluation_output_root(usr_args)
+        / task_name
+        / policy_name
+        / task_config
+        / ckpt_setting
+        / evaluation_variant
+        / current_time
     )
     save_dir.mkdir(parents=True, exist_ok=True)
     args["eval_result_dir"] = str(save_dir)

@@ -3,10 +3,28 @@ import json
 import tempfile
 from pathlib import Path
 
-from script.eval_policy import load_evaluation_seed_file, parse_bool
+from script.eval_policy import (
+    load_evaluation_seed_file,
+    parse_bool,
+    resolve_evaluation_output_root,
+)
 
 
 class TestEvalPolicyHelpers(unittest.TestCase):
+    def test_evaluation_output_root_prefers_explicit_then_tagrt_root(self):
+        self.assertEqual(
+            resolve_evaluation_output_root(
+                {"evaluation_output_root": "/tmp/explicit"},
+                {"TAGRT_ARTIFACT_ROOT": "/tmp/tagrt"},
+            ),
+            Path("/tmp/explicit"),
+        )
+        self.assertEqual(
+            resolve_evaluation_output_root({}, {"TAGRT_ARTIFACT_ROOT": "/tmp/tagrt"}),
+            Path("/tmp/tagrt/experiment_outputs/robotwin_eval_result"),
+        )
+        self.assertEqual(resolve_evaluation_output_root({}, {}), Path("eval_result"))
+
     def test_parse_bool(self):
         for value in (True, "true", "YES", 1):
             self.assertTrue(parse_bool(value))
