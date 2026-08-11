@@ -23,3 +23,9 @@ export PYTHONUNBUFFERED=1
 "${python_bin}" script/eval_policy.py \
   --config policy/GeometryFlow/deploy_fulltask_action_replay_densecontrol_gate2_train30.yml \
   2>&1 | tee "${log_root}/dense_replay.log"
+
+"${python_bin}" -m policy.GeometryFlow.summarize_densecontrol_admission \
+  --structural-manifest "${audit_root}/candidate_manifest.json" \
+  --evaluation-root "${artifact_root}/experiment_outputs/robotwin_eval_result/place_shoe_geometry_marker/GeometryFlow.deploy_fulltask_action_replay/demo_clean_3d_object_pc_geometry_marker_densecontrol_gate2_train30/dense-replay-gate2-train30/standard" \
+  --output-dir "${audit_root}" \
+  --require-complete

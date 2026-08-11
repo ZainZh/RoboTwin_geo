@@ -15,4 +15,6 @@ eval_video_log: false
 
 expert_replay_dense_control_data_dir: /shared2/sz/TAGRT-v1/simulator_data/place_shoe_geometry_marker/demo_clean_3d_object_pc_geometry_marker_densecontrol_gate2_train30/data
 expert_replay_execute_steps: 15
-expert_replay_postroll_steps: 0
+# Collection performs an unrecorded 25-step stability check after the final
+# command.  Reproduce those physics-only steps without inventing an action.
+expert_replay_terminal_hold_steps: 25
