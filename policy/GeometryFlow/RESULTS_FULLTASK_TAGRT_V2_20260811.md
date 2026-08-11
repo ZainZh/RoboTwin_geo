@@ -292,3 +292,57 @@ command remained `0.99975`, and the shoe never moved.  The matched pilot is
 therefore `correct TAGRT 1/1`, `zero-geometry TAGRT 0/1`, and `Raw 0/1`.  This
 demonstrates online dependence on the two-level geometry tokens for this
 admitted scene, while still requiring replication before any rate claim.
+
+## Fixed-left-arm deconfounding experiment
+
+Arm selection is not part of the paper question, so the Gate-2 replication was
+changed to a fixed left-arm protocol.  The environment fixes the operated shoe
+to the left workspace and every admitted demonstration uses the left arm.  The
+controller retains its `dense_joint26` compatibility interface, but the right
+arm only supplies a hold target; the policy never observes a left-versus-right
+choice.  The zero-copy training view contains 30 trajectories, with exactly
+five trajectories for each training shoe `2/3/4/7/8/9`.
+
+The 30 trajectories produced 4,841 history-3 / horizon-15 policy samples.  A
+trajectory-level split used 18 train, 6 validation, and 6 test trajectories;
+both validation and test contain exactly one trajectory from every shoe.  The
+camera-only NDF relation archive had median current-relative errors of
+`1.998 cm / 1.888 deg` and median target-frame errors of
+`0.221 cm / 0.524 deg`.
+
+With identical 5.66M-parameter models and seed 0, the independent test result
+was:
+
+| condition | normalized motion MSE | motion MAE | joint velocity MAE |
+|---|---:|---:|---:|
+| Raw Transformer | 0.169348 | 0.058601 | 0.047515 |
+| TAGRT Transformer | **0.135297** | **0.048615** | **0.033114** |
+| TAGRT, zero geometry | 0.303653 | 0.107951 | 0.093836 |
+| TAGRT, shuffled geometry | 0.280380 | 0.091774 | 0.080086 |
+
+Correct TAGRT reduced normalized action error by `20.11%` relative to Raw.
+Zeroing and shuffling geometry made TAGRT respectively `124.44%` and `107.23%`
+worse than correct geometry.  Thus the fixed-arm result strengthens the offline
+claim: the improvement is not an artifact of learning which arm should act,
+and the policy causally consumes the task-aligned relation tokens.
+
+Fresh fixed-left online evaluation admitted the expert-feasible seeds
+`300002/300006/300008`.  The uncalibrated TAGRT checkpoint achieved `0/3`: two
+rollouts never closed the left gripper, while one grasped and reached a minimum
+alignment error near `1.3 cm / 9.0 deg` but did not settle.  Frozen-motion
+gripper-head calibration made all three rollouts eventually close the left
+gripper, but too late (`1125/1170/1980` low-level controls) and still achieved
+`0/3`.  On seed `300002`, calibration improved the previous no-grasp trajectory
+to a minimum error near `3.9 cm / 10.4 deg`; it did not create a stable task
+success.
+
+The fixed-arm experiment therefore closes the offline deconfounding question
+but not the online policy claim.  The immediate limitation is sparse,
+closed-loop-unstable grasp/release transition learning from 30 behavior-cloning
+trajectories, not arm choice or a failed NDF estimate.  Do not run Raw or
+zero-geometry online controls for this batch because correct TAGRT itself is
+`0/3`; they cannot establish a success-rate advantage.  The next useful batch
+must retain fixed left-arm execution and add diverse full-task demonstrations
+that balance grasp and release transition neighborhoods before retraining the
+same Raw/TAGRT pair.  No stage gate, residual planner, or arm-selection head is
+introduced.

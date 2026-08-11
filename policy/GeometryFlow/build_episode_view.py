@@ -20,6 +20,11 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--output-data-dir", type=Path, required=True)
     result.add_argument("--episode-indices", type=int, nargs="+", required=True)
     result.add_argument("--require-active-arm", choices=("left", "right"))
+    result.add_argument(
+        "--reuse-existing",
+        action="store_true",
+        help="Validate and reuse an existing identical symlink view.",
+    )
     return result
 
 
@@ -43,8 +48,18 @@ def main() -> None:
     source_dir = args.source_data_dir.expanduser().resolve()
     output_dir = args.output_data_dir.expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    if any(output_dir.iterdir()):
+    if any(output_dir.iterdir()) and not args.reuse_existing:
         raise FileExistsError(f"output data directory is not empty: {output_dir}")
+
+    source_seed_path = source_dir.parent / "seed.txt"
+    source_seeds = [int(value) for value in source_seed_path.read_text().split()]
+    if max(indices) >= len(source_seeds):
+        raise ValueError(
+            f"seed file has {len(source_seeds)} entries but view requests {max(indices)}"
+        )
+    source_scene_info = json.loads(
+        (source_dir.parent / "scene_info.json").read_text(encoding="utf-8")
+    )
 
     rows = []
     for canonical_index, source_index in enumerate(indices):
@@ -57,7 +72,13 @@ def main() -> None:
                 f"episode {source_index} uses {active_arm}, expected {args.require_active_arm}"
             )
         target = output_dir / f"episode{canonical_index}.hdf5"
-        target.symlink_to(source)
+        if target.exists() or target.is_symlink():
+            if not args.reuse_existing or not target.is_symlink():
+                raise FileExistsError(target)
+            if target.resolve() != source.resolve():
+                raise ValueError(f"existing view link has wrong target: {target}")
+        else:
+            target.symlink_to(source)
         rows.append(
             {
                 "canonical_episode": canonical_index,
@@ -81,6 +102,20 @@ def main() -> None:
     manifest = output_dir.parent / "episode_view.json"
     manifest.write_text(
         json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    (output_dir.parent / "seed.txt").write_text(
+        " ".join(str(source_seeds[index]) for index in indices) + " ",
+        encoding="utf-8",
+    )
+    view_scene_info = {}
+    for canonical_index, source_index in enumerate(indices):
+        source_key = f"episode_{source_index}"
+        if source_key not in source_scene_info:
+            raise KeyError(f"source scene_info lacks {source_key}")
+        view_scene_info[f"episode_{canonical_index}"] = source_scene_info[source_key]
+    (output_dir.parent / "scene_info.json").write_text(
+        json.dumps(view_scene_info, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
     )
     print(json.dumps(metadata["counts"], indent=2, sort_keys=True))
 
