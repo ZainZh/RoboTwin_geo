@@ -1,5 +1,6 @@
 import torch
 
+from .deploy_fulltask_tagrt_v2 import gripper_command_from_probability
 from .fulltask_tagrt_v2 import (
     FullTaskTAGRTPolicy,
     merge_action14,
@@ -63,6 +64,17 @@ def test_dense_joint_action_roundtrip_and_model_shape():
     output = model(_batch(), noisy_motion=torch.randn(2, 15, 24))
     assert output.motion.shape == (2, 15, 24)
     assert output.gripper_logits.shape == (2, 15, 2)
+
+
+def test_dense_gripper_decoder_preserves_continuous_drive_target():
+    probability = torch.tensor([[0.9, 0.4]], dtype=torch.float32)
+    torch.testing.assert_close(
+        gripper_command_from_probability(probability, continuous=True), probability
+    )
+    torch.testing.assert_close(
+        gripper_command_from_probability(probability, continuous=False),
+        torch.tensor([[1.0, 0.0]]),
+    )
 
 
 def test_open_approach_jitter_has_corrective_first_action():

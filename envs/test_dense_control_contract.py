@@ -44,3 +44,31 @@ def test_low_level_joint_chunk_bypasses_planning_and_preserves_layout():
     np.testing.assert_array_equal(task.robot.arm[1][1], velocity[0, 6:12])
     assert task.robot.gripper[0] == (float(position[0, 6]), "left", 0.0)
     assert task.robot.gripper[1] == (float(position[0, 13]), "right", 0.0)
+
+
+def test_low_level_settle_advances_physics_without_rewriting_commands():
+    class Robot:
+        def set_arm_joints(self, *_args, **_kwargs):
+            raise AssertionError("settle must not issue an arm command")
+
+        def set_gripper(self, *_args, **_kwargs):
+            raise AssertionError("settle must not issue a gripper command")
+
+    class Scene:
+        def __init__(self):
+            self.steps = 0
+
+        def step(self):
+            self.steps += 1
+
+    task = Base_Task.__new__(Base_Task)
+    task.robot = Robot()
+    task.scene = Scene()
+    task.take_action_cnt = 0
+    task.step_lim = 10
+    task.eval_success = False
+    task.check_success = lambda: False
+    task._update_render = lambda: None
+    task.take_low_level_settle_steps(7)
+    assert task.take_action_cnt == 1
+    assert task.scene.steps == 7

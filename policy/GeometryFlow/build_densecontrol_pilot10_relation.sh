@@ -2,7 +2,9 @@
 set -euo pipefail
 
 python_bin="${PYTHON_BIN:-/root/miniconda3/envs/RoboTwin/bin/python}"
-root="outputs/geometry_flow/fulltask_tagrt_v2/densecontrol_pilot10"
+episode_count="${EPISODES:-10}"
+run_name="${RUN_NAME:-densecontrol_pilot10}"
+root="outputs/geometry_flow/fulltask_tagrt_v2/${run_name}"
 data_dir="/shared2/sz/robotwin_data/data/place_shoe_geometry_marker/demo_clean_3d_object_pc_geometry_marker_densecontrol_pilot/data"
 ndf_checkpoint="/shared2/sz/model/ndf/shoe.pth"
 frame_root="outputs/geometry_flow/ndf_pretraining_ablation_local50_fold0_full_seeds012"
@@ -11,7 +13,7 @@ mkdir -p "${root}"
 base="${root}/task_flow_base.npz"
 "${python_bin}" -m policy.GeometryFlow.build_task_flow_dataset \
   --data-dir "${data_dir}" \
-  --episodes 10 \
+  --episodes "${episode_count}" \
   --observation-points 128 \
   --point-channels 6 \
   --target-color-priority \
@@ -67,7 +69,7 @@ camera="${root}/task_flow_ndf_camera.npz"
 
 "${python_bin}" -m policy.GeometryFlow.prepare_fulltask_dense_control_archive \
   --data-dir "${data_dir}" \
-  --episodes 10 \
+  --episodes "${episode_count}" \
   --relation-archive "${camera}" \
   --output "${root}/fulltask_history3_dense15.npz" \
   --history 3 \

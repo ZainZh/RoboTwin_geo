@@ -32,6 +32,18 @@ def _goal_frame9(transform: np.ndarray) -> np.ndarray:
     return np.concatenate((value[:3, 3], value[:3, 0], value[:3, 1])).astype(np.float32)
 
 
+def gripper_command_from_probability(
+    open_probability: torch.Tensor, *, continuous: bool
+) -> torch.Tensor:
+    """Decode the independent gripper head without changing its semantics.
+
+    Dense RoboTwin demonstrations contain continuous normalized drive targets,
+    so their deployment contract must retain the sigmoid value.  Binary mode
+    remains available for legacy EEF-action checkpoints.
+    """
+    return open_probability if continuous else (open_probability >= 0.5).float()
+
+
 class FullTaskTAGRTV2Runtime:
     def __init__(
         self,
@@ -41,6 +53,7 @@ class FullTaskTAGRTV2Runtime:
         device: str,
         flow_steps: int = 8,
         inference_seed: int = 0,
+        continuous_gripper: bool = False,
     ) -> None:
         self.checkpoint = Path(checkpoint).expanduser().resolve()
         payload = torch.load(self.checkpoint, map_location="cpu", weights_only=False)
@@ -61,6 +74,7 @@ class FullTaskTAGRTV2Runtime:
         )
         self.flow_steps = int(flow_steps)
         self.inference_seed = int(inference_seed)
+        self.continuous_gripper = bool(continuous_gripper)
         self.observation_index = 0
         self.cached_target: np.ndarray | None = None
         self.cached_operated: np.ndarray | None = None
@@ -198,7 +212,9 @@ class FullTaskTAGRTV2Runtime:
         self.last_gripper_open_probability = gripper_probability.numpy().astype(
             np.float32
         )
-        gripper = (gripper_probability >= 0.5).float()
+        gripper = gripper_command_from_probability(
+            gripper_probability, continuous=self.continuous_gripper
+        )
         self.action_chunks += 1
         merged = (
             merge_action26(motion, gripper)
@@ -227,6 +243,9 @@ def get_model(usr_args):
         device=device,
         flow_steps=int(usr_args.get("fulltask_tagrt_flow_steps", 8)),
         inference_seed=int(usr_args.get("fulltask_tagrt_inference_seed", 0)),
+        continuous_gripper=bool(
+            usr_args.get("fulltask_tagrt_continuous_gripper", False)
+        ),
     )
     model = SimpleNamespace(
         runtime=runtime,
@@ -248,6 +267,7 @@ def get_model(usr_args):
         return {
             "fulltask_tagrt_condition": runtime.condition,
             "fulltask_tagrt_action_representation": runtime.action_representation,
+            "fulltask_tagrt_continuous_gripper": bool(runtime.continuous_gripper),
             "fulltask_tagrt_action_chunks": int(model.action_chunks),
             "fulltask_tagrt_executed_actions": int(model.executed_actions),
             "fulltask_tagrt_mean_translation_delta_m": float(

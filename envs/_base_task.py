@@ -1757,6 +1757,28 @@ class Base_Task(gym.Env):
                 return
         self._update_render()
 
+    def take_low_level_settle_steps(self, steps):
+        """Advance physics without rewriting the active low-level command.
+
+        Expert tasks use the same operation after their final motion primitive
+        to admit only stable terminal placements.  Keeping it separate from an
+        action chunk makes diagnostic replay match that collection contract
+        exactly; learned policies do not call this helper.
+        """
+        if self.take_action_cnt == self.step_lim or self.eval_success:
+            return
+        steps = max(0, int(steps))
+        if steps == 0:
+            return
+        self.take_action_cnt += 1
+        for _ in range(steps):
+            self.scene.step()
+            if self.check_success():
+                self.eval_success = True
+                self.get_obs()
+                return
+        self._update_render()
+
     def take_action(self, action, action_type:Literal['qpos', 'ee']='qpos'):  # action_type: qpos or ee
         if self.take_action_cnt == self.step_lim or self.eval_success:
             return

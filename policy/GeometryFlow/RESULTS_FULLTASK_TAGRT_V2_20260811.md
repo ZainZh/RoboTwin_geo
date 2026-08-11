@@ -9,9 +9,11 @@ stage gate, or an oracle pose at deployment.
 The v2 policy consumes a three-frame memory containing scene/object point
 tokens, NDF/TAGRT local anchor-relation tokens, a global remaining-SE(3) token,
 and robot EEF/gripper state.  Future action queries cross-attend to the complete
-memory.  The output is a six-step bimanual action chunk with a continuous arm
-head and a separate binary gripper head.  Both direct regression and conditional
-flow-matching action decoders use the same observation backbone.
+memory.  The original offline study used six-step EEF chunks.  The corrected
+online contract uses a 15-step, 26D dense joint-control chunk: 12 arm position,
+12 arm velocity, and two independent continuous gripper commands.  Both direct
+regression and conditional flow-matching action decoders use the same
+observation backbone.
 
 ## Dataset and strict split
 
@@ -94,6 +96,51 @@ at policy chunk 119 and the required 25-step hold at chunk 126.  This confirms
 that the previous failure came from action conversion/replanning, not from an
 ungraspable scene.
 
+A 10-episode pilot then recorded 24,666 finite low-level controls with valid,
+monotonic observation-to-control indices.  Deterministic replay admitted 9/10
+episodes.  The rejected seed 21 reached correct pose/contact/open-gripper
+states but did not reproduce the collector's terminal contact dynamics: its
+maximum stable-success run was 20 steps versus the required 25, and the shoe
+continued rotating above the 0.2 rad/s threshold.  It is therefore marked as
+an unstable trajectory and must be excluded or replaced rather than silently
+used for training.
+
+## Learned full-task interface admission
+
+Episode 0 was converted into 144 three-frame samples with exact `15 x 26D`
+dense action labels.  A 5,662,874-parameter four-memory/four-decoder-layer Raw
+Transformer overfit it in 400 epochs (2.05 minutes on GPU 5).  The selected
+checkpoint achieved:
+
+- normalized motion MSE: `0.00069521`;
+- joint position MAE: `0.0022686 rad`;
+- joint velocity MAE: `0.0044570 rad/s`;
+- gripper accuracy: `0.996759`.
+
+The first online run still failed (`0/1`): all 3,000 physical actions were
+executed, but neither gripper ever closed.  This exposed a second action-contract
+bug.  Dense demonstrations store a continuous normalized gripper drive target,
+while deployment thresholded the independent sigmoid head to binary 0/1.
+Although offline right-gripper close recall was `99.45%`, an online probability
+near 0.90 was rounded back to fully open.  The current gripper state therefore
+never entered the partially closed training states and the policy deadlocked at
+pre-grasp.
+
+Keeping the same checkpoint, seed, arm actions, and 15-step execution cadence,
+but executing the continuous gripper prediction, changed online success from
+`0/1` to `1/1`.  The learned policy completed grasp, transfer, release, and
+stable placement from the task start:
+
+- 182 closed-loop action chunks / 2,730 physical controls;
+- active right gripper first crossed 0.5 at control 795 and was closed for
+  43.41% of executed controls;
+- first pose alignment at policy chunk 109 and first raw success at chunk 140;
+- final translation error `0.01478 m`, rotation error `0.826 deg`;
+- required stable-success hold `25/25`, with ramp contact and open gripper.
+
+This is an interface-admission result on one memorized trajectory, not a
+generalization or geometry-improvement claim.
+
 ## Current claim boundary
 
 Supported now:
@@ -104,16 +151,21 @@ Supported now:
   and flow-matching decoders;
 - shuffled/zero interventions show causal dependence on the geometry tokens;
 - the intended Transformer has enough capacity to memorize the demonstration
-  action sequence accurately.
+  action sequence accurately;
+- the corrected learned dense-action Transformer can complete one full online
+  grasp-transfer-place episode from task start.
 
 Not supported yet:
 
-- successful full-task online execution;
 - an online success-rate advantage over raw Transformer or DP3;
+- multi-episode or unseen-object online generalization under the corrected
+  action contract;
 - a real-camera deployment claim.
 
-The current online 0% result must not be used to reject NDF, TAGRT, or the policy
-architecture because the expert action replay itself fails the same interface.
+The older online 0% results must not be used to reject NDF, TAGRT, or the policy
+architecture because they used a non-replayable action contract.  The current
+one-episode success only admits the corrected interface; it does not yet prove
+the paper's online geometry claim.
 
 ## Required gate before more policy training
 
@@ -123,19 +175,22 @@ architecture because the expert action replay itself fails the same interface.
    states as if they were commands.
 2. Rebuild the full-task archive at the original control cadence around grasp and
    release.  Do not apply stride-2 subsampling until replay equivalence is shown.
-3. Require expert-command replay to reproduce the task (target: 10/10) before
-   admitting learned-policy online results.
-4. Only after that gate, train the same large raw and TAGRT Transformers and run
-   paired online evaluation on identical seeds.  Flow matching remains a decoder
-   ablation, not the method's central claim.
+3. Admit only trajectories that reproduce the task under dense replay.  The
+   current pilot has 9 admitted and one rejected unstable contact trajectory.
+4. Build dense Raw/TAGRT archives for the admitted trajectories, train the same
+   large Raw and TAGRT Transformers, and run paired online evaluation on
+   identical seeds.  Flow matching remains a decoder ablation, not the method's
+   central claim.
 
 Implementation status: the dataset/controller now support a replay-equivalent
 15-step `dense_joint26` action block (left position/velocity/gripper and right
 position/velocity/gripper).  The Transformer decoder was generalized from 12
 to 24 continuous channels while keeping the independent two-channel gripper
 head.  Exact dataset alignment, a one-epoch CPU smoke train, and runtime
-inference have passed.  The next admission gate is 10/10 dense expert replay,
-followed by one-episode learned overfit through this same controller.
+inference have passed.  A one-episode learned overfit now succeeds online.  The
+next gate is paired multi-episode Raw/TAGRT training and online evaluation using
+only replay-admitted demonstrations, followed by paper-scale dense conversion
+of the strict unseen-shoe split.
 
 This keeps the paper story unchanged: task-aligned local relations and global
 remaining geometry are continuous conditions for a learned manipulation policy.

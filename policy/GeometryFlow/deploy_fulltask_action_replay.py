@@ -116,6 +116,10 @@ def get_model(usr_args):
         ),
         cursor=0,
         execute_steps=max(1, int(usr_args.get("expert_replay_execute_steps", 2))),
+        terminal_hold_steps=max(
+            0, int(usr_args.get("expert_replay_terminal_hold_steps", 0))
+        ),
+        terminal_hold_done=False,
         max_translation_delta_m=float(usr_args.get("max_eef_translation_delta_m", 0.08)),
         max_rotation_delta_rad=float(usr_args.get("max_eef_rotation_delta_rad", 0.5)),
         closed_count=np.zeros(2, dtype=np.int64),
@@ -140,6 +144,17 @@ def eval(TASK_ENV, model, observation):
         TASK_ENV.take_low_level_joint_action_chunk(chunk, velocity)
         model.executed += len(chunk)
         model.cursor = stop
+        # Collection tasks advance the simulator for a short stability check
+        # after the final recorded motion primitive.  Reproduce that exact
+        # evaluator-only post-roll without rewriting or inventing an action.
+        if (
+            model.cursor >= len(model.transitions)
+            and model.terminal_hold_steps > 0
+            and not model.terminal_hold_done
+            and not TASK_ENV.eval_success
+        ):
+            TASK_ENV.take_low_level_settle_steps(model.terminal_hold_steps)
+            model.terminal_hold_done = True
     else:
         for replay_index, action in enumerate(
             model.transitions[model.cursor : stop], start=model.cursor
@@ -178,6 +193,9 @@ def eval(TASK_ENV, model, observation):
             "expert_replay_executed_actions": int(model.executed),
             "expert_replay_total_actions": int(len(model.transitions)),
             "expert_replay_mode": model.replay_mode,
+            "expert_replay_terminal_hold_steps": int(
+                model.terminal_hold_steps if model.terminal_hold_done else 0
+            ),
             "expert_replay_closed_fraction": (
                 model.closed_count / max(model.executed, 1)
             ).astype(float).tolist(),
@@ -196,4 +214,5 @@ def reset_model(model):
         model.replay_bank_index += 1
     model.cursor = 0
     model.executed = 0
+    model.terminal_hold_done = False
     model.closed_count[:] = 0

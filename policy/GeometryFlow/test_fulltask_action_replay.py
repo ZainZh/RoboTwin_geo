@@ -97,6 +97,52 @@ def test_dense_replay_executes_one_low_level_chunk_without_replanning():
         np.testing.assert_array_equal(task.chunks[0][1], velocity[:3])
 
 
+def test_dense_replay_can_match_collection_success_postroll():
+    with TemporaryDirectory() as directory:
+        path = Path(directory) / "episode0.hdf5"
+        position = np.arange(3 * 14, dtype=np.float32).reshape(3, 14)
+        velocity = np.arange(3 * 12, dtype=np.float32).reshape(3, 12)
+        with h5py.File(path, "w") as archive:
+            archive.create_dataset("dense_control/position", data=position)
+            archive.create_dataset("dense_control/arm_velocity", data=velocity)
+        model = get_model(
+            {
+                "expert_replay_dense_control_hdf5": str(path),
+                "expert_replay_episode": 0,
+                "expert_replay_execute_steps": 100,
+                "expert_replay_terminal_hold_steps": 5,
+            }
+        )
+
+        class Task:
+            def __init__(self):
+                self.chunks = []
+                self.take_action_cnt = 0
+                self.step_lim = 20
+                self.eval_success = False
+
+            def take_low_level_joint_action_chunk(self, chunk, arm_velocity):
+                self.chunks.append((np.asarray(chunk), np.asarray(arm_velocity)))
+                self.take_action_cnt += 1
+
+            def take_low_level_settle_steps(self, steps):
+                self.chunks.append(("settle", int(steps)))
+                self.take_action_cnt += 1
+
+        observation = {
+            "endpose": {
+                "left_endpose": np.zeros(7, dtype=np.float32),
+                "right_endpose": np.zeros(7, dtype=np.float32),
+            }
+        }
+        task = Task()
+        replay_eval(task, model, observation)
+        assert len(task.chunks) == 2
+        np.testing.assert_array_equal(task.chunks[0][0], position)
+        assert task.chunks[1] == ("settle", 5)
+        assert model.terminal_hold_done
+
+
 def test_dense_dataset_alignment_skips_boundary_duplicate_observations():
     last_step = np.asarray([-1, 0, 15, 15, 22, 30, 45], dtype=np.int64)
     np.testing.assert_array_equal(

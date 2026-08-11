@@ -18,3 +18,7 @@ expert_replay_episode: 0
 # Replay is privileged and needs no intermediate camera observations.  The
 # environment still checks task success after every physics command.
 expert_replay_execute_steps: 100000
+# The expert collector performs an unrecorded stability post-roll after its
+# final motion primitive.  Advance physics without issuing a new command for
+# the same 25 steps so replay and collection use the same admission rule.
+expert_replay_terminal_hold_steps: 25
