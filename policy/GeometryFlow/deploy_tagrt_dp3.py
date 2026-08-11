@@ -42,6 +42,21 @@ def _path_list(value) -> list[str]:
     return [str(item) for item in value]
 
 
+def _policy_uses_anchor_flow(policy) -> bool:
+    """Return whether anchor-flow tokens belong to the policy input contract.
+
+    Anchor flow was introduced first for a diagnostic recovery head.  The main
+    TAGRT route instead feeds the same token continuously through DP3's local
+    geometry adapter, without enabling any recovery head.  Runtime observation
+    construction must therefore inspect both consumers.
+    """
+
+    return "tagrt_anchor_flow" in {
+        getattr(policy, "geometry_key", None),
+        getattr(policy, "rotation_action_translation_anchor_flow_key", None),
+    }
+
+
 def _goal_frame9(transform: np.ndarray) -> np.ndarray:
     value = np.asarray(transform, dtype=np.float32).reshape(4, 4)
     return np.concatenate((value[:3, 3], value[:3, 0], value[:3, 1])).astype(
@@ -470,14 +485,7 @@ class TagrtDP3Runtime:
             "tagrt_global": global_relation.astype(np.float32),
             "tagrt_confidence": np.asarray([confidence], dtype=np.float32),
         }
-        if (
-            getattr(
-                self.policy,
-                "rotation_action_translation_anchor_flow_key",
-                None,
-            )
-            is not None
-        ):
+        if _policy_uses_anchor_flow(self.policy):
             result["tagrt_anchor_flow"] = anchor_flow.astype(np.float32)
         return result
 

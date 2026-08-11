@@ -1,0 +1,81 @@
+defaults:
+  - robot_dp3_objpc
+  - override task: demo_task_tagrt_continuous_shoe_fold0
+  - _self_
+
+name: dp3_tagrt_continuous
+
+# The two TAGRT levels continuously modify the observation condition consumed
+# by the single DP3 diffusion decoder. Confidence is a multiplicative soft
+# weight inside both adapters. There is no recovery head, stage classifier, or
+# geometry-error threshold in this configuration.
+policy:
+  geometry_key: tagrt_anchor_flow
+  geometry_confidence_key: tagrt_confidence
+  geometry_encoder_output_dim: 64
+  geometry_dropout: 0.05
+  geometry_force_zero: false
+
+  global_geometry_key: tagrt_global
+  global_geometry_confidence_key: tagrt_confidence
+  global_geometry_hidden_dim: 64
+  global_geometry_dropout: 0.05
+  global_geometry_force_zero: false
+
+  rotation_action_head_hidden_dim: 0
+  rotation_action_head_loss_weight: 0.0
+  rotation_action_head_gated: false
+  rotation_action_translation_head_hidden_dim: 0
+  rotation_action_translation_loss_weight: 0.0
+  rotation_action_translation_anchor_flow_key: null
+
+  # Gripper actions remain learned from the same continuously conditioned DP3
+  # context instead of being selected by a task-stage rule.
+  binary_gripper_indices: [6, 13]
+  binary_gripper_hidden_dim: 128
+  binary_gripper_loss_weight: 0.1
+  binary_gripper_positive_weight: 3.0
+  binary_gripper_geometry_key: tagrt_global
+  binary_gripper_geometry_confidence_key: tagrt_confidence
+
+# Match the compact backbone used in the established full-task comparison so
+# this pilot changes the geometry interface rather than model scale.
+  diffusion_step_embed_dim: 64
+  down_dims: [64, 128, 256]
+  encoder_output_dim: 64
+  pointcloud_encoder_cfg:
+    in_channels: 3
+    out_channels: ${policy.encoder_output_dim}
+    use_layernorm: true
+    final_norm: layernorm
+    normal_channel: false
+
+dataloader:
+  batch_size: 256
+  num_workers: 2
+  shuffle: true
+  pin_memory: true
+  persistent_workers: false
+
+val_dataloader:
+  batch_size: 256
+  num_workers: 1
+  shuffle: false
+  pin_memory: true
+  persistent_workers: false
+
+training:
+  resume: false
+  partial_training_start_from_ema: false
+  lr_warmup_steps: 100
+  num_epochs: 120
+  checkpoint_every: 20
+  val_every: 10
+  sample_every: 20
+
+logging:
+  mode: offline
+
+checkpoint:
+  save_ckpt: true
+  save_last_ckpt: true

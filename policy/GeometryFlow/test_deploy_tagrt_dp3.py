@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 
 import numpy as np
 from scipy.spatial.transform import Rotation
@@ -13,11 +14,29 @@ from .deploy_tagrt_dp3 import (
     _frame9_rotation_rotvec,
     _goal_frame9,
     _path_list,
+    _policy_uses_anchor_flow,
 )
 from diffusion_policy_3d.policy.dp3 import _se3_frame_invariants
 
 
 class TagrtDP3DeployHelpersTest(unittest.TestCase):
+    def test_anchor_flow_is_emitted_for_continuous_or_diagnostic_consumer(self):
+        continuous = SimpleNamespace(
+            geometry_key="tagrt_anchor_flow",
+            rotation_action_translation_anchor_flow_key=None,
+        )
+        diagnostic = SimpleNamespace(
+            geometry_key=None,
+            rotation_action_translation_anchor_flow_key="tagrt_anchor_flow",
+        )
+        baseline = SimpleNamespace(
+            geometry_key="tagrt_local",
+            rotation_action_translation_anchor_flow_key=None,
+        )
+        self.assertTrue(_policy_uses_anchor_flow(continuous))
+        self.assertTrue(_policy_uses_anchor_flow(diagnostic))
+        self.assertFalse(_policy_uses_anchor_flow(baseline))
+
     def test_rotation_recovery_cooldown_restores_nominal_motion(self):
         recovery = torch.full((1, 2, 14), 3.0)
         nominal = torch.full((1, 2, 14), 2.0)
