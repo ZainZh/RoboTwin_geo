@@ -29,3 +29,34 @@ disk and the scratch copy removed or replaced by a symlink after the run.
 Pre-existing external inputs may be read from their original locations, but
 every newly trained replacement and every new experiment artifact follows this
 rule.
+
+## Experiment decision discipline (mandatory)
+
+The research objective is a fast, evidence-backed closed loop for a learned
+geometry-enhanced manipulation policy.  Experiments must directly support the
+fixed comparison between a capacity-matched Raw policy and the NDF/TAGRT
+geometry-conditioned policy on complete manipulation tasks.
+
+Before starting an experiment, identify the concrete decision it will answer,
+the minimum comparison needed to answer it, and the result that changes the
+next action.  Do not run an experiment if its result would not change the
+method, the primary claim, the scale-up decision, or the diagnosis of a
+current blocker.
+
+Prefer the shortest valid end-to-end loop:
+
+`collect/admit data -> paired Raw/TAGRT training -> paired online evaluation -> decision`
+
+Use the smallest statistically meaningful pilot first and scale only after the
+direction is positive.  Do not add defensive experiments, repeat an interface
+check that has already passed, exhaustively tune secondary hyperparameters, or
+over-investigate implementation details such as an action-chunk integer unless
+that detail is blocking the end-to-end result.  Ablations are deferred until
+the main learned-policy comparison closes, except for the minimum zero/wrong
+geometry control needed to establish that the policy consumes geometry.
+
+Do not change the fixed learned-policy mainline to residual planning,
+hand-written stage gates, or analytic recovery while diagnosing a result.
+When a run is negative, first locate the narrowest blocker inside the fixed
+data/perception/token-consumption/action-learning pipeline, make one targeted
+change, and rerun the paired comparison.
