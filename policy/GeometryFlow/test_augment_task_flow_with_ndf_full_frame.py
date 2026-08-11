@@ -8,11 +8,18 @@ from scipy.spatial.transform import Rotation
 from .augment_task_flow_with_ndf_full_frame import (
     attach_prediction_fields,
     augment_payload,
+    frame_summary,
 )
 from .functional_action_frame import frame9_rotation
 
 
 class NdfFullFrameAugmentTest(unittest.TestCase):
+    def test_empty_split_summary_is_explicit_and_json_safe(self):
+        summary = frame_summary(np.asarray([], dtype=np.float32))
+        self.assertEqual(summary["samples"], 0)
+        self.assertIsNone(summary["p90_deg"])
+        self.assertIsNone(summary["within_15deg"])
+
     def test_prediction_confidence_gates_source_and_relative_tokens(self):
         output = {"shoe_id": np.asarray([0, 1], dtype=np.int64)}
         predictions = {

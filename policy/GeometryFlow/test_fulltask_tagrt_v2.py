@@ -10,6 +10,8 @@ from .fulltask_tagrt_v2 import (
 )
 from .train_fulltask_tagrt_v2 import (
     Statistics,
+    apply_deterministic_gripper_state_delay,
+    augment_gripper_state_delay,
     augment_open_approach_eef_translation,
 )
 
@@ -107,3 +109,66 @@ def test_open_approach_jitter_has_corrective_first_action():
     )
     assert torch.count_nonzero(augmented["state"][1]) == 0
     assert torch.count_nonzero(augmented["motion"][1]) == 0
+
+
+def test_gripper_delay_jitter_opposes_future_transition_without_changing_label():
+    statistics = Statistics(
+        point_mean=[0.0] * 6,
+        point_std=[1.0] * 6,
+        local_mean=[0.0] * 12,
+        local_std=[1.0] * 12,
+        global_mean=[0.0] * 10,
+        global_std=[1.0] * 10,
+        state_mean=[0.0] * 20,
+        state_std=[1.0] * 20,
+        motion_mean=[0.0] * 24,
+        motion_std=[1.0] * 24,
+    )
+    gripper = torch.tensor(
+        [[[0.4, 0.8], [0.2, 1.0]], [[0.6, 0.1], [0.9, 0.0]]]
+    )
+    batch = {
+        "state": torch.zeros(2, 3, 20),
+        "current_gripper": torch.tensor([[0.7, 0.6], [0.4, 0.3]]),
+        "gripper": gripper.clone(),
+    }
+    batch["state"][:, :, 9] = batch["current_gripper"][:, 0, None]
+    batch["state"][:, :, 19] = batch["current_gripper"][:, 1, None]
+    torch.manual_seed(7)
+    augmented = augment_gripper_state_delay(batch, statistics, 0.25)
+    # Sample 0 closes left and opens right; sample 1 does the reverse.
+    assert augmented["current_gripper"][0, 0] >= batch["current_gripper"][0, 0]
+    assert augmented["current_gripper"][0, 1] <= batch["current_gripper"][0, 1]
+    assert augmented["current_gripper"][1, 0] <= batch["current_gripper"][1, 0]
+    assert augmented["current_gripper"][1, 1] >= batch["current_gripper"][1, 1]
+    torch.testing.assert_close(augmented["gripper"], gripper)
+
+
+def test_deterministic_gripper_delay_is_exact_and_preserves_labels():
+    statistics = Statistics(
+        point_mean=[0.0] * 6,
+        point_std=[1.0] * 6,
+        local_mean=[0.0] * 12,
+        local_std=[1.0] * 12,
+        global_mean=[0.0] * 10,
+        global_std=[1.0] * 10,
+        state_mean=[0.0] * 20,
+        state_std=[1.0] * 20,
+        motion_mean=[0.0] * 24,
+        motion_std=[1.0] * 24,
+    )
+    labels = torch.tensor([[[0.4, 0.8], [0.2, 1.0]]])
+    batch = {
+        "state": torch.zeros(1, 3, 20),
+        "current_gripper": torch.tensor([[0.7, 0.6]]),
+        "gripper": labels.clone(),
+    }
+    batch["state"][:, :, 9] = 0.7
+    batch["state"][:, :, 19] = 0.6
+    delayed = apply_deterministic_gripper_state_delay(batch, statistics, 0.1)
+    torch.testing.assert_close(
+        delayed["current_gripper"], torch.tensor([[0.8, 0.5]])
+    )
+    torch.testing.assert_close(delayed["state"][0, :, 9], torch.full((3,), 0.8))
+    torch.testing.assert_close(delayed["state"][0, :, 19], torch.full((3,), 0.5))
+    torch.testing.assert_close(delayed["gripper"], labels)

@@ -43,6 +43,28 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--dropout", type=float, default=0.05)
     result.add_argument("--flow-steps", type=int, default=12)
     result.add_argument("--gripper-weight", type=float, default=0.2)
+    result.add_argument("--gripper-transition-weight", type=float, default=1.0)
+    result.add_argument("--initialize-from", type=Path, default=None)
+    result.add_argument("--train-gripper-head-only", action="store_true")
+    result.add_argument(
+        "--gripper-selection-delay",
+        type=float,
+        default=0.0,
+        help=(
+            "For gripper-head-only calibration, select the checkpoint by the "
+            "mean clean/delayed transition MAE at this deterministic delay."
+        ),
+    )
+    result.add_argument(
+        "--gripper-state-delay-jitter",
+        type=float,
+        default=0.0,
+        help=(
+            "Training-only normalized gripper-state delay.  The observed "
+            "gripper is shifted opposite to the supervised future transition "
+            "while the action label remains unchanged."
+        ),
+    )
     result.add_argument(
         "--eef-translation-jitter-m",
         type=float,
@@ -281,6 +303,86 @@ def augment_open_approach_eef_translation(
     return result
 
 
+def augment_gripper_state_delay(
+    batch: dict[str, torch.Tensor],
+    statistics: Statistics,
+    maximum_shift: float,
+) -> dict[str, torch.Tensor]:
+    """Teach recovery when physical gripper feedback lags its command.
+
+    For a future closing transition, the observed state is made more open; for
+    an opening transition it is made more closed.  Geometry, EEF state, and the
+    supervised action remain untouched, so this is a continuous observation
+    perturbation rather than a stage label or action gate.
+    """
+
+    maximum_shift = float(maximum_shift)
+    if maximum_shift <= 0.0:
+        return batch
+    if maximum_shift > 1.0:
+        raise ValueError("gripper-state delay jitter must lie in [0,1]")
+    result = dict(batch)
+    state = batch["state"].clone()
+    state_mean = torch.as_tensor(
+        statistics.state_mean, device=state.device, dtype=state.dtype
+    )
+    state_std = torch.as_tensor(
+        statistics.state_std, device=state.device, dtype=state.dtype
+    )
+    raw_state = state * state_std + state_mean
+    current = batch["current_gripper"].to(state.dtype)
+    future = batch["gripper"][:, -1].to(state.dtype)
+    # Positive direction means the measured state lags a closing command and
+    # remains too open.  Negative direction is the symmetric release case.
+    direction = torch.sign(current - future)
+    active = (current - future).abs() > 1e-3
+    magnitude = torch.rand_like(current) * maximum_shift
+    shifted = (current + direction * magnitude * active).clamp(0.0, 1.0)
+    for arm, channel in enumerate((9, 19)):
+        delta = shifted[:, arm] - current[:, arm]
+        raw_state[:, :, channel] = (
+            raw_state[:, :, channel] + delta[:, None]
+        ).clamp(0.0, 1.0)
+    result["state"] = (raw_state - state_mean) / state_std
+    result["current_gripper"] = shifted
+    return result
+
+
+def apply_deterministic_gripper_state_delay(
+    batch: dict[str, torch.Tensor],
+    statistics: Statistics,
+    shift: float,
+) -> dict[str, torch.Tensor]:
+    """Apply a fixed counterfactual feedback delay for validation."""
+
+    shift = float(shift)
+    if shift <= 0.0:
+        return batch
+    if shift > 1.0:
+        raise ValueError("gripper-state delay must lie in [0,1]")
+    result = dict(batch)
+    state_mean = torch.as_tensor(
+        statistics.state_mean, device=batch["state"].device, dtype=batch["state"].dtype
+    )
+    state_std = torch.as_tensor(
+        statistics.state_std, device=batch["state"].device, dtype=batch["state"].dtype
+    )
+    raw_state = batch["state"] * state_std + state_mean
+    current = batch["current_gripper"].to(raw_state.dtype)
+    future = batch["gripper"][:, -1].to(raw_state.dtype)
+    direction = torch.sign(current - future)
+    active = (current - future).abs() > 1e-3
+    shifted = (current + direction * shift * active).clamp(0.0, 1.0)
+    for arm, channel in enumerate((9, 19)):
+        delta = shifted[:, arm] - current[:, arm]
+        raw_state[:, :, channel] = (
+            raw_state[:, :, channel] + delta[:, None]
+        ).clamp(0.0, 1.0)
+    result["state"] = (raw_state - state_mean) / state_std
+    result["current_gripper"] = shifted
+    return result
+
+
 def metric_totals() -> dict[str, float]:
     return {
         "count": 0.0,
@@ -294,6 +396,9 @@ def metric_totals() -> dict[str, float]:
         "rotation_abs": 0.0,
         "gripper_correct": 0.0,
         "gripper_count": 0.0,
+        "gripper_abs": 0.0,
+        "gripper_transition_abs": 0.0,
+        "gripper_transition_count": 0.0,
     }
 
 
@@ -306,12 +411,16 @@ def evaluate(
     device: torch.device,
     statistics: Statistics,
     flow_steps: int,
+    gripper_state_delay: float = 0.0,
 ) -> dict[str, float]:
     model.eval()
     totals = metric_totals()
     motion_std = torch.tensor(statistics.motion_std, device=device)
     for batch in loader:
         batch = device_batch(batch, device)
+        batch = apply_deterministic_gripper_state_delay(
+            batch, statistics, gripper_state_delay
+        )
         conditioned = condition_batch(batch, condition, intervention)
         generator = torch.Generator(device=device)
         generator.manual_seed(91_337 + int(batch["sample_index"][0]))
@@ -353,14 +462,25 @@ def evaluate(
             totals["velocity_count"] += float(velocity.numel())
         else:
             raise ValueError(f"unsupported motion width {metric_error.shape[-1]}")
-        predicted_gripper = prediction.gripper_logits.sigmoid() >= 0.5
+        gripper_probability = prediction.gripper_logits.sigmoid()
+        predicted_gripper = gripper_probability >= 0.5
         target_gripper = batch["gripper"] >= 0.5
         totals["gripper_correct"] += float((predicted_gripper == target_gripper).sum())
         totals["gripper_count"] += float(target_gripper.numel())
+        gripper_abs = (gripper_probability - batch["gripper"]).abs()
+        totals["gripper_abs"] += float(gripper_abs.sum())
+        transition = (
+            batch["gripper"] - batch["current_gripper"][:, None]
+        ).abs() > 1e-3
+        totals["gripper_transition_abs"] += float(gripper_abs[transition].sum())
+        totals["gripper_transition_count"] += float(transition.sum())
     result = {
         "normalized_motion_mse": totals["motion_sq"] / max(totals["count"], 1.0),
         "motion_mae": totals["motion_abs"] / max(totals["count"], 1.0),
         "gripper_accuracy": totals["gripper_correct"] / max(totals["gripper_count"], 1.0),
+        "gripper_mae": totals["gripper_abs"] / max(totals["gripper_count"], 1.0),
+        "gripper_transition_mae": totals["gripper_transition_abs"]
+        / max(totals["gripper_transition_count"], 1.0),
     }
     if totals["position_count"]:
         result.update(
@@ -420,11 +540,35 @@ def train_one(
         decoder_type="flow" if condition.endswith("flow") else "regression",
         motion_dim=len(statistics.motion_mean),
     ).to(device)
+    if args.initialize_from is not None:
+        initialized = torch.load(args.initialize_from, map_location="cpu", weights_only=False)
+        if initialized["model_config"] != {
+            "history": int(payload["scene"].shape[1]),
+            "horizon": int(payload["action"].shape[1]),
+            "feature_dim": args.feature_dim,
+            "heads": args.heads,
+            "memory_layers": args.memory_layers,
+            "decoder_layers": args.decoder_layers,
+            "dropout": args.dropout,
+            "decoder_type": "flow" if condition.endswith("flow") else "regression",
+            "motion_dim": len(statistics.motion_mean),
+        }:
+            raise ValueError("initial checkpoint model configuration does not match")
+        model.load_state_dict(initialized["model"])
+    if args.train_gripper_head_only:
+        if args.initialize_from is None:
+            raise ValueError("--train-gripper-head-only requires --initialize-from")
+        for parameter in model.parameters():
+            parameter.requires_grad_(False)
+        for parameter in model.decoder.gripper_head.parameters():
+            parameter.requires_grad_(True)
     optimizer = torch.optim.AdamW(
-        model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay
+        (parameter for parameter in model.parameters() if parameter.requires_grad),
+        lr=args.learning_rate,
+        weight_decay=args.weight_decay,
     )
     scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda")
-    bce = nn.BCEWithLogitsLoss()
+    bce = nn.BCEWithLogitsLoss(reduction="none")
     best_loss = float("inf")
     best_state = None
     patience = 0
@@ -436,6 +580,9 @@ def train_one(
         batches = 0
         for batch in loaders["train"]:
             batch = device_batch(batch, device)
+            batch = augment_gripper_state_delay(
+                batch, statistics, args.gripper_state_delay_jitter
+            )
             batch = augment_open_approach_eef_translation(
                 batch, statistics, args.eef_translation_jitter_m
             )
@@ -447,7 +594,16 @@ def train_one(
             ):
                 motion, gripper, target = training_prediction(model, batch, condition)
                 motion_loss = nn.functional.mse_loss(motion, target)
-                gripper_loss = bce(gripper, batch["gripper"])
+                gripper_element_loss = bce(gripper, batch["gripper"])
+                transition = (
+                    batch["gripper"] - batch["current_gripper"][:, None]
+                ).abs() > 1e-3
+                gripper_weights = 1.0 + (
+                    float(args.gripper_transition_weight) - 1.0
+                ) * transition.to(gripper_element_loss.dtype)
+                gripper_loss = (
+                    gripper_element_loss * gripper_weights
+                ).sum() / gripper_weights.sum().clamp_min(1.0)
                 loss = motion_loss + args.gripper_weight * gripper_loss
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
@@ -465,14 +621,36 @@ def train_one(
             statistics,
             args.flow_steps,
         )
+        delayed_validation = None
+        if args.train_gripper_head_only and args.gripper_selection_delay > 0.0:
+            delayed_validation = evaluate(
+                model,
+                loaders["validation"],
+                condition,
+                "correct",
+                device,
+                statistics,
+                args.flow_steps,
+                gripper_state_delay=args.gripper_selection_delay,
+            )
         record = {
             "epoch": epoch + 1,
             "train_loss": loss_sum / max(batches, 1),
             **{f"validation_{key}": value for key, value in validation.items()},
         }
         history.append(record)
+        if delayed_validation is not None:
+            record["validation_delayed_gripper_transition_mae"] = delayed_validation[
+                "gripper_transition_mae"
+            ]
         print(json.dumps({"condition": condition, **record}), flush=True)
-        value = validation["normalized_motion_mse"]
+        if delayed_validation is None:
+            value = validation["normalized_motion_mse"]
+        else:
+            value = 0.5 * (
+                validation["gripper_transition_mae"]
+                + delayed_validation["gripper_transition_mae"]
+            )
         if value < best_loss:
             best_loss = value
             best_state = {key: tensor.detach().cpu().clone() for key, tensor in model.state_dict().items()}
@@ -530,8 +708,21 @@ def train_one(
             "training_augmentation": {
                 "open_approach_eef_translation_jitter_m": float(
                     args.eef_translation_jitter_m
-                )
+                ),
+                "gripper_state_delay_jitter": float(
+                    args.gripper_state_delay_jitter
+                ),
+                "gripper_transition_weight": float(args.gripper_transition_weight),
+                "gripper_selection_delay": float(args.gripper_selection_delay),
             },
+            "initialized_from": (
+                str(args.initialize_from.resolve())
+                if args.initialize_from is not None
+                else None
+            ),
+            "trained_parameters": [
+                name for name, parameter in model.named_parameters() if parameter.requires_grad
+            ],
             "result": result,
         },
         args.output_dir / f"{condition}_seed{args.seed}.pt",

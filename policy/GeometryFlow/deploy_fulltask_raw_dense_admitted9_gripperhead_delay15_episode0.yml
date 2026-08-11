@@ -1,0 +1,20 @@
+policy_name: GeometryFlow.deploy_fulltask_tagrt_v2
+task_name: place_shoe_geometry_marker
+task_config: demo_clean_3d_object_pc_geometry_marker_densecontrol_pilot
+ckpt_setting: fulltask-raw-dense-admitted9-gripperhead-delay15-seed0-episode0
+seed: 2
+instruction_type: unseen
+test_num: 1
+expert_data_num: 9
+checkpoint_num: 0
+policy_start_phase: full_task
+skip_expert_check_on_replay: true
+evaluation_seed_file: policy/GeometryFlow/eval_seed_densecontrol_episode0.json
+evaluation_start_episode_index: 0
+eval_video_log: true
+
+fulltask_tagrt_checkpoint: /shared2/sz/model/geometry_flow/fulltask_tagrt_v2/densecontrol_admitted9_raw_gripperhead_delay15_seed0/raw_reg_seed0.pt
+fulltask_tagrt_device: cuda:0
+fulltask_tagrt_continuous_gripper: true
+fulltask_tagrt_execute_steps: 15
+fulltask_tagrt_max_policy_steps: 3000

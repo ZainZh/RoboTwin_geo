@@ -167,6 +167,16 @@ def rotation_error_deg(predicted: np.ndarray, target: np.ndarray) -> np.ndarray:
 
 def error_summary(translation_m: np.ndarray, rotation_deg: np.ndarray) -> dict:
     translation_cm = np.linalg.norm(translation_m, axis=-1) * 100.0
+    if not len(translation_cm):
+        return {
+            "samples": 0,
+            "translation_cm_mean": None,
+            "translation_cm_median": None,
+            "translation_cm_p90": None,
+            "rotation_deg_mean": None,
+            "rotation_deg_median": None,
+            "rotation_deg_p90": None,
+        }
     return {
         "samples": int(len(translation_cm)),
         "translation_cm_mean": float(translation_cm.mean()),

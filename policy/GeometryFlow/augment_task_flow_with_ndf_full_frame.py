@@ -48,6 +48,17 @@ def rotation_error_deg(predicted: np.ndarray, target: np.ndarray) -> np.ndarray:
 
 def frame_summary(error: np.ndarray) -> dict:
     value = np.asarray(error, dtype=np.float64)
+    if not len(value):
+        return {
+            "samples": 0,
+            "mean_deg": None,
+            "median_deg": None,
+            "p90_deg": None,
+            "max_deg": None,
+            "within_15deg": None,
+            "within_30deg": None,
+            "flip_over_90deg": None,
+        }
     return {
         "samples": int(len(value)),
         "mean_deg": float(value.mean()),

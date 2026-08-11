@@ -196,3 +196,99 @@ This keeps the paper story unchanged: task-aligned local relations and global
 remaining geometry are continuous conditions for a learned manipulation policy.
 The immediate blocker is the dataset-to-controller action contract, not a need
 to return to planning or hand-written stages.
+
+## Nine-trajectory paired pilot and online diagnosis
+
+The nine replay-admitted trajectories produced 1,458 history-3 / horizon-15
+samples.  This is a trajectory-fitting pilot: all nine episodes are used in all
+three splits, so it is not an unseen-object result.  With identical 5.66M model
+capacity and seed 0, the paired fitting results were:
+
+- Raw Transformer normalized motion MSE: `0.00533069`;
+- TAGRT Transformer normalized motion MSE: `0.00460161` (`13.68%` lower);
+- TAGRT with zero geometry: `0.151270`;
+- TAGRT with cross-episode shuffled geometry: `0.300721`.
+
+Thus the full-task data path preserves the offline geometry advantage and the
+policy strongly consumes the relation tokens.  In a paired online run from the
+same seed 2, neither model completed the task.  Raw stopped in a mixed/average
+posture, left the right EEF `0.269 m` from the shoe, and never drove the active
+gripper below `0.997`.  TAGRT selected the correct arm and reached a pre-grasp
+state `0.124 m` from the shoe, with a minimum active-gripper open command of
+`0.688`, but then reopened and stalled.  This is evidence of better online task
+progress, not yet an online success-rate claim.
+
+Offline inspection on exact episode-0 observations showed that the TAGRT
+checkpoint predicts the demonstrated gradual close sequence accurately.  The
+remaining failure is therefore a closed-loop distribution shift near the
+gripper transition, rather than absent close labels or an NDF failure (online
+ensemble confidence was `1.0`, with `1.80 deg` source disagreement).
+
+## Gripper-feedback-delay intervention
+
+A training-only continuous gripper-state delay perturbation was tested without
+adding a phase label, deployment gate, or planner.  A maximum shift of `0.30`
+retained a low correct-geometry MSE of `0.00485261`, while zero and shuffled
+geometry rose to `0.147234` and `0.302180`.  Counterfactual transition-frame
+evaluation showed that the intervention learned the intended robustness:
+
+| checkpoint | no-delay transition MAE | 0.15-delay transition MAE |
+|---|---:|---:|
+| original TAGRT | 0.04467 | 0.13676 |
+| delay-0.30 TAGRT | 0.08823 | 0.06734 |
+
+However, end-to-end retraining changed the shared motion representation.  Its
+online seed-2 run failed before grasp, briefly closed the wrong left gripper
+(minimum open command `0.351`), kept the active right gripper nearly fully open
+(minimum `0.988`), and ended `0.303 m` from the shoe.  The strong perturbation is
+therefore rejected as an end-to-end recipe despite its positive isolated
+robustness result.
+
+The next controlled test must initialize from the original TAGRT checkpoint and
+freeze the geometry/temporal trunk and 24D motion head while calibrating only the
+independent gripper head on delayed-feedback transition samples.  This preserves
+the already better TAGRT approach trajectory and tests the remaining failure
+factor without introducing a hand-written online stage rule.
+
+## Frozen-motion gripper-head calibration result
+
+The controlled calibration initialized from each original nine-trajectory
+checkpoint and froze every parameter except
+`decoder.gripper_head.{weight,bias}`.  Tensor-by-tensor comparison confirmed
+that these were the only changed tensors.  Consequently, the motion metrics
+were exactly preserved: TAGRT normalized motion MSE remained `0.004601606` and
+Raw remained `0.005330686`.  Both heads used identical 0.15 feedback-delay
+jitter, 10x transition weighting, optimizer settings, and clean/delayed
+transition-MAE checkpoint selection.
+
+On the identical online seed-2 episode, the frozen-motion paired result was:
+
+| condition | success | active EEF-to-shoe | active gripper minimum | shoe moved |
+|---|---:|---:|---:|---:|
+| Raw + calibrated gripper | 0/1 | 0.269 m | 0.994 | no |
+| TAGRT + calibrated gripper | **1/1** | 0.133 m final | 5.15e-7 | **yes** |
+
+The successful TAGRT rollout completed the complete task from its initial
+state in 172 closed-loop chunks / 2,580 low-level controls.  The right gripper
+first closed at control 735 and was closed for 59.30% of executed controls;
+the inactive left gripper stayed open throughout.  The policy grasped,
+transported, released, and achieved final translation/rotation errors of
+`0.01856 m` / `0.904 deg`, ramp contact, open final grippers, and the full
+required stable-success hold of `25/25` steps.
+
+This is the first fair full-task online pilot in which the geometry-conditioned
+policy succeeds and its capacity-matched Raw control fails while their motion
+parameters remain frozen during the matched gripper calibration.  It closes
+the single-scene pipeline admission gate, not the paper's generalization or
+success-rate claim.  Multiple evaluation seeds and held-out shoe identities
+under replay-admitted dense demonstrations remain mandatory.
+
+An additional same-checkpoint online intervention set both normalized TAGRT
+levels (local anchor relations and global remaining SE(3)) to zero while still
+running the camera NDF provider for diagnostics.  No weights, robot state,
+point-cloud input, or gripper calibration were changed.  The intervention
+failed `0/1`: the right EEF stopped `0.227 m` from the shoe, its minimum open
+command remained `0.99975`, and the shoe never moved.  The matched pilot is
+therefore `correct TAGRT 1/1`, `zero-geometry TAGRT 0/1`, and `Raw 0/1`.  This
+demonstrates online dependence on the two-level geometry tokens for this
+admitted scene, while still requiring replication before any rate claim.

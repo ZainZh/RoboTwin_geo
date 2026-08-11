@@ -54,6 +54,7 @@ class FullTaskTAGRTV2Runtime:
         flow_steps: int = 8,
         inference_seed: int = 0,
         continuous_gripper: bool = False,
+        geometry_intervention: str = "correct",
     ) -> None:
         self.checkpoint = Path(checkpoint).expanduser().resolve()
         payload = torch.load(self.checkpoint, map_location="cpu", weights_only=False)
@@ -75,6 +76,9 @@ class FullTaskTAGRTV2Runtime:
         self.flow_steps = int(flow_steps)
         self.inference_seed = int(inference_seed)
         self.continuous_gripper = bool(continuous_gripper)
+        self.geometry_intervention = str(geometry_intervention)
+        if self.geometry_intervention not in {"correct", "zero"}:
+            raise ValueError("geometry_intervention must be 'correct' or 'zero'")
         self.observation_index = 0
         self.cached_target: np.ndarray | None = None
         self.cached_operated: np.ndarray | None = None
@@ -160,8 +164,14 @@ class FullTaskTAGRTV2Runtime:
         if self.condition.startswith("raw"):
             frame["local"].fill(0.0)
             frame["global"].fill(0.0)
+        elif self.geometry_intervention == "zero":
+            # Match the training-time zero intervention in normalized space.
+            # The camera NDF estimate is still computed for diagnostics only.
+            frame["local"].fill(0.0)
+            frame["global"].fill(0.0)
         self.last_diagnostic = {
             "condition": self.condition,
+            "geometry_intervention": self.geometry_intervention,
             "confidence": confidence,
             "source_disagreement_deg": source_disagreement,
             "remaining_translation_m": relative[:3].astype(float).tolist(),
@@ -245,6 +255,9 @@ def get_model(usr_args):
         inference_seed=int(usr_args.get("fulltask_tagrt_inference_seed", 0)),
         continuous_gripper=bool(
             usr_args.get("fulltask_tagrt_continuous_gripper", False)
+        ),
+        geometry_intervention=str(
+            usr_args.get("fulltask_tagrt_geometry_intervention", "correct")
         ),
     )
     model = SimpleNamespace(
