@@ -346,3 +346,67 @@ must retain fixed left-arm execution and add diverse full-task demonstrations
 that balance grasp and release transition neighborhoods before retraining the
 same Raw/TAGRT pair.  No stage gate, residual planner, or arm-selection head is
 introduced.
+
+## Fixed-left 60-trajectory scale test
+
+The next registered decision test asked whether the fixed-left online failure
+was simply caused by having only five demonstrations per training shoe.  Thirty
+new successful trajectories were collected without changing the task,
+controller, observation contract, or arm assignment.  The resulting zero-copy
+view contains 60 trajectories: exactly ten for each shoe `2/3/4/7/8/9`, all
+using the left arm.  Structural admission passed `60/60`.
+
+The dense history-3 / horizon-15 archive contains 9,615 samples.  A leakage-free
+trajectory split uses 36 train, 12 validation, and 12 test episodes, with every
+split balanced by shoe identity (six/two/two episodes per shoe).  Frozen NDF
+camera relations have median current-frame errors of `2.123 cm / 1.885 deg` and
+median target-frame errors of `0.209 cm / 0.536 deg`.  Thus the run did not
+retrain NDF or introduce simulator pose at deployment.
+
+With identical `5,662,874`-parameter models and seed 0, the independent test
+result is:
+
+| condition | normalized motion MSE | motion MAE | gripper transition MAE | joint velocity MAE |
+|---|---:|---:|---:|---:|
+| Raw Transformer | 0.234842 | 0.065734 | 0.077636 | 0.045350 |
+| TAGRT Transformer | **0.192725** | **0.056741** | **0.045362** | **0.037011** |
+| TAGRT, zero geometry | 0.377496 | 0.129766 | 0.134816 | 0.092329 |
+| TAGRT, shuffled geometry | 0.361541 | 0.107223 | 0.125494 | 0.087685 |
+
+Correct TAGRT lowers normalized test action error by `17.93%` relative to Raw.
+Zeroing or mismatching geometry makes the same TAGRT policy substantially worse
+than correct geometry.  This replicates the offline representation benefit at
+twice the fixed-left data scale, but it still does not establish online task
+success.
+
+Correct TAGRT was evaluated first on the same expert-feasible seeds
+`300002/300006/300008`.  The registered online gate was again `0/3`.  Seed
+`300002` never closed the left gripper.  Seeds `300006` and `300008` first
+closed at low-level controls `615` and `735` and stayed closed for `79.50%` and
+`75.03%` of executed controls, but neither produced a stable placement.  The
+NDF ensemble disagreement stayed low (`1.48--2.35 deg`), excluding an obvious
+functional-frame collapse.
+
+Two narrow interventions were then tested and rejected:
+
+1. Executing three rather than fifteen predicted controls before re-observing
+   remained `0/3`.  The failure metrics were not materially improved, so
+   closed-loop frequency is not the main remedy and no execution-length sweep
+   is warranted.
+2. Freezing the complete geometry/temporal trunk and 24D motion head while
+   calibrating only the gripper head with `10x` transition weighting and `0.15`
+   feedback-delay jitter also remained `0/3`.  All three rollouts now closed
+   the left gripper, and seed `300002` improved to a best translation error of
+   `8.84 cm`, but it still had `27.51 deg` best rotation error and no stable
+   ramp placement.  The other two seeds remained far from a successful pose.
+
+This scale test rejects the hypothesis that more homogeneous nominal
+demonstrations, faster replanning, or gripper-head calibration alone closes the
+full task.  It does **not** reject TAGRT: the capacity-matched offline benefit
+and causal zero/shuffled controls remain positive, and the camera NDF estimate
+is stable.  The narrow remaining blocker is learned action robustness after
+contact and around grasp/release transitions.  The next valid experiment must
+add admitted, training-shoe-only correction trajectories in those neighborhoods
+and retrain the same paired Raw/TAGRT policies.  Geometry remains a continuous
+policy condition; no residual planner, oracle deployment pose, stage gate, or
+analytic recovery is introduced.
