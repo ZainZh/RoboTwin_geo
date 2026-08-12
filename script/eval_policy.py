@@ -2,6 +2,7 @@ import sys
 import os
 import subprocess
 import json
+import time
 
 sys.path.append("./")
 sys.path.append(f"./policy")
@@ -232,6 +233,31 @@ def main(usr_args):
     with open(f"./task_config/{task_config}.yml", "r", encoding="utf-8") as f:
         args = yaml.load(f.read(), Loader=yaml.FullLoader)
 
+    observation_profile = str(
+        usr_args.get("eval_observation_profile", "") or ""
+    ).strip()
+    if observation_profile:
+        if observation_profile != "object_pointcloud_endpose":
+            raise ValueError(
+                "eval_observation_profile must be object_pointcloud_endpose"
+            )
+        # The TAGRT v2 deployment constructs its scene/object tokens from the
+        # two segmented object clouds and reads EEF state from ``endpose``.
+        # Avoid rendering and downsampling fields the policy never consumes.
+        args["data_type"].update(
+            {
+                "rgb": False,
+                "third_view": False,
+                "depth": False,
+                "pointcloud": False,
+                "object_pointcloud": True,
+                "endpose": True,
+                "qpos": False,
+                "mesh_segmentation": False,
+                "actor_segmentation": False,
+            }
+        )
+
     if "eval_video_log" in usr_args:
         args["eval_video_log"] = parse_bool(usr_args["eval_video_log"])
 
@@ -387,6 +413,7 @@ def main(usr_args):
         "evaluation_variant": str(evaluation_variant),
         "policy_start_phase": str(args["policy_start_phase"]),
         "eval_video_log": bool(args["eval_video_log"]),
+        "eval_observation_profile": observation_profile or None,
         "policy_architecture": {
             "down_dims_override": usr_args.get("policy_down_dims"),
         },
@@ -527,13 +554,14 @@ def eval_policy(task_name,
         render_freq = args["render_freq"]
         args["render_freq"] = 0
 
+        reuse_setup_for_rollout = not expert_check
         try:
             TASK_ENV.setup_demo(now_ep_num=now_id, seed=now_seed, is_test=True, **args)
             if expert_check:
                 episode_info = TASK_ENV.play_once()
+                TASK_ENV.close_env()
             else:
                 episode_info = build_instruction_episode_info(task_name, TASK_ENV, episode_info=None)
-            TASK_ENV.close_env()
         except UnStableError as e:
             TASK_ENV.close_env()
             if evaluation_seeds is not None:
@@ -596,7 +624,8 @@ def eval_policy(task_name,
             now_seed += 1
             continue
 
-        TASK_ENV.setup_demo(now_ep_num=now_id, seed=now_seed, is_test=True, **args)
+        if not reuse_setup_for_rollout:
+            TASK_ENV.setup_demo(now_ep_num=now_id, seed=now_seed, is_test=True, **args)
         if args["policy_start_phase"] == "placement":
             prepare_placement = getattr(TASK_ENV, "prepare_policy_placement_phase", None)
             if prepare_placement is None:
@@ -646,12 +675,22 @@ def eval_policy(task_name,
 
         succ = False
         reset_func(model)
+        rollout_started = time.perf_counter()
+        observation_seconds = 0.0
+        policy_execution_seconds = 0.0
+        observation_calls = 0
         while TASK_ENV.take_action_cnt < TASK_ENV.step_lim:
+            observation_started = time.perf_counter()
             observation = TASK_ENV.get_obs()
+            observation_seconds += time.perf_counter() - observation_started
+            observation_calls += 1
+            policy_started = time.perf_counter()
             eval_func(TASK_ENV, model, observation)
+            policy_execution_seconds += time.perf_counter() - policy_started
             if TASK_ENV.eval_success:
                 succ = True
                 break
+        rollout_seconds = time.perf_counter() - rollout_started
         # task_total_reward += TASK_ENV.episode_score
         if TASK_ENV.eval_video_path is not None:
             TASK_ENV._del_eval_video_ffmpeg()
@@ -664,6 +703,19 @@ def eval_policy(task_name,
 
         metrics_fn = getattr(TASK_ENV, "get_evaluation_metrics", None)
         metrics = metrics_fn() if callable(metrics_fn) else {}
+        metrics.update(
+            {
+                "evaluation_rollout_seconds": float(rollout_seconds),
+                "evaluation_observation_seconds": float(observation_seconds),
+                "evaluation_policy_execution_seconds": float(
+                    policy_execution_seconds
+                ),
+                "evaluation_observation_calls": int(observation_calls),
+                "evaluation_mean_observation_ms": float(
+                    1000.0 * observation_seconds / max(observation_calls, 1)
+                ),
+            }
+        )
         policy_metrics_fn = getattr(model, "get_evaluation_metrics", None)
         if callable(policy_metrics_fn):
             policy_metrics = policy_metrics_fn()

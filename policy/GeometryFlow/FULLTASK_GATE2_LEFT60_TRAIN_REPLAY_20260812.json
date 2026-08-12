@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "decision": "The current fixed-left 60-trajectory checkpoint does not pass the exact training-initialization online gate; do not scale to generalization yet.",
+  "protocol": {
+    "episode_split": "train",
+    "source_episode_indices": [49, 50, 51, 52, 53, 54],
+    "seeds": [173, 175, 176, 184, 185, 186],
+    "shoe_ids": [8, 9, 2, 3, 4, 7],
+    "execute_steps": 15,
+    "max_low_level_controls": 3000,
+    "fixed_arm": "left",
+    "camera_only_geometry": true
+  },
+  "artifact_episode_logs": {
+    "raw": "/shared2/sz/TAGRT-v1/experiment_outputs/robotwin_eval_result/place_shoe_geometry_marker/GeometryFlow.deploy_fulltask_tagrt_v2/demo_clean_3d_object_pc_geometry_marker_densecontrol_gate2_train30/fulltask-raw-gate2-left60-grippercal-seed0-train6/standard/2026-08-12 02:29:11/episodes.jsonl",
+    "tagrt": "/shared2/sz/TAGRT-v1/experiment_outputs/robotwin_eval_result/place_shoe_geometry_marker/GeometryFlow.deploy_fulltask_tagrt_v2/demo_clean_3d_object_pc_geometry_marker_densecontrol_gate2_train30/fulltask-tagrt-gate2-left60-grippercal-seed0-train6/standard/2026-08-12 02:46:52/episodes.jsonl",
+    "zero_geometry": "/shared2/sz/TAGRT-v1/experiment_outputs/robotwin_eval_result/place_shoe_geometry_marker/GeometryFlow.deploy_fulltask_tagrt_v2/demo_clean_3d_object_pc_geometry_marker_densecontrol_gate2_train30/fulltask-tagrt-gate2-left60-grippercal-zero-seed0-train6/standard/2026-08-12 03:06:44/episodes.jsonl"
+  },
+  "aggregate": {
+    "raw": {
+      "successes": 0,
+      "episodes": 6,
+      "left_gripper_closed_episodes": 4,
+      "final_contact_episodes": 4,
+      "pose_alignment_episodes": 0,
+      "mean_min_translation_error_m": 0.16611186459029811,
+      "mean_min_rotation_error_deg": 62.598299460518035,
+      "mean_best_combined_alignment_score": 7.78438083867634,
+      "mean_rollout_seconds": 155.19657886549248
+    },
+    "tagrt": {
+      "successes": 0,
+      "episodes": 6,
+      "left_gripper_closed_episodes": 6,
+      "final_contact_episodes": 4,
+      "pose_alignment_episodes": 0,
+      "mean_min_translation_error_m": 0.19330166923738493,
+      "mean_min_rotation_error_deg": 81.81030809316411,
+      "mean_best_combined_alignment_score": 10.290325096203714,
+      "mean_rollout_seconds": 177.8050441125039
+    },
+    "zero_geometry": {
+      "successes": 0,
+      "episodes": 6,
+      "left_gripper_closed_episodes": 0,
+      "final_contact_episodes": 1,
+      "pose_alignment_episodes": 0,
+      "mean_min_translation_error_m": 0.2448193581723549,
+      "mean_min_rotation_error_deg": 94.65986498258269,
+      "mean_best_combined_alignment_score": 12.659609986010807,
+      "mean_rollout_seconds": 134.28219978099514
+    }
+  },
+  "paired": {
+    "tagrt_combined_score_wins_vs_raw": 1,
+    "tagrt_combined_score_wins_vs_zero_geometry": 5,
+    "tagrt_combined_score_change_vs_raw_percent": 32.19195347016819,
+    "tagrt_combined_score_reduction_vs_zero_geometry_percent": 18.71540981859638
+  }
+}

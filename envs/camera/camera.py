@@ -506,15 +506,39 @@ class Camera:
             return [self.static_camera_list[self.head_camera_id]]
         return []
 
-    def _get_camera_pcd_numpy(self, camera, actor_ids=None):
-        rgba = camera.get_picture("Color")
-        position = camera.get_picture("Position")
+    def _get_camera_pcd_numpy(self, camera, actor_ids=None, picture_cache=None):
+        """Build one actor-filtered point cloud from a captured camera frame.
+
+        ``get_actor_point_clouds`` requests several object clouds from the same
+        rendered frame.  Reading Color, Position, and Segmentation back from
+        SAPIEN separately for every object is expensive and cannot change the
+        result.  An optional per-call cache lets all object masks share those
+        immutable camera buffers while preserving this helper's standalone
+        behavior.
+        """
+        cache_key = id(camera)
+        cached = None if picture_cache is None else picture_cache.get(cache_key)
+        if cached is None:
+            rgba = camera.get_picture("Color")
+            position = camera.get_picture("Position")
+            segmentation = (
+                camera.get_picture("Segmentation") if actor_ids is not None else None
+            )
+            cached = (rgba, position, segmentation)
+            if picture_cache is not None:
+                picture_cache[cache_key] = cached
+        else:
+            rgba, position, segmentation = cached
         model_matrix = np.asarray(camera.get_model_matrix(), dtype=np.float32)
 
         valid_mask = position[..., 3] < 1
         if actor_ids is not None:
-            seg_labels = camera.get_picture("Segmentation")
-            actor_mask = np.isin(seg_labels[..., 1].astype(np.int64), np.asarray(actor_ids, dtype=np.int64))
+            if segmentation is None:
+                segmentation = camera.get_picture("Segmentation")
+            actor_mask = np.isin(
+                segmentation[..., 1].astype(np.int64),
+                np.asarray(actor_ids, dtype=np.int64),
+            )
             valid_mask &= actor_mask
 
         points_opengl = np.asarray(position[..., :3][valid_mask], dtype=np.float32)
@@ -664,9 +688,14 @@ class Camera:
             raise ValueError("object_pointcloud collection requires a positive point_num or pcd_down_sample_num.")
 
         result = {}
+        picture_cache = {}
         for placeholder, actor_ids in actor_ids_map.items():
             pcd_chunks = [
-                self._get_camera_pcd_numpy(camera, actor_ids=actor_ids)
+                self._get_camera_pcd_numpy(
+                    camera,
+                    actor_ids=actor_ids,
+                    picture_cache=picture_cache,
+                )
                 for camera in cameras
             ]
             combined_pcd = np.vstack(pcd_chunks) if len(pcd_chunks) > 0 else np.zeros((0, 6), dtype=np.float32)

@@ -410,3 +410,54 @@ add admitted, training-shoe-only correction trajectories in those neighborhoods
 and retrain the same paired Raw/TAGRT policies.  Geometry remains a continuous
 policy condition; no residual planner, oracle deployment pose, stage gate, or
 analytic recovery is introduced.
+
+## Exact training-initialization online replay
+
+The positive single-video result above came from one memorized trajectory in
+the earlier nine-trajectory pilot.  To determine whether that result replicated
+within the 60-trajectory fixed-left experiment, six online initializations were
+selected from the actual 36-trajectory training split, one for each training
+shoe.  The source episode indices/seeds were `49/173`, `50/175`, `51/176`,
+`52/184`, `53/185`, and `54/186`, corresponding to shoes `8/9/2/3/4/7`.
+Evaluation used the same 15-control receding-horizon interface, camera-only NDF
+geometry, calibrated gripper heads, 3,000-control limit, and success criteria.
+
+| condition | success | left gripper closed | final ramp contact | mean best translation | mean best rotation | mean best combined score |
+|---|---:|---:|---:|---:|---:|---:|
+| capacity-matched Raw | 0/6 | 4/6 | 4/6 | 0.1661 m | 62.60 deg | **7.784** |
+| correct TAGRT | 0/6 | **6/6** | 4/6 | 0.1933 m | 81.81 deg | 10.290 |
+| TAGRT with both geometry levels zeroed | 0/6 | 0/6 | 1/6 | 0.2448 m | 94.66 deg | 12.660 |
+
+No rollout in any condition entered the complete pose-alignment state, even
+transiently.  Correct TAGRT beat its zero-geometry intervention on the combined
+trajectory score in `5/6` paired scenes and lowered the mean score by `18.72%`.
+It also changed left-gripper closure from `0/6` to `6/6`.  This is strong online
+evidence that the trained policy consumes the two-level geometry condition and
+uses it to organize grasp behavior.
+
+That causal consumption does not yet constitute an online benefit over Raw.
+Correct TAGRT beat Raw on the combined score in only `1/6` scenes; its mean best
+translation, rotation, and combined errors were respectively `16.37%`,
+`30.69%`, and `32.19%` higher.  The fixed-left 60-trajectory checkpoint
+therefore fails even the training-initialization replication gate.  The earlier
+one-scene success remains a valid learned-policy/interface admission example,
+but it is not representative multi-scene evidence.
+
+This narrows the blocker without changing the paper method.  The token path is
+active, the camera NDF estimates are available, and the geometry-conditioned
+checkpoint reliably triggers the intended left-arm grasp.  What is not learned
+robustly is the subsequent grasped-object transfer, relation alignment, and
+release/settle sequence under the policy's own state distribution.  More
+held-out-object evaluation or repeated nominal trajectories is not justified
+until a paired Raw/TAGRT retraining with training-shoe correction trajectories
+closes this exact training-initialization gate.
+
+Evaluation throughput was also corrected without changing inputs or outputs.
+Deployment now requests only the object point clouds and EEF state consumed by
+TAGRT, shares one immutable Color/Position/Segmentation camera read across the
+A/B masks, and reuses the fixed-seed simulator setup when expert replay is
+explicitly skipped.  On seed 173, all task and policy metrics matched the
+pre-optimization rollout exactly while measured rollout time fell to `159.07 s`
+from an observed roughly eight minutes.  Across the formal Raw batch, mean
+rollout time was `155.20 s`; `151.36 s` of that was still camera observation,
+while policy inference plus 3,000 low-level controls used only `3.83 s`.
