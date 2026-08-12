@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
+import math
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -25,6 +27,15 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--dataset", type=Path, required=True)
     result.add_argument("--output-dir", type=Path, required=True)
     result.add_argument(
+        "--metrics-output-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Optional directory for JSON metrics and summaries. Checkpoints "
+            "remain in --output-dir."
+        ),
+    )
+    result.add_argument(
         "--conditions",
         nargs="+",
         choices=("raw_reg", "tagrt_reg", "raw_flow", "tagrt_flow"),
@@ -36,6 +47,24 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--batch-size", type=int, default=32)
     result.add_argument("--learning-rate", type=float, default=3e-4)
     result.add_argument("--weight-decay", type=float, default=1e-4)
+    result.add_argument(
+        "--lr-scheduler",
+        choices=("constant", "cosine"),
+        default="constant",
+    )
+    result.add_argument("--lr-warmup-steps", type=int, default=0)
+    result.add_argument(
+        "--ema-decay",
+        type=float,
+        default=0.0,
+        help="EMA decay in [0,1); zero disables EMA checkpoint selection.",
+    )
+    result.add_argument(
+        "--validation-every",
+        type=int,
+        default=1,
+        help="Run validation every N epochs; patience counts validations.",
+    )
     result.add_argument("--feature-dim", type=int, default=192)
     result.add_argument("--heads", type=int, default=6)
     result.add_argument("--memory-layers", type=int, default=4)
@@ -55,6 +84,15 @@ def parser() -> argparse.ArgumentParser:
     )
     result.add_argument("--initialize-from", type=Path, default=None)
     result.add_argument(
+        "--convert-regression-checkpoint-to-flow",
+        action="store_true",
+        help=(
+            "Allow --initialize-from to use a configuration-matched regression "
+            "checkpoint when training a flow condition. All compatible weights "
+            "are retained and then optimized as a conditional flow field."
+        ),
+    )
+    result.add_argument(
         "--reuse-initial-statistics",
         action="store_true",
         help=(
@@ -64,6 +102,14 @@ def parser() -> argparse.ArgumentParser:
         ),
     )
     result.add_argument("--train-gripper-head-only", action="store_true")
+    result.add_argument(
+        "--train-flow-motion-decoder-only",
+        action="store_true",
+        help=(
+            "Freeze the observation/geometry memory trunk and gripper head; "
+            "optimize only the conditional flow motion decoder."
+        ),
+    )
     result.add_argument(
         "--gripper-selection-delay",
         type=float,
@@ -259,6 +305,29 @@ def select_statistics(
         return Statistics(**checkpoint["statistics"])
     except TypeError as error:
         raise ValueError("initial checkpoint statistics schema does not match") from error
+
+
+def initial_model_config_matches(
+    initial: dict,
+    expected: dict,
+    *,
+    convert_regression_checkpoint_to_flow: bool,
+) -> bool:
+    """Validate an exact continuation or the registered regression-to-flow swap."""
+
+    if initial == expected:
+        return True
+    if not convert_regression_checkpoint_to_flow:
+        return False
+    initial_without_decoder = dict(initial)
+    expected_without_decoder = dict(expected)
+    initial_decoder = initial_without_decoder.pop("decoder_type", None)
+    expected_decoder = expected_without_decoder.pop("decoder_type", None)
+    return (
+        initial_decoder == "regression"
+        and expected_decoder == "flow"
+        and initial_without_decoder == expected_without_decoder
+    )
 
 
 class FullTaskDataset(Dataset):
@@ -638,6 +707,44 @@ def evaluate(
     return result
 
 
+def learning_rate_factor(
+    step: int,
+    *,
+    total_steps: int,
+    warmup_steps: int,
+    schedule: str,
+) -> float:
+    """Warm up once, then optionally decay with the DP3-style cosine shape."""
+
+    step = int(step)
+    total_steps = max(int(total_steps), 1)
+    warmup_steps = max(int(warmup_steps), 0)
+    if warmup_steps and step < warmup_steps:
+        return float(step + 1) / float(warmup_steps)
+    if schedule == "constant":
+        return 1.0
+    if schedule != "cosine":
+        raise ValueError(f"unknown learning-rate schedule {schedule!r}")
+    decay_steps = max(total_steps - warmup_steps, 1)
+    progress = min(max((step - warmup_steps) / decay_steps, 0.0), 1.0)
+    return 0.5 * (1.0 + math.cos(math.pi * progress))
+
+
+@torch.no_grad()
+def update_ema_model(ema_model: nn.Module, model: nn.Module, decay: float) -> None:
+    """Update a same-device EMA copy, including non-floating buffers."""
+
+    decay = float(decay)
+    ema_state = ema_model.state_dict()
+    model_state = model.state_dict()
+    for name, target in ema_state.items():
+        source = model_state[name].detach()
+        if target.is_floating_point():
+            target.mul_(decay).add_(source, alpha=1.0 - decay)
+        else:
+            target.copy_(source)
+
+
 def train_one(
     args,
     condition: str,
@@ -675,7 +782,7 @@ def train_one(
     ).to(device)
     if args.initialize_from is not None:
         initialized = torch.load(args.initialize_from, map_location="cpu", weights_only=False)
-        if initialized["model_config"] != {
+        expected_model_config = {
             "history": int(payload["scene"].shape[1]),
             "horizon": int(payload["action"].shape[1]),
             "feature_dim": args.feature_dim,
@@ -685,7 +792,14 @@ def train_one(
             "dropout": args.dropout,
             "decoder_type": "flow" if condition.endswith("flow") else "regression",
             "motion_dim": len(statistics.motion_mean),
-        }:
+        }
+        if not initial_model_config_matches(
+            initialized["model_config"],
+            expected_model_config,
+            convert_regression_checkpoint_to_flow=(
+                args.convert_regression_checkpoint_to_flow
+            ),
+        ):
             raise ValueError("initial checkpoint model configuration does not match")
         model.load_state_dict(initialized["model"])
     if args.train_gripper_head_only:
@@ -695,17 +809,58 @@ def train_one(
             parameter.requires_grad_(False)
         for parameter in model.decoder.gripper_head.parameters():
             parameter.requires_grad_(True)
+    if args.train_flow_motion_decoder_only:
+        if args.train_gripper_head_only:
+            raise ValueError("flow-motion-only and gripper-head-only are exclusive")
+        if args.initialize_from is None or not condition.endswith("flow"):
+            raise ValueError(
+                "--train-flow-motion-decoder-only requires a flow condition "
+                "and --initialize-from"
+            )
+        for parameter in model.parameters():
+            parameter.requires_grad_(False)
+        for name, parameter in model.decoder.named_parameters():
+            if not name.startswith("gripper_head."):
+                parameter.requires_grad_(True)
+        if float(args.gripper_weight) != 0.0:
+            raise ValueError(
+                "flow-motion-decoder-only requires --gripper-weight 0 so the "
+                "frozen gripper output cannot shape the motion query"
+            )
+    if int(args.validation_every) < 1:
+        raise ValueError("--validation-every must be positive")
+    if not 0.0 <= float(args.ema_decay) < 1.0:
+        raise ValueError("--ema-decay must lie in [0,1)")
+    trainable_parameters = [
+        parameter for parameter in model.parameters() if parameter.requires_grad
+    ]
     optimizer = torch.optim.AdamW(
-        (parameter for parameter in model.parameters() if parameter.requires_grad),
+        trainable_parameters,
         lr=args.learning_rate,
         weight_decay=args.weight_decay,
     )
+    total_updates = max(len(loaders["train"]) * int(args.epochs), 1)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(
+        optimizer,
+        lr_lambda=lambda step: learning_rate_factor(
+            step,
+            total_steps=total_updates,
+            warmup_steps=args.lr_warmup_steps,
+            schedule=args.lr_scheduler,
+        ),
+    )
+    ema_model = None
+    if float(args.ema_decay) > 0.0:
+        ema_model = copy.deepcopy(model).eval()
+        for parameter in ema_model.parameters():
+            parameter.requires_grad_(False)
     scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda")
     bce = nn.BCEWithLogitsLoss(reduction="none")
     best_loss = float("inf")
     best_state = None
     patience = 0
     history = []
+    updates = 0
     start = time.time()
     for epoch in range(args.epochs):
         model.train()
@@ -752,24 +907,49 @@ def train_one(
                 loss = motion_loss + args.gripper_weight * gripper_loss
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
-            nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            nn.utils.clip_grad_norm_(trainable_parameters, 1.0)
             scaler.step(optimizer)
             scaler.update()
+            scheduler.step()
+            if ema_model is not None:
+                update_ema_model(ema_model, model, args.ema_decay)
+            updates += 1
             loss_sum += float(loss.detach())
             batches += 1
-        validation = evaluate(
-            model,
-            loaders["validation"],
-            condition,
-            "correct",
-            device,
-            statistics,
-            args.flow_steps,
+        should_validate = (
+            (epoch + 1) % int(args.validation_every) == 0
+            or (epoch + 1) == int(args.epochs)
         )
+        validation = None
         delayed_validation = None
-        if args.train_gripper_head_only and args.gripper_selection_delay > 0.0:
+        selection_model = ema_model if ema_model is not None else model
+        if should_validate:
+            validation = evaluate(
+                selection_model,
+                loaders["validation"],
+                condition,
+                "correct",
+                device,
+                statistics,
+                args.flow_steps,
+            )
+        record = {
+            "epoch": epoch + 1,
+            "train_loss": loss_sum / max(batches, 1),
+            "updates": updates,
+            "learning_rate": float(optimizer.param_groups[0]["lr"]),
+        }
+        if validation is not None:
+            record.update(
+                {f"validation_{key}": value for key, value in validation.items()}
+            )
+        if (
+            validation is not None
+            and args.train_gripper_head_only
+            and args.gripper_selection_delay > 0.0
+        ):
             delayed_validation = evaluate(
-                model,
+                selection_model,
                 loaders["validation"],
                 condition,
                 "correct",
@@ -778,17 +958,14 @@ def train_one(
                 args.flow_steps,
                 gripper_state_delay=args.gripper_selection_delay,
             )
-        record = {
-            "epoch": epoch + 1,
-            "train_loss": loss_sum / max(batches, 1),
-            **{f"validation_{key}": value for key, value in validation.items()},
-        }
         history.append(record)
         if delayed_validation is not None:
             record["validation_delayed_gripper_transition_mae"] = delayed_validation[
                 "gripper_transition_mae"
             ]
         print(json.dumps({"condition": condition, **record}), flush=True)
+        if validation is None:
+            continue
         if delayed_validation is None:
             value = validation["normalized_motion_mse"]
         else:
@@ -798,7 +975,10 @@ def train_one(
             )
         if value < best_loss:
             best_loss = value
-            best_state = {key: tensor.detach().cpu().clone() for key, tensor in model.state_dict().items()}
+            best_state = {
+                key: tensor.detach().cpu().clone()
+                for key, tensor in selection_model.state_dict().items()
+            }
             patience = 0
         else:
             patience += 1
@@ -825,6 +1005,7 @@ def train_one(
         "seed": args.seed,
         "parameters": int(sum(parameter.numel() for parameter in model.parameters())),
         "epochs_run": len(history),
+        "optimizer_updates": updates,
         "elapsed_minutes": (time.time() - start) / 60.0,
         "best_validation_normalized_motion_mse": best_loss,
         "test": test,
@@ -861,10 +1042,24 @@ def train_one(
                 "correction_sample_weight": float(args.correction_sample_weight),
                 "gripper_selection_delay": float(args.gripper_selection_delay),
             },
+            "optimization": {
+                "learning_rate": float(args.learning_rate),
+                "lr_scheduler": str(args.lr_scheduler),
+                "lr_warmup_steps": int(args.lr_warmup_steps),
+                "ema_decay": float(args.ema_decay),
+                "validation_every": int(args.validation_every),
+                "flow_motion_decoder_only": bool(
+                    args.train_flow_motion_decoder_only
+                ),
+                "optimizer_updates": int(updates),
+            },
             "initialized_from": (
                 str(args.initialize_from.resolve())
                 if args.initialize_from is not None
                 else None
+            ),
+            "converted_regression_checkpoint_to_flow": bool(
+                args.convert_regression_checkpoint_to_flow
             ),
             "trained_parameters": [
                 name for name, parameter in model.named_parameters() if parameter.requires_grad
@@ -873,7 +1068,9 @@ def train_one(
         },
         args.output_dir / f"{condition}_seed{args.seed}.pt",
     )
-    (args.output_dir / f"{condition}_seed{args.seed}.json").write_text(
+    metrics_output_dir = args.metrics_output_dir or args.output_dir
+    metrics_output_dir.mkdir(parents=True, exist_ok=True)
+    (metrics_output_dir / f"{condition}_seed{args.seed}.json").write_text(
         json.dumps(result, indent=2) + "\n", encoding="utf-8"
     )
     return result
@@ -951,8 +1148,9 @@ def main() -> None:
         "statistics": asdict(statistics),
         "results": results,
     }
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    (args.output_dir / "summary.json").write_text(
+    metrics_output_dir = args.metrics_output_dir or args.output_dir
+    metrics_output_dir.mkdir(parents=True, exist_ok=True)
+    (metrics_output_dir / "summary.json").write_text(
         json.dumps(summary, indent=2) + "\n", encoding="utf-8"
     )
     print(json.dumps({"completed": [item["condition"] for item in results]}), flush=True)

@@ -53,6 +53,7 @@ class FullTaskTAGRTV2Runtime:
         device: str,
         flow_steps: int = 8,
         inference_seed: int = 0,
+        gripper_checkpoint: str | Path | None = None,
         continuous_gripper: bool = False,
         geometry_intervention: str = "correct",
     ) -> None:
@@ -67,6 +68,43 @@ class FullTaskTAGRTV2Runtime:
         self.policy = FullTaskTAGRTPolicy(**payload["model_config"]).to(self.device)
         self.policy.load_state_dict(payload["model"])
         self.policy.eval()
+        self.gripper_checkpoint = (
+            Path(gripper_checkpoint).expanduser().resolve()
+            if gripper_checkpoint not in {None, ""}
+            else None
+        )
+        self.gripper_policy = None
+        if self.gripper_checkpoint is not None:
+            gripper_payload = torch.load(
+                self.gripper_checkpoint, map_location="cpu", weights_only=False
+            )
+            gripper_condition = str(gripper_payload["condition"])
+            if not gripper_condition.endswith("reg"):
+                raise ValueError("the external gripper checkpoint must use regression")
+            if gripper_condition.split("_", 1)[0] != self.condition.split("_", 1)[0]:
+                raise ValueError("motion and gripper checkpoints must use the same condition")
+            if str(gripper_payload.get("action_representation", "eef_delta14")) != self.action_representation:
+                raise ValueError("motion and gripper action representations do not match")
+            gripper_statistics = Statistics(**gripper_payload["statistics"])
+            for name in Statistics.__dataclass_fields__:
+                if not np.allclose(
+                    np.asarray(getattr(self.statistics, name), dtype=np.float32),
+                    np.asarray(getattr(gripper_statistics, name), dtype=np.float32),
+                ):
+                    raise ValueError(
+                        f"motion and gripper normalization differs for {name}"
+                    )
+            motion_config = dict(payload["model_config"])
+            gripper_config = dict(gripper_payload["model_config"])
+            motion_config.pop("decoder_type", None)
+            gripper_config.pop("decoder_type", None)
+            if motion_config != gripper_config:
+                raise ValueError("motion and gripper checkpoint architectures do not match")
+            self.gripper_policy = FullTaskTAGRTPolicy(
+                **gripper_payload["model_config"]
+            ).to(self.device)
+            self.gripper_policy.load_state_dict(gripper_payload["model"])
+            self.gripper_policy.eval()
         self.frame_provider = frame_provider
         if self.condition.startswith("tagrt") and frame_provider is None:
             raise ValueError("TAGRT checkpoint requires a camera NDF frame provider")
@@ -223,7 +261,10 @@ class FullTaskTAGRTV2Runtime:
             motion * torch.tensor(self.statistics.motion_std)
             + torch.tensor(self.statistics.motion_mean)
         )
-        gripper_probability = output.gripper_logits[0].sigmoid().float().cpu()
+        gripper_logits = output.gripper_logits
+        if self.gripper_policy is not None:
+            gripper_logits = self.gripper_policy.sample(batch).gripper_logits
+        gripper_probability = gripper_logits[0].sigmoid().float().cpu()
         self.last_gripper_open_probability = gripper_probability.numpy().astype(
             np.float32
         )
@@ -258,6 +299,7 @@ def get_model(usr_args):
         device=device,
         flow_steps=int(usr_args.get("fulltask_tagrt_flow_steps", 8)),
         inference_seed=int(usr_args.get("fulltask_tagrt_inference_seed", 0)),
+        gripper_checkpoint=usr_args.get("fulltask_tagrt_gripper_checkpoint"),
         continuous_gripper=bool(
             usr_args.get("fulltask_tagrt_continuous_gripper", False)
         ),
@@ -286,6 +328,11 @@ def get_model(usr_args):
             "fulltask_tagrt_condition": runtime.condition,
             "fulltask_tagrt_action_representation": runtime.action_representation,
             "fulltask_tagrt_continuous_gripper": bool(runtime.continuous_gripper),
+            "fulltask_tagrt_external_gripper_checkpoint": (
+                str(runtime.gripper_checkpoint)
+                if runtime.gripper_checkpoint is not None
+                else None
+            ),
             "fulltask_tagrt_action_chunks": int(model.action_chunks),
             "fulltask_tagrt_executed_actions": int(model.executed_actions),
             "fulltask_tagrt_mean_translation_delta_m": float(
