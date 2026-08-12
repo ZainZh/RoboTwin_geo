@@ -41,6 +41,15 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--test-ids", nargs="+", type=int)
     result.add_argument("--confidence-percentile", type=float, default=95.0)
     result.add_argument(
+        "--confidence-threshold-deg",
+        type=float,
+        help=(
+            "Reuse a previously calibrated deployment threshold instead of "
+            "fitting a percentile on this dataset. Required for correction "
+            "episodes so their labels match the frozen online estimator."
+        ),
+    )
+    result.add_argument(
         "--aggregation",
         choices=("projected_mean", "medoid"),
         default="projected_mean",
@@ -221,9 +230,13 @@ def main() -> None:
         shoe_id,
         np.asarray(object_split["train"], dtype=np.int64),
     )
-    threshold = float(
-        np.percentile(disagreement[train_mask], args.confidence_percentile)
+    threshold = (
+        float(args.confidence_threshold_deg)
+        if args.confidence_threshold_deg is not None
+        else float(np.percentile(disagreement[train_mask], args.confidence_percentile))
     )
+    if not np.isfinite(threshold) or threshold < 0.0:
+        raise ValueError("confidence threshold must be finite and non-negative")
     confidence = (disagreement <= threshold).astype(np.float32)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
@@ -241,16 +254,25 @@ def main() -> None:
         "aggregation": str(args.aggregation),
         "frame_predictions": [str(path.resolve()) for path in args.frame_predictions],
         "fold": int(args.fold),
-        "confidence_calibration": "training objects only",
-        "confidence_percentile": float(args.confidence_percentile),
+        "confidence_percentile": (
+            None
+            if args.confidence_threshold_deg is not None
+            else float(args.confidence_percentile)
+        ),
+        "confidence_calibration": (
+            "fixed deployment threshold"
+            if args.confidence_threshold_deg is not None
+            else "training objects percentile"
+        ),
         "confidence_threshold_deg": threshold,
         "acceptance": {
-            split: float(
+            split: (float(values.mean()) if len(values) else None)
+            for split, ids in object_split.items()
+            for values in (
                 confidence[
                     np.isin(shoe_id, np.asarray(ids, dtype=np.int64))
-                ].mean()
+                ],
             )
-            for split, ids in object_split.items()
         },
         "object_split": {name: list(ids) for name, ids in object_split.items()},
     }

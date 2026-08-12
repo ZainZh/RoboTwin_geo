@@ -44,7 +44,25 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--flow-steps", type=int, default=12)
     result.add_argument("--gripper-weight", type=float, default=0.2)
     result.add_argument("--gripper-transition-weight", type=float, default=1.0)
+    result.add_argument(
+        "--correction-sample-weight",
+        type=float,
+        default=1.0,
+        help=(
+            "Training-only weight for rows marked is_correction_sample=1. "
+            "Raw and TAGRT must use the same value."
+        ),
+    )
     result.add_argument("--initialize-from", type=Path, default=None)
+    result.add_argument(
+        "--reuse-initial-statistics",
+        action="store_true",
+        help=(
+            "When continuing from --initialize-from, keep that checkpoint's "
+            "normalization statistics. This prevents a silent input-coordinate "
+            "change when correction samples are appended."
+        ),
+    )
     result.add_argument("--train-gripper-head-only", action="store_true")
     result.add_argument(
         "--gripper-selection-delay",
@@ -89,6 +107,14 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--validation-episodes", type=int, default=3)
     result.add_argument("--test-episodes", type=int, default=3)
     result.add_argument(
+        "--episode-split-file",
+        type=Path,
+        help=(
+            "JSON mapping train/validation/test to episode ids. This keeps "
+            "correction episodes train-only while preserving the nominal split."
+        ),
+    )
+    result.add_argument(
         "--overfit-episodes",
         nargs="+",
         type=int,
@@ -131,6 +157,35 @@ def split_by_episode(
     definition = {
         name: [int(value) for value in values]
         for name, values in selected.items()
+    }
+    return split, definition
+
+
+def split_from_file(
+    episode_id: np.ndarray, path: Path
+) -> tuple[dict[str, np.ndarray], dict[str, list[int]]]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    required = {"train", "validation", "test"}
+    if not isinstance(payload, dict) or set(payload) != required:
+        raise ValueError("episode split file must contain train/validation/test")
+    definition = {
+        name: [int(value) for value in payload[name]] for name in required
+    }
+    if any(not values for values in definition.values()):
+        raise ValueError("episode split file contains an empty split")
+    assigned = [value for values in definition.values() for value in values]
+    if len(assigned) != len(set(assigned)):
+        raise ValueError("episode split file assigns an episode more than once")
+    available = {int(value) for value in np.unique(episode_id)}
+    if set(assigned) != available:
+        raise ValueError(
+            "episode split file must cover every archive episode exactly once; "
+            f"missing={sorted(available - set(assigned))}, "
+            f"unknown={sorted(set(assigned) - available)}"
+        )
+    split = {
+        name: np.flatnonzero(np.isin(episode_id, np.asarray(values, dtype=np.int64)))
+        for name, values in definition.items()
     }
     return split, definition
 
@@ -186,6 +241,26 @@ def make_statistics(payload: dict[str, np.ndarray], train: np.ndarray) -> Statis
     )
 
 
+def select_statistics(
+    payload: dict[str, np.ndarray],
+    train: np.ndarray,
+    *,
+    initialize_from: Path | None,
+    reuse_initial_statistics: bool,
+) -> Statistics:
+    if not reuse_initial_statistics:
+        return make_statistics(payload, train)
+    if initialize_from is None:
+        raise ValueError("--reuse-initial-statistics requires --initialize-from")
+    checkpoint = torch.load(initialize_from, map_location="cpu", weights_only=False)
+    if "statistics" not in checkpoint:
+        raise ValueError("initial checkpoint does not contain normalization statistics")
+    try:
+        return Statistics(**checkpoint["statistics"])
+    except TypeError as error:
+        raise ValueError("initial checkpoint statistics schema does not match") from error
+
+
 class FullTaskDataset(Dataset):
     def __init__(
         self, payload: dict[str, np.ndarray], indices: np.ndarray, statistics: Statistics
@@ -202,6 +277,15 @@ class FullTaskDataset(Dataset):
         self.state_std = np.asarray(statistics.state_std, dtype=np.float32)
         self.motion_mean = np.asarray(statistics.motion_mean, dtype=np.float32)
         self.motion_std = np.asarray(statistics.motion_std, dtype=np.float32)
+        self.is_correction_sample = np.asarray(
+            payload.get(
+                "is_correction_sample",
+                np.zeros(len(payload["episode_id"]), dtype=np.float32),
+            ),
+            dtype=np.float32,
+        )
+        if self.is_correction_sample.shape != (len(payload["episode_id"]),):
+            raise ValueError("is_correction_sample must have one value per row")
         # Build a deterministic wrong-goal control that is guaranteed to come
         # from another episode.  Rolling an ordered validation batch can leave
         # most samples paired with an adjacent frame of the same trajectory,
@@ -266,6 +350,10 @@ class FullTaskDataset(Dataset):
                 state_raw[-1, [9, 19]].copy()
             ).float(),
             "sample_index": torch.tensor(index, dtype=torch.long),
+            "is_correction_sample": torch.tensor(
+                float(self.is_correction_sample[index]),
+                dtype=torch.float32,
+            ),
         }
 
 
@@ -638,7 +726,18 @@ def train_one(
                 enabled=device.type == "cuda",
             ):
                 motion, gripper, target = training_prediction(model, batch, condition)
-                motion_loss = nn.functional.mse_loss(motion, target)
+                correction_weight = float(args.correction_sample_weight)
+                if correction_weight < 1.0:
+                    raise ValueError("correction sample weight must be at least one")
+                sample_weights = 1.0 + (
+                    correction_weight - 1.0
+                ) * batch["is_correction_sample"].to(motion.dtype)
+                motion_per_sample = nn.functional.mse_loss(
+                    motion, target, reduction="none"
+                ).mean(dim=(1, 2))
+                motion_loss = (
+                    motion_per_sample * sample_weights
+                ).sum() / sample_weights.sum().clamp_min(1.0)
                 gripper_element_loss = bce(gripper, batch["gripper"])
                 transition = (
                     batch["gripper"] - batch["current_gripper"][:, None]
@@ -646,6 +745,7 @@ def train_one(
                 gripper_weights = 1.0 + (
                     float(args.gripper_transition_weight) - 1.0
                 ) * transition.to(gripper_element_loss.dtype)
+                gripper_weights = gripper_weights * sample_weights[:, None, None]
                 gripper_loss = (
                     gripper_element_loss * gripper_weights
                 ).sum() / gripper_weights.sum().clamp_min(1.0)
@@ -758,6 +858,7 @@ def train_one(
                     args.gripper_state_delay_jitter
                 ),
                 "gripper_transition_weight": float(args.gripper_transition_weight),
+                "correction_sample_weight": float(args.correction_sample_weight),
                 "gripper_selection_delay": float(args.gripper_selection_delay),
             },
             "initialized_from": (
@@ -783,6 +884,18 @@ def main() -> None:
     with np.load(args.dataset, allow_pickle=False) as archive:
         payload = {key: np.asarray(archive[key]) for key in archive.files}
     split_definition = None
+    split_modes = sum(
+        (
+            bool(args.overfit_episodes),
+            bool(args.episode_split),
+            args.episode_split_file is not None,
+        )
+    )
+    if split_modes > 1:
+        raise ValueError(
+            "choose only one of --overfit-episodes, --episode-split, or "
+            "--episode-split-file"
+        )
     if args.overfit_episodes:
         overfit = np.flatnonzero(
             np.isin(payload["episode_id"], np.asarray(args.overfit_episodes))
@@ -792,6 +905,10 @@ def main() -> None:
             name: [int(value) for value in args.overfit_episodes]
             for name in split
         }
+    elif args.episode_split_file is not None:
+        split, split_definition = split_from_file(
+            payload["episode_id"], args.episode_split_file
+        )
     elif args.episode_split:
         split, split_definition = split_by_episode(
             payload["episode_id"],
@@ -806,7 +923,12 @@ def main() -> None:
         }
     if any(len(indices) == 0 for indices in split.values()):
         raise ValueError(f"empty object split: { {key: len(value) for key, value in split.items()} }")
-    statistics = make_statistics(payload, split["train"])
+    statistics = select_statistics(
+        payload,
+        split["train"],
+        initialize_from=args.initialize_from,
+        reuse_initial_statistics=args.reuse_initial_statistics,
+    )
     print(
         json.dumps(
             {
@@ -824,7 +946,7 @@ def main() -> None:
     ]
     summary = {
         "dataset": str(args.dataset.resolve()),
-        "fold": FOLD0 if not args.episode_split else None,
+        "fold": FOLD0 if split_definition is None else None,
         "episode_split": split_definition,
         "statistics": asdict(statistics),
         "results": results,

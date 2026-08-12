@@ -35,6 +35,14 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--data-dir", action="append", type=Path, required=True)
     result.add_argument("--output", type=Path, required=True)
     result.add_argument("--fold", type=int, required=True)
+    result.add_argument(
+        "--calibration-metadata",
+        type=Path,
+        help=(
+            "Reuse frozen current/goal camera calibration from the nominal "
+            "training archive instead of refitting on this dataset."
+        ),
+    )
     result.add_argument("--overwrite", action="store_true")
     return result
 
@@ -232,16 +240,42 @@ def main() -> None:
     train_episode_mask = np.isin(
         episode_shoe, np.asarray(FOLDS[int(args.fold)]["train"], dtype=np.int64)
     )
-    (
-        goal_position_offset,
-        goal_rotation_offset,
-        goal_calibration_inlier,
-    ) = camera_goal_calibration(
-        marker,
-        true_goal_position,
-        true_goal_rotation,
-        train_episode_mask,
-    )
+    frozen_calibration = None
+    if args.calibration_metadata is not None:
+        frozen_calibration = json.loads(
+            args.calibration_metadata.read_text(encoding="utf-8")
+        )
+        required_calibration = {
+            "current_origin_offset_local3",
+            "goal_position_offset_marker_local3",
+            "goal_rotation_offset_marker_local9",
+        }
+        missing_calibration = sorted(required_calibration - set(frozen_calibration))
+        if missing_calibration:
+            raise KeyError(
+                f"calibration metadata lacks {missing_calibration}: "
+                f"{args.calibration_metadata}"
+            )
+        goal_position_offset = np.asarray(
+            frozen_calibration["goal_position_offset_marker_local3"],
+            dtype=np.float32,
+        ).reshape(3)
+        goal_rotation_offset = np.asarray(
+            frozen_calibration["goal_rotation_offset_marker_local9"],
+            dtype=np.float32,
+        ).reshape(3, 3)
+        goal_calibration_inlier = np.zeros(episode_count, dtype=bool)
+    else:
+        (
+            goal_position_offset,
+            goal_rotation_offset,
+            goal_calibration_inlier,
+        ) = camera_goal_calibration(
+            marker,
+            true_goal_position,
+            true_goal_rotation,
+            train_episode_mask,
+        )
     predicted_goal_position, predicted_goal_rotation = predict_goal_pose(
         marker, goal_position_offset, goal_rotation_offset
     )
@@ -254,11 +288,17 @@ def main() -> None:
         np.asarray(payload["shoe_id"], dtype=np.int64),
         np.asarray(FOLDS[int(args.fold)]["train"], dtype=np.int64),
     )
-    current_origin_offset = calibrate_current_origin_offset(
-        payload["points_a"],
-        predicted_current_rotation,
-        np.asarray(payload["current_object_pose9"][:, :3], dtype=np.float32),
-        train_sample_mask,
+    current_origin_offset = (
+        np.asarray(
+            frozen_calibration["current_origin_offset_local3"], dtype=np.float32
+        ).reshape(3)
+        if frozen_calibration is not None
+        else calibrate_current_origin_offset(
+            payload["points_a"],
+            predicted_current_rotation,
+            np.asarray(payload["current_object_pose9"][:, :3], dtype=np.float32),
+            train_sample_mask,
+        )
     )
     predicted_current_position = predict_current_position(
         payload["points_a"], predicted_current_rotation, current_origin_offset
@@ -358,6 +398,14 @@ def main() -> None:
             "deployable": True,
             "fold": int(args.fold),
             "data_dirs": [str(path.resolve()) for path in args.data_dir],
+            "calibration_metadata": (
+                None
+                if args.calibration_metadata is None
+                else str(args.calibration_metadata.resolve())
+            ),
+            "calibration_fitted_on_current_dataset": bool(
+                args.calibration_metadata is None
+            ),
             "current_origin_offset_local3": current_origin_offset.tolist(),
             "goal_position_offset_marker_local3": goal_position_offset.tolist(),
             "goal_rotation_offset_marker_local9": goal_rotation_offset.reshape(-1).tolist(),

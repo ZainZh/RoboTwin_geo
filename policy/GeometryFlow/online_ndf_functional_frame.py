@@ -64,6 +64,7 @@ class OnlineFunctionalFrameEstimate:
     source_temporal_jump_deg: float | None = None
     source_input_points: int | None = None
     source_encoded_points: int | None = None
+    source_invalid_members: int = 0
 
     def policy_frame9(self, xyz_std: np.ndarray | Sequence[float]) -> np.ndarray:
         """Return the tensor value consumed by a trained policy.
@@ -247,6 +248,7 @@ class OnlineNdfFunctionalFrameProvider:
         self._cached_marker_diagnostic: dict | None = None
         self._cached_target_confidence: float | None = None
         self._previous_source_rotation: np.ndarray | None = None
+        self._last_valid_source_rotation: np.ndarray | None = None
 
     @classmethod
     def from_metadata(
@@ -363,6 +365,7 @@ class OnlineNdfFunctionalFrameProvider:
         self._cached_marker_diagnostic = None
         self._cached_target_confidence = None
         self._previous_source_rotation = None
+        self._last_valid_source_rotation = None
         self._source_observation_index = 0
 
     def latch_target(self, target_point_cloud: np.ndarray) -> None:
@@ -435,14 +438,35 @@ class OnlineNdfFunctionalFrameProvider:
                 "NDF encoders must each return one [3,3] frame, got "
                 f"{rotations.shape}"
             )
-        source_rotation = (
-            project_rotation_mean(rotations[:, None])[0]
-            if self.aggregation == "projected_mean"
-            else rotation_medoid(rotations[:, None])[0]
-        )
-        disagreement = float(
-            maximum_pairwise_disagreement(rotations[:, None])[0]
-        )
+        valid_members = []
+        for rotation in rotations:
+            try:
+                valid_members.append(_as_rotation(rotation, "NDF source rotation"))
+            except ValueError:
+                continue
+        invalid_members = int(len(rotations) - len(valid_members))
+        valid_rotations = np.asarray(valid_members, dtype=np.float32)
+        if len(valid_rotations) >= 2:
+            source_rotation = (
+                project_rotation_mean(valid_rotations[:, None])[0]
+                if self.aggregation == "projected_mean"
+                else rotation_medoid(valid_rotations[:, None])[0]
+            )
+            disagreement = float(
+                maximum_pairwise_disagreement(valid_rotations[:, None])[0]
+            )
+        elif len(valid_rotations) == 1:
+            source_rotation = valid_rotations[0].copy()
+            disagreement = 180.0
+        else:
+            source_rotation = (
+                self._last_valid_source_rotation.copy()
+                if self._last_valid_source_rotation is not None
+                else np.eye(3, dtype=np.float32)
+            )
+            disagreement = 180.0
+        if len(valid_rotations):
+            self._last_valid_source_rotation = source_rotation.copy()
         temporal_ambiguous = False
         temporal_corrected = False
         temporal_jump = None
@@ -455,7 +479,10 @@ class OnlineNdfFunctionalFrameProvider:
                     alternative_accept_deg=self.temporal_alternative_accept_deg,
                 )
             )
-        epistemic_reliable = bool(disagreement <= self.confidence_threshold_deg)
+        epistemic_reliable = bool(
+            invalid_members == 0
+            and disagreement <= self.confidence_threshold_deg
+        )
         source_confidence = float(epistemic_reliable and not temporal_ambiguous)
         if self.temporal_stabilization and (
             self._previous_source_rotation is None
@@ -515,6 +542,7 @@ class OnlineNdfFunctionalFrameProvider:
             ),
             source_input_points=int(len(current_xyz)),
             source_encoded_points=int(len(source_points)),
+            source_invalid_members=invalid_members,
         )
 
     def estimate(

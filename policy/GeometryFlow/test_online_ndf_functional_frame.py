@@ -229,6 +229,38 @@ def test_temporal_sign_jump_is_corrected_but_confidence_masked():
     assert runtime._previous_source_rotation is None
 
 
+def test_degenerate_ndf_frames_reuse_last_valid_frame_at_zero_confidence():
+    sequence = [np.eye(3), np.zeros((3, 3), dtype=np.float32)]
+    runtime = provider(
+        [SequenceFrameEncoder(sequence), SequenceFrameEncoder(sequence)],
+        aggregation="medoid",
+    )
+    current, target = clouds()
+    first = runtime.estimate(
+        current_point_cloud=current, target_point_cloud=target
+    )
+    second = runtime.estimate(
+        current_point_cloud=current, target_point_cloud=target
+    )
+    np.testing.assert_allclose(second.source_rotation, first.source_rotation)
+    assert second.source_confidence == 0.0
+    assert second.combined_confidence == 0.0
+    assert second.source_disagreement_deg == 180.0
+    assert second.source_invalid_members == 2
+
+
+def test_degenerate_first_ndf_frame_has_finite_identity_fallback():
+    invalid = StubFrameEncoder(np.zeros((3, 3), dtype=np.float32))
+    runtime = provider([invalid, invalid], aggregation="medoid")
+    current, target = clouds()
+    estimate = runtime.estimate(
+        current_point_cloud=current, target_point_cloud=target
+    )
+    np.testing.assert_allclose(estimate.source_rotation, np.eye(3))
+    assert np.all(np.isfinite(estimate.frame9_metric))
+    assert estimate.source_confidence == 0.0
+
+
 def test_combined_confidence_masks_unreliable_marker():
     encoder = StubFrameEncoder(np.eye(3))
 

@@ -1,0 +1,24 @@
+policy_name: GeometryFlow.deploy_fulltask_tagrt_v2
+task_name: place_shoe_geometry_marker
+task_config: demo_clean_3d_object_pc_geometry_marker_densecontrol_gate2_train30
+ckpt_setting: fulltask-tagrt-gate2-left60-correction-train4-seed0
+seed: 0
+instruction_type: unseen
+test_num: 6
+expert_data_num: 60
+checkpoint_num: 0
+policy_start_phase: full_task
+skip_expert_check_on_replay: true
+evaluation_seed_file: policy/GeometryFlow/eval_seeds_gate2_left60_train6.json
+evaluation_start_episode_index: 49
+eval_video_log: false
+eval_observation_profile: object_pointcloud_endpose
+
+fulltask_tagrt_checkpoint: /shared2/sz/TAGRT-v1/models/fulltask_tagrt_v2/gate2_left60_correction_train4_v1_tagrt_seed0/tagrt_reg_seed0.pt
+fulltask_tagrt_frame_checkpoints: /shared2/sz/TAGRT-v1/models/ndf_functional_frames/fold0_local50_seeds012/fold0_correct_frame_seed0_checkpoint.pth,/shared2/sz/TAGRT-v1/models/ndf_functional_frames/fold0_local50_seeds012/fold0_correct_frame_seed1_checkpoint.pth,/shared2/sz/TAGRT-v1/models/ndf_functional_frames/fold0_local50_seeds012/fold0_correct_frame_seed2_checkpoint.pth
+fulltask_tagrt_camera_metadata: /shared2/sz/TAGRT-v1/processed_datasets/fulltask_tagrt_v2/gate2_left60/task_flow_ndf_camera.json
+fulltask_tagrt_ensemble_metadata: /shared2/sz/TAGRT-v1/processed_datasets/fulltask_tagrt_v2/gate2_left60/ndf_medoid_p95_frames.json
+fulltask_tagrt_device: cuda:0
+fulltask_tagrt_continuous_gripper: true
+fulltask_tagrt_execute_steps: 15
+fulltask_tagrt_max_policy_steps: 3000

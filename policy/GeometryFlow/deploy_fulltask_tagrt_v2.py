@@ -20,7 +20,7 @@ from .train_fulltask_tagrt_v2 import Statistics
 
 
 def _path_list(value) -> list[str]:
-    if value in {None, ""}:
+    if value is None or value == "":
         return []
     if isinstance(value, str):
         return [item.strip() for item in value.split(",") if item.strip()]
@@ -174,6 +174,11 @@ class FullTaskTAGRTV2Runtime:
             "geometry_intervention": self.geometry_intervention,
             "confidence": confidence,
             "source_disagreement_deg": source_disagreement,
+            "source_invalid_members": int(
+                estimate.source_invalid_members
+                if self.condition.startswith("tagrt")
+                else 0
+            ),
             "remaining_translation_m": relative[:3].astype(float).tolist(),
             "left_eef_to_object_centroid_m": float(
                 np.linalg.norm(state[:3] - operated[:, :3].mean(axis=0))
@@ -311,8 +316,13 @@ def get_model(usr_args):
     return model
 
 
-def eval(TASK_ENV, model, observation):
-    actions = model.runtime.predict(observation)
+def execute_predicted_actions(TASK_ENV, model, observation, actions):
+    """Execute one already-decoded policy chunk.
+
+    Keeping prediction separate lets data collectors inspect an imminent
+    gripper transition and hand control to an expert *before* executing it.
+    Ordinary deployment still calls :func:`eval` and is unchanged.
+    """
     model.action_chunks += 1
     if model.runtime.action_representation == "dense_joint26":
         chunk = np.asarray(actions[: model.execute_steps], dtype=np.float32)
@@ -382,6 +392,11 @@ def eval(TASK_ENV, model, observation):
             break
         if TASK_ENV.eval_success or TASK_ENV.take_action_cnt >= TASK_ENV.step_lim:
             break
+
+
+def eval(TASK_ENV, model, observation):
+    actions = model.runtime.predict(observation)
+    execute_predicted_actions(TASK_ENV, model, observation, actions)
 
 
 def reset_model(model):
