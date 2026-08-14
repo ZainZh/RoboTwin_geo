@@ -15,6 +15,7 @@ import json
 import os
 from pathlib import Path
 
+import numpy as np
 import yaml
 
 from envs._GLOBAL_CONFIGS import CONFIGS_PATH
@@ -44,6 +45,12 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--source-episode-start", type=int, required=True)
     result.add_argument("--episodes", type=int, default=6)
     result.add_argument("--execute-steps", type=int, default=15)
+    result.add_argument(
+        "--flow-steps",
+        type=int,
+        default=8,
+        help="Flow integration steps; must match the evaluated deployment config.",
+    )
     result.add_argument("--max-policy-chunks", type=int, default=80)
     result.add_argument(
         "--handoff-after-chunks",
@@ -58,14 +65,47 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--post-lift-chunks", type=int, default=0)
     result.add_argument(
         "--handoff-mode",
-        choices=("preclose", "postlift"),
+        choices=("preclose", "postlift", "fixed"),
         default="preclose",
         help=(
             "preclose hands off before the first predicted left-gripper close "
-            "and records a full expert correction; postlift is diagnostic only."
+            "and records a full expert correction; fixed ignores learned "
+            "gripper transitions and hands off only at --handoff-after-chunks; "
+            "postlift is diagnostic only."
         ),
     )
     result.add_argument("--minimum-lift-m", type=float, default=0.03)
+    result.add_argument(
+        "--require-held-at-handoff",
+        action="store_true",
+        help=(
+            "Admit only states where the operated object is already held. "
+            "This isolates placement-only corrections from grasp recovery."
+        ),
+    )
+    result.add_argument(
+        "--allow-partial",
+        action="store_true",
+        help="Keep admitted corrections even when some requested attempts are rejected.",
+    )
+    result.add_argument(
+        "--terminal-release-only",
+        action="store_true",
+        help=(
+            "Collection-only supervision for an already aligned, held object: "
+            "admit with the task's unchanged pose tolerance, record expert "
+            "gripper release, and settle. No deployment gate is introduced."
+        ),
+    )
+    result.add_argument(
+        "--retain-policy-prefix",
+        action="store_true",
+        help=(
+            "Retain the on-policy prefix in the correction episode. This is "
+            "used for DAgger-style negative gripper supervision; motion may "
+            "only be trained when explicitly intended by a downstream run."
+        ),
+    )
     result.add_argument("--device", default="cuda:0")
     result.add_argument(
         "--output",
@@ -142,6 +182,8 @@ def main() -> None:
     args_cli = parser().parse_args()
     if args_cli.handoff_after_chunks is not None and args_cli.handoff_after_chunks < 0:
         raise ValueError("--handoff-after-chunks must be non-negative")
+    if args_cli.handoff_mode == "fixed" and args_cli.handoff_after_chunks is None:
+        raise ValueError("fixed handoff requires --handoff-after-chunks")
     args_cli.output.mkdir(parents=True, exist_ok=True)
     seeds = load_seeds(args_cli.seed_file, args_cli.episodes)
     env = environment_args(args_cli.task_name, args_cli.task_config, args_cli.output)
@@ -155,6 +197,7 @@ def main() -> None:
             "fulltask_tagrt_ensemble_metadata": str(args_cli.ensemble_metadata),
             "fulltask_tagrt_device": args_cli.device,
             "fulltask_tagrt_continuous_gripper": True,
+            "fulltask_tagrt_flow_steps": int(args_cli.flow_steps),
             "fulltask_tagrt_execute_steps": int(args_cli.execute_steps),
             "fulltask_tagrt_max_policy_steps": int(
                 args_cli.max_policy_chunks * args_cli.execute_steps
@@ -184,6 +227,22 @@ def main() -> None:
         # are independently indexed from zero for downstream archive builders.
         correction_episode = len(records)
         task.ep_num = correction_episode
+        if args_cli.retain_policy_prefix:
+            task.data_type.update(
+                {
+                    "rgb": True,
+                    "third_view": False,
+                    "depth": False,
+                    "pointcloud": False,
+                    "object_pointcloud": True,
+                    "endpose": True,
+                    "qpos": False,
+                }
+            )
+            task.save_data = True
+            task.FRAME_IDX = 0
+            task.reset_dense_control_trace()
+            task._take_picture()
         deploy_fulltask_tagrt_v2.reset_model(model)
         first_lift_chunk = None
         first_predicted_close_chunk = None
@@ -213,6 +272,17 @@ def main() -> None:
             deploy_fulltask_tagrt_v2.execute_predicted_actions(
                 task, model, observation, actions
             )
+            if args_cli.retain_policy_prefix:
+                # ``take_action(..., action_type="ee")`` executes the learned
+                # command through the simulator planner but, unlike expert
+                # ``move`` primitives, does not populate RoboTwin's dense
+                # control trace.  Add one monotonically indexed control marker
+                # per deployed policy action before saving its observation.
+                # The downstream EEF archive still derives supervision from
+                # consecutive observed poses; this marker is only the temporal
+                # index needed to retain the complete on-policy prefix.
+                task._record_dense_control_step()
+                task._take_picture()
             held = left_object_is_held(task, args_cli.minimum_lift_m)
             if held and first_lift_chunk is None:
                 first_lift_chunk = policy_chunk
@@ -254,6 +324,15 @@ def main() -> None:
             task.close_env(clear_cache=False)
             print(json.dumps(attempt), flush=True)
             continue
+        if args_cli.require_held_at_handoff and not held:
+            attempt["recovered"] = False
+            attempt["rejected_reason"] = "object_not_held_at_handoff"
+            attempts.append(attempt)
+            task.close_env(clear_cache=False)
+            if hasattr(task, "folder_path"):
+                task.remove_data_cache()
+            print(json.dumps(attempt), flush=True)
+            continue
 
         # Save only the expert continuation.  Resetting the dense trace makes
         # frame zero map to command -1 and keeps policy actions out of labels.
@@ -269,19 +348,54 @@ def main() -> None:
             }
         )
         task.save_data = True
-        task.FRAME_IDX = 0
-        task.reset_dense_control_trace()
+        if not args_cli.retain_policy_prefix:
+            task.FRAME_IDX = 0
+            task.reset_dense_control_trace()
+            task._take_picture()
         task.eval_success = False
-        task._take_picture()
-        recovered = (
-            bool(task.play_once() and task.plan_success and task.check_success())
-            if args_cli.handoff_mode == "preclose"
-            else task.recover_policy_placement_phase(ArmTag("left"))
+        placement_only_expert = bool(
+            args_cli.handoff_mode == "postlift"
+            or (args_cli.handoff_mode == "fixed" and held)
         )
+        attempt["expert_continuation"] = (
+            "terminal_release_only"
+            if args_cli.terminal_release_only
+            else ("placement_only" if placement_only_expert else "full_task")
+        )
+        if args_cli.terminal_release_only:
+            pre_release = task.get_evaluation_metrics()
+            abs_xyz = np.asarray(
+                pre_release["translation_error_abs_xyz_m"], dtype=np.float64
+            )
+            rotation_error = float(pre_release["rotation_error_deg"])
+            rotation_tolerance = float(
+                np.degrees(2.0 * np.arccos(0.995))
+            )
+            aligned = bool(
+                np.all(abs_xyz <= np.asarray((0.02, 0.02, 0.025)))
+                and rotation_error <= rotation_tolerance
+            )
+            attempt["terminal_release_admitted"] = aligned
+            attempt["pre_release_metrics"] = pre_release
+            if aligned:
+                moved = task.move(task.open_gripper(arm_tag=ArmTag("left")))
+                recovered = bool(
+                    moved and task.plan_success and task._settle_for_success_hold()
+                )
+            else:
+                recovered = False
+        else:
+            recovered = (
+                task.recover_policy_placement_phase(ArmTag("left"))
+                if placement_only_expert
+                else bool(task.play_once() and task.plan_success and task.check_success())
+            )
         attempt["recovered"] = bool(recovered and task.plan_success)
         attempt["expert_plan_success"] = bool(task.plan_success)
         attempt["correction_frames"] = int(task.FRAME_IDX)
         attempt["correction_controls"] = int(len(task.dense_control_position))
+        metrics_fn = getattr(task, "get_evaluation_metrics", None)
+        attempt["expert_metrics"] = metrics_fn() if callable(metrics_fn) else {}
         attempts.append(deepcopy(attempt))
         task.close_env(clear_cache=False)
         if not attempt["recovered"]:
@@ -305,10 +419,15 @@ def main() -> None:
         "source_episode_start": int(args_cli.source_episode_start),
         "seeds": seeds,
         "execute_steps": int(args_cli.execute_steps),
+        "flow_steps": int(args_cli.flow_steps),
         "handoff_after_chunks": args_cli.handoff_after_chunks,
         "post_lift_chunks": int(args_cli.post_lift_chunks),
         "handoff_mode": str(args_cli.handoff_mode),
         "minimum_lift_m": float(args_cli.minimum_lift_m),
+        "require_held_at_handoff": bool(args_cli.require_held_at_handoff),
+        "terminal_release_only": bool(args_cli.terminal_release_only),
+        "retain_policy_prefix": bool(args_cli.retain_policy_prefix),
+        "policy_prefix_dense_trace": bool(args_cli.retain_policy_prefix),
         "requested_episodes": int(args_cli.episodes),
         "collected_episodes": int(len(records)),
         "attempts": attempts,
@@ -327,7 +446,7 @@ def main() -> None:
         json.dumps(committed_scene_info, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-    if len(records) != int(args_cli.episodes):
+    if not args_cli.allow_partial and len(records) != int(args_cli.episodes):
         raise RuntimeError(
             f"collected {len(records)} corrections, requested {args_cli.episodes}"
         )

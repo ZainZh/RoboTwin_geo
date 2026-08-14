@@ -38,7 +38,14 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument(
         "--conditions",
         nargs="+",
-        choices=("raw_reg", "tagrt_reg", "raw_flow", "tagrt_flow"),
+        choices=(
+            "raw_reg",
+            "tagrt_reg",
+            "raw_flow",
+            "tagrt_flow",
+            "raw_pi_flow",
+            "tagrt_pi_flow",
+        ),
         default=("raw_reg", "tagrt_reg", "raw_flow", "tagrt_flow"),
     )
     result.add_argument("--seed", type=int, default=0)
@@ -71,8 +78,70 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--decoder-layers", type=int, default=4)
     result.add_argument("--dropout", type=float, default=0.05)
     result.add_argument("--flow-steps", type=int, default=12)
+    result.add_argument(
+        "--deterministic-gripper-query",
+        action="store_true",
+        help=(
+            "Decode gripper logits with a fixed zero-motion/time-one query "
+            "while continuous motion remains flow generated."
+        ),
+    )
+    result.add_argument(
+        "--flow-time-alpha",
+        type=float,
+        default=1.0,
+        help=(
+            "Alpha for Beta(alpha,1) flow-time sampling. One is uniform; "
+            "pi-style training uses 1.5."
+        ),
+    )
     result.add_argument("--gripper-weight", type=float, default=0.2)
     result.add_argument("--gripper-transition-weight", type=float, default=1.0)
+    result.add_argument(
+        "--correction-open-gripper-weight",
+        type=float,
+        default=1.0,
+        help=(
+            "Class-balance open-gripper targets only on admitted correction "
+            "rows. One disables this weighting."
+        ),
+    )
+    result.add_argument(
+        "--motion-magnitude-max-weight",
+        type=float,
+        default=1.0,
+        help=(
+            "Maximum per-timestep loss weight for large demonstrated SE(3) "
+            "commands; one disables magnitude balancing."
+        ),
+    )
+    result.add_argument("--motion-translation-scale-m", type=float, default=0.05)
+    result.add_argument("--motion-rotation-scale-rad", type=float, default=0.5)
+    result.add_argument(
+        "--validation-selection-metric",
+        choices=(
+            "auto",
+            "normalized_motion_mse",
+            "magnitude_balanced_normalized_motion_mse",
+            "first_action_normalized_motion_mse",
+            "first_action_magnitude_balanced_normalized_motion_mse",
+            "critical_first_action_normalized_motion_mse",
+        ),
+        default="auto",
+        help=(
+            "Checkpoint criterion. First-action metrics match receding-horizon "
+            "deployment when only the first predicted command is executed."
+        ),
+    )
+    result.add_argument(
+        "--critical-command-index",
+        type=int,
+        default=4,
+        help=(
+            "Demonstration command used only by the optional critical-action "
+            "validation metric; it is never a policy input or deployment gate."
+        ),
+    )
     result.add_argument(
         "--correction-sample-weight",
         type=float,
@@ -82,7 +151,39 @@ def parser() -> argparse.ArgumentParser:
             "Raw and TAGRT must use the same value."
         ),
     )
+    result.add_argument(
+        "--confidence-weight-corrections",
+        action="store_true",
+        help=(
+            "Scale only the correction upweighting by the newest observable "
+            "geometry-confidence token. Raw and TAGRT must use the same setting."
+        ),
+    )
+    result.add_argument(
+        "--train-corrections-only",
+        action="store_true",
+        help=(
+            "Use only admitted correction rows for optimizer updates while "
+            "retaining the original validation/test splits for regression checks."
+        ),
+    )
     result.add_argument("--initialize-from", type=Path, default=None)
+    result.add_argument(
+        "--save-final-checkpoint",
+        action="store_true",
+        help=(
+            "Also save the final EMA/model state before nominal-validation "
+            "rollback. This diagnoses checkpoint selection during correction fine-tuning."
+        ),
+    )
+    result.add_argument(
+        "--initialize-observation-memory-only",
+        action="store_true",
+        help=(
+            "Load only the observation/geometry memory from --initialize-from, "
+            "leaving a new action expert freshly initialized."
+        ),
+    )
     result.add_argument(
         "--convert-regression-checkpoint-to-flow",
         action="store_true",
@@ -103,11 +204,61 @@ def parser() -> argparse.ArgumentParser:
     )
     result.add_argument("--train-gripper-head-only", action="store_true")
     result.add_argument(
+        "--gripper-geometry-adapter",
+        action="store_true",
+        help=(
+            "Add a zero-initialized learned residual from the newest global "
+            "remaining-SE(3) token to the gripper logits."
+        ),
+    )
+    result.add_argument(
+        "--train-gripper-geometry-adapter-only",
+        action="store_true",
+        help=(
+            "Freeze the initialized policy and optimize only the learned "
+            "remaining-SE(3)-conditioned gripper adapter."
+        ),
+    )
+    result.add_argument(
+        "--observation-gripper-head",
+        action="store_true",
+        help=(
+            "Decode discrete gripper actions from deterministic contextual "
+            "observation memory instead of noisy flow-action queries."
+        ),
+    )
+    result.add_argument(
+        "--train-observation-gripper-head-only",
+        action="store_true",
+        help=(
+            "Freeze an initialized motion policy and optimize only the new "
+            "observation-conditioned gripper classifier."
+        ),
+    )
+    result.add_argument(
+        "--gripper-distillation-weight",
+        type=float,
+        default=0.0,
+        help=(
+            "For gripper-head-only fine-tuning, preserve the initialized "
+            "teacher logits on nominal (non-correction) rows. This prevents "
+            "release corrections from shifting the learned grasp calibration."
+        ),
+    )
+    result.add_argument(
         "--train-flow-motion-decoder-only",
         action="store_true",
         help=(
             "Freeze the observation/geometry memory trunk and gripper head; "
             "optimize only the conditional flow motion decoder."
+        ),
+    )
+    result.add_argument(
+        "--train-action-decoder-only",
+        action="store_true",
+        help=(
+            "Freeze the observation/geometry memory and optimize the complete "
+            "action decoder, including its gripper head."
         ),
     )
     result.add_argument(
@@ -137,6 +288,16 @@ def parser() -> argparse.ArgumentParser:
             "Training-only Cartesian EEF perturbation for open-gripper approach "
             "states. The first action is relabelled to return to the demonstrated "
             "next waypoint; deployment remains fully learned."
+        ),
+    )
+    result.add_argument(
+        "--eef-translation-jitter-arm",
+        choices=("left", "right", "both"),
+        default="both",
+        help=(
+            "Arm(s) receiving the training-only EEF perturbation. Fixed-arm "
+            "datasets should perturb only their active arm so a stationary "
+            "arm with near-zero normalization variance is not destabilized."
         ),
     )
     result.add_argument("--device", default="cuda:0")
@@ -287,6 +448,21 @@ def make_statistics(payload: dict[str, np.ndarray], train: np.ndarray) -> Statis
     )
 
 
+def action_representation(payload: dict[str, np.ndarray]) -> str:
+    """Read the action contract carried by a policy archive."""
+    width = int(payload["action"].shape[-1])
+    if width == 26:
+        return "dense_joint26"
+    if width != 14:
+        raise ValueError(f"unsupported policy action width {width}")
+    source_frame = int(
+        np.asarray(payload.get("action_frame_ndf_source", 0)).reshape(()).item()
+    )
+    if source_frame not in (0, 1):
+        raise ValueError("action_frame_ndf_source must be scalar zero or one")
+    return "eef_delta14_ndf_source" if source_frame else "eef_delta14"
+
+
 def select_statistics(
     payload: dict[str, np.ndarray],
     train: np.ndarray,
@@ -312,11 +488,37 @@ def initial_model_config_matches(
     expected: dict,
     *,
     convert_regression_checkpoint_to_flow: bool,
+    initialize_observation_memory_only: bool = False,
+    initialize_gripper_geometry_adapter: bool = False,
+    initialize_observation_gripper_head: bool = False,
 ) -> bool:
     """Validate an exact continuation or the registered regression-to-flow swap."""
 
     if initial == expected:
         return True
+    if initialize_gripper_geometry_adapter:
+        initial_base = dict(initial)
+        expected_base = dict(expected)
+        initial_adapter = bool(
+            initial_base.pop("gripper_geometry_adapter", False)
+        )
+        expected_adapter = bool(
+            expected_base.pop("gripper_geometry_adapter", False)
+        )
+        return not initial_adapter and expected_adapter and initial_base == expected_base
+    if initialize_observation_gripper_head:
+        initial_base = dict(initial)
+        expected_base = dict(expected)
+        initial_head = bool(initial_base.pop("observation_gripper_head", False))
+        expected_head = bool(expected_base.pop("observation_gripper_head", False))
+        return not initial_head and expected_head and initial_base == expected_base
+    if initialize_observation_memory_only:
+        initial_memory = dict(initial)
+        expected_memory = dict(expected)
+        for key in ("decoder_type", "action_expert_variant"):
+            initial_memory.pop(key, None)
+            expected_memory.pop(key, None)
+        return initial_memory == expected_memory
     if not convert_regression_checkpoint_to_flow:
         return False
     initial_without_decoder = dict(initial)
@@ -328,6 +530,39 @@ def initial_model_config_matches(
         and expected_decoder == "flow"
         and initial_without_decoder == expected_without_decoder
     )
+
+
+def model_config(args, condition: str, payload: dict[str, np.ndarray], motion_dim: int) -> dict:
+    """Infer non-default input widths while preserving legacy checkpoints."""
+    result = {
+        "history": int(payload["scene"].shape[1]),
+        "horizon": int(payload["action"].shape[1]),
+        "feature_dim": args.feature_dim,
+        "heads": args.heads,
+        "memory_layers": args.memory_layers,
+        "decoder_layers": args.decoder_layers,
+        "dropout": args.dropout,
+        "decoder_type": "flow" if condition.endswith("flow") else "regression",
+        "motion_dim": int(motion_dim),
+    }
+    if condition.endswith("pi_flow"):
+        result["action_expert_variant"] = "pi"
+    if args.gripper_geometry_adapter:
+        result["gripper_geometry_adapter"] = True
+    if args.observation_gripper_head:
+        result["observation_gripper_head"] = True
+    if args.deterministic_gripper_query:
+        result["deterministic_gripper_query"] = True
+    dimensions = {
+        "point_dim": (int(payload["scene"].shape[-1]), 6),
+        "local_dim": (int(payload["local"].shape[-1]), 12),
+        "global_dim": (int(payload["global"].shape[-1]), 10),
+        "state_dim": (int(payload["state"].shape[-1]), 20),
+    }
+    for name, (value, default) in dimensions.items():
+        if value != default:
+            result[name] = value
+    return result
 
 
 class FullTaskDataset(Dataset):
@@ -355,6 +590,22 @@ class FullTaskDataset(Dataset):
         )
         if self.is_correction_sample.shape != (len(payload["episode_id"]),):
             raise ValueError("is_correction_sample must have one value per row")
+        self.geometry_confidence = np.asarray(payload["global"][:, -1, -1], dtype=np.float32)
+        if self.geometry_confidence.shape != (len(payload["episode_id"]),):
+            raise ValueError("geometry confidence must have one value per row")
+        if not np.all(np.isfinite(self.geometry_confidence)) or np.any(
+            (self.geometry_confidence < 0.0) | (self.geometry_confidence > 1.0)
+        ):
+            raise ValueError("geometry confidence must be finite and lie in [0,1]")
+        self.command_index = np.asarray(
+            payload.get(
+                "command_index",
+                np.zeros(len(payload["episode_id"]), dtype=np.int64),
+            ),
+            dtype=np.int64,
+        )
+        if self.command_index.shape != (len(payload["episode_id"]),):
+            raise ValueError("command_index must have one value per row")
         # Build a deterministic wrong-goal control that is guaranteed to come
         # from another episode.  Rolling an ordered validation batch can leave
         # most samples paired with an adjacent frame of the same trajectory,
@@ -414,13 +665,22 @@ class FullTaskDataset(Dataset):
             ).float(),
             "motion": (motion - torch.from_numpy(self.motion_mean))
             / torch.from_numpy(self.motion_std),
+            "motion_metric": motion.float(),
             "gripper": gripper.float().clamp(0.0, 1.0),
             "current_gripper": torch.from_numpy(
                 state_raw[-1, [9, 19]].copy()
             ).float(),
             "sample_index": torch.tensor(index, dtype=torch.long),
+            "command_index": torch.tensor(
+                int(self.command_index[index]),
+                dtype=torch.long,
+            ),
             "is_correction_sample": torch.tensor(
                 float(self.is_correction_sample[index]),
+                dtype=torch.float32,
+            ),
+            "geometry_confidence": torch.tensor(
+                float(self.geometry_confidence[index]),
                 dtype=torch.float32,
             ),
         }
@@ -443,13 +703,23 @@ def condition_batch(batch: dict[str, torch.Tensor], condition: str, intervention
 
 
 def training_prediction(
-    model: FullTaskTAGRTPolicy, batch: dict[str, torch.Tensor], condition: str
+    model: FullTaskTAGRTPolicy,
+    batch: dict[str, torch.Tensor],
+    condition: str,
+    *,
+    flow_time_alpha: float = 1.0,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     batch = condition_batch(batch, condition, "correct")
     clean = batch["motion"]
     if condition.endswith("flow"):
         noise = torch.randn_like(clean)
-        time_value = torch.rand(len(clean), device=clean.device)
+        if float(flow_time_alpha) <= 0.0:
+            raise ValueError("flow_time_alpha must be positive")
+        # U**(1/alpha) is an exact Beta(alpha, 1) sample and avoids
+        # constructing a distribution object in every training batch.
+        time_value = torch.rand(len(clean), device=clean.device).pow(
+            1.0 / float(flow_time_alpha)
+        )
         noisy = (1.0 - time_value[:, None, None]) * noise + time_value[:, None, None] * clean
         target = clean - noise
     else:
@@ -464,6 +734,7 @@ def augment_open_approach_eef_translation(
     batch: dict[str, torch.Tensor],
     statistics: Statistics,
     maximum_m: float,
+    active_arm: str = "both",
 ) -> dict[str, torch.Tensor]:
     """Add a physically labelled EEF perturbation before the object is grasped.
 
@@ -477,15 +748,29 @@ def augment_open_approach_eef_translation(
         raise ValueError(
             "EEF translation jitter is only defined for Cartesian delta actions"
         )
+    if active_arm not in {"left", "right", "both"}:
+        raise ValueError("active_arm must be 'left', 'right', or 'both'")
     result = dict(batch)
     result["state"] = batch["state"].clone()
     result["local"] = batch["local"].clone()
     result["motion"] = batch["motion"].clone()
-    open_mask = (batch["current_gripper"] >= 0.5).all(dim=-1).float()
+    active_indices = {
+        "left": (0,),
+        "right": (1,),
+        "both": (0, 1),
+    }[active_arm]
+    open_mask = (
+        batch["current_gripper"][:, active_indices] >= 0.5
+    ).all(dim=-1).float()
+    arm_mask = torch.tensor(
+        [active_arm in {"left", "both"}, active_arm in {"right", "both"}],
+        device=open_mask.device,
+        dtype=open_mask.dtype,
+    )
     jitter = (
         2.0 * torch.rand(len(open_mask), 2, 3, device=open_mask.device) - 1.0
     ) * float(maximum_m)
-    jitter = jitter * open_mask[:, None, None]
+    jitter = jitter * open_mask[:, None, None] * arm_mask[None, :, None]
     state_std = torch.as_tensor(
         statistics.state_std, device=jitter.device, dtype=jitter.dtype
     )
@@ -589,6 +874,14 @@ def metric_totals() -> dict[str, float]:
     return {
         "count": 0.0,
         "motion_sq": 0.0,
+        "weighted_motion_sq": 0.0,
+        "weighted_motion_count": 0.0,
+        "first_motion_sq": 0.0,
+        "first_motion_count": 0.0,
+        "first_weighted_motion_sq": 0.0,
+        "first_weighted_motion_count": 0.0,
+        "critical_first_motion_sq": 0.0,
+        "critical_first_motion_count": 0.0,
         "motion_abs": 0.0,
         "position_abs": 0.0,
         "position_count": 0.0,
@@ -604,6 +897,113 @@ def metric_totals() -> dict[str, float]:
     }
 
 
+def motion_magnitude_step_weights(
+    motion_metric: torch.Tensor,
+    *,
+    translation_scale_m: float,
+    rotation_scale_rad: float,
+    max_weight: float,
+) -> torch.Tensor:
+    """Balance sparse task-critical SE(3) commands without stage labels."""
+    value = torch.as_tensor(motion_metric)
+    if value.shape[-1] != 12 or float(max_weight) <= 1.0:
+        return torch.ones(value.shape[:-1], device=value.device, dtype=value.dtype)
+    if float(translation_scale_m) <= 0.0 or float(rotation_scale_rad) <= 0.0:
+        raise ValueError("motion magnitude scales must be positive")
+    left_translation = torch.linalg.vector_norm(value[..., :3], dim=-1)
+    right_translation = torch.linalg.vector_norm(value[..., 6:9], dim=-1)
+    left_rotation = torch.linalg.vector_norm(value[..., 3:6], dim=-1)
+    right_rotation = torch.linalg.vector_norm(value[..., 9:12], dim=-1)
+    magnitude = torch.maximum(
+        torch.maximum(left_translation, right_translation)
+        / float(translation_scale_m),
+        torch.maximum(left_rotation, right_rotation) / float(rotation_scale_rad),
+    )
+    return magnitude.clamp(min=1.0, max=float(max_weight)).to(value.dtype)
+
+
+def correction_sample_weights(
+    is_correction: torch.Tensor,
+    geometry_confidence: torch.Tensor,
+    *,
+    correction_weight: float,
+    confidence_weighted: bool,
+) -> torch.Tensor:
+    """Upweight recovery rows without trusting uncertain geometry equally."""
+    if float(correction_weight) < 1.0:
+        raise ValueError("correction sample weight must be at least one")
+    correction = torch.as_tensor(is_correction)
+    confidence = torch.as_tensor(
+        geometry_confidence, device=correction.device, dtype=correction.dtype
+    )
+    if confidence_weighted:
+        correction = correction * confidence.clamp(0.0, 1.0)
+    return 1.0 + (float(correction_weight) - 1.0) * correction
+
+
+def correction_only_indices(
+    indices: np.ndarray, is_correction_sample: np.ndarray
+) -> np.ndarray:
+    """Select admitted correction rows from an existing training split."""
+    value = np.asarray(indices, dtype=np.int64)
+    marker = np.asarray(is_correction_sample, dtype=np.float32)
+    selected = value[marker[value] >= 0.5]
+    if not len(selected):
+        raise ValueError("correction-only training split contains no correction rows")
+    return selected
+
+
+def binary_gripper_transition_mask(
+    target: torch.Tensor, current: torch.Tensor
+) -> torch.Tensor:
+    """Mark discrete open/closed changes, ignoring continuous drive ramps."""
+    value = torch.as_tensor(target)
+    state = torch.as_tensor(current, device=value.device, dtype=value.dtype)
+    if value.ndim != 3 or state.shape != (value.shape[0], value.shape[2]):
+        raise ValueError("target/current gripper shapes must be [B,H,2] and [B,2]")
+    return (value >= 0.5) != (state[:, None] >= 0.5)
+
+
+def correction_open_gripper_weights(
+    target: torch.Tensor,
+    is_correction: torch.Tensor,
+    *,
+    open_weight: float,
+) -> torch.Tensor:
+    """Balance sparse open labels without introducing a deployment-time gate."""
+    if float(open_weight) < 1.0:
+        raise ValueError("correction open-gripper weight must be at least one")
+    value = torch.as_tensor(target)
+    correction = torch.as_tensor(
+        is_correction, device=value.device, dtype=value.dtype
+    )
+    if value.ndim != 3 or correction.shape != (value.shape[0],):
+        raise ValueError("target/is_correction shapes must be [B,H,2] and [B]")
+    positive = (value >= 0.5).to(value.dtype)
+    selected = correction[:, None, None] * positive
+    return 1.0 + (float(open_weight) - 1.0) * selected
+
+
+def nominal_gripper_distillation_loss(
+    student_logits: torch.Tensor,
+    teacher_logits: torch.Tensor,
+    is_correction: torch.Tensor,
+) -> torch.Tensor:
+    """Match the initialized gripper policy only on nominal demonstrations."""
+
+    if student_logits.shape != teacher_logits.shape:
+        raise ValueError("student and teacher gripper logits must have equal shape")
+    nominal = (torch.as_tensor(is_correction, device=student_logits.device) < 0.5).to(
+        student_logits.dtype
+    )
+    if nominal.ndim != 1 or nominal.shape[0] != student_logits.shape[0]:
+        raise ValueError("is_correction must contain one scalar per batch row")
+    weights = nominal.reshape((-1,) + (1,) * (student_logits.ndim - 1))
+    squared_error = (student_logits - teacher_logits.detach()).square()
+    denominator = weights.sum() * squared_error[0].numel()
+    return (squared_error * weights).sum() / denominator.clamp_min(1.0)
+
+
 @torch.no_grad()
 def evaluate(
     model: FullTaskTAGRTPolicy,
@@ -614,6 +1014,10 @@ def evaluate(
     statistics: Statistics,
     flow_steps: int,
     gripper_state_delay: float = 0.0,
+    motion_translation_scale_m: float = 0.05,
+    motion_rotation_scale_rad: float = 0.5,
+    motion_magnitude_max_weight: float = 1.0,
+    critical_command_index: int = 4,
 ) -> dict[str, float]:
     model.eval()
     totals = metric_totals()
@@ -639,8 +1043,39 @@ def evaluate(
         )
         error = prediction.motion - batch["motion"]
         metric_error = error * motion_std
+        motion_step_weights = motion_magnitude_step_weights(
+            batch["motion_metric"],
+            translation_scale_m=motion_translation_scale_m,
+            rotation_scale_rad=motion_rotation_scale_rad,
+            max_weight=motion_magnitude_max_weight,
+        ).to(error.dtype)
         totals["count"] += float(error.numel())
         totals["motion_sq"] += float(error.square().sum())
+        totals["weighted_motion_sq"] += float(
+            (error.square() * motion_step_weights[..., None]).sum()
+        )
+        totals["weighted_motion_count"] += float(
+            motion_step_weights.sum() * error.shape[-1]
+        )
+        first_error = error[:, 0]
+        first_weight = motion_step_weights[:, 0]
+        totals["first_motion_sq"] += float(first_error.square().sum())
+        totals["first_motion_count"] += float(first_error.numel())
+        totals["first_weighted_motion_sq"] += float(
+            (first_error.square() * first_weight[..., None]).sum()
+        )
+        totals["first_weighted_motion_count"] += float(
+            first_weight.sum() * first_error.shape[-1]
+        )
+        critical = batch["command_index"] == int(critical_command_index)
+        if bool(critical.any()):
+            critical_error = first_error[critical]
+            totals["critical_first_motion_sq"] += float(
+                critical_error.square().sum()
+            )
+            totals["critical_first_motion_count"] += float(
+                critical_error.numel()
+            )
         totals["motion_abs"] += float(metric_error.abs().sum())
         if metric_error.shape[-1] == 12:
             translation = torch.cat(
@@ -678,6 +1113,18 @@ def evaluate(
         totals["gripper_transition_count"] += float(transition.sum())
     result = {
         "normalized_motion_mse": totals["motion_sq"] / max(totals["count"], 1.0),
+        "magnitude_balanced_normalized_motion_mse": totals["weighted_motion_sq"]
+        / max(totals["weighted_motion_count"], 1.0),
+        "first_action_normalized_motion_mse": totals["first_motion_sq"]
+        / max(totals["first_motion_count"], 1.0),
+        "first_action_magnitude_balanced_normalized_motion_mse": totals[
+            "first_weighted_motion_sq"
+        ]
+        / max(totals["first_weighted_motion_count"], 1.0),
+        "critical_first_action_normalized_motion_mse": (
+            totals["critical_first_motion_sq"]
+            / max(totals["critical_first_motion_count"], 1.0)
+        ),
         "motion_mae": totals["motion_abs"] / max(totals["count"], 1.0),
         "gripper_accuracy": totals["gripper_correct"] / max(totals["gripper_count"], 1.0),
         "gripper_mae": totals["gripper_abs"] / max(totals["gripper_count"], 1.0),
@@ -755,9 +1202,18 @@ def train_one(
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     device = torch.device(args.device)
+    effective_split = dict(split)
+    if args.train_corrections_only:
+        effective_split["train"] = correction_only_indices(
+            split["train"],
+            payload.get(
+                "is_correction_sample",
+                np.zeros(len(payload["episode_id"]), dtype=np.float32),
+            ),
+        )
     datasets = {
         name: FullTaskDataset(payload, indices, statistics)
-        for name, indices in split.items()
+        for name, indices in effective_split.items()
     }
     loaders = {
         name: DataLoader(
@@ -769,45 +1225,131 @@ def train_one(
         )
         for name, dataset in datasets.items()
     }
-    model = FullTaskTAGRTPolicy(
-        history=payload["scene"].shape[1],
-        horizon=payload["action"].shape[1],
-        feature_dim=args.feature_dim,
-        heads=args.heads,
-        memory_layers=args.memory_layers,
-        decoder_layers=args.decoder_layers,
-        dropout=args.dropout,
-        decoder_type="flow" if condition.endswith("flow") else "regression",
-        motion_dim=len(statistics.motion_mean),
-    ).to(device)
+    expected_model_config = model_config(
+        args, condition, payload, len(statistics.motion_mean)
+    )
+    model = FullTaskTAGRTPolicy(**expected_model_config).to(device)
     if args.initialize_from is not None:
         initialized = torch.load(args.initialize_from, map_location="cpu", weights_only=False)
-        expected_model_config = {
-            "history": int(payload["scene"].shape[1]),
-            "horizon": int(payload["action"].shape[1]),
-            "feature_dim": args.feature_dim,
-            "heads": args.heads,
-            "memory_layers": args.memory_layers,
-            "decoder_layers": args.decoder_layers,
-            "dropout": args.dropout,
-            "decoder_type": "flow" if condition.endswith("flow") else "regression",
-            "motion_dim": len(statistics.motion_mean),
-        }
         if not initial_model_config_matches(
             initialized["model_config"],
             expected_model_config,
             convert_regression_checkpoint_to_flow=(
                 args.convert_regression_checkpoint_to_flow
             ),
+            initialize_observation_memory_only=(
+                args.initialize_observation_memory_only
+            ),
+            initialize_gripper_geometry_adapter=(
+                args.train_gripper_geometry_adapter_only
+            ),
+            initialize_observation_gripper_head=(
+                args.train_observation_gripper_head_only
+            ),
         ):
             raise ValueError("initial checkpoint model configuration does not match")
-        model.load_state_dict(initialized["model"])
+        if args.initialize_observation_memory_only:
+            memory_state = {
+                name: value
+                for name, value in initialized["model"].items()
+                if not name.startswith("decoder.")
+            }
+            missing, unexpected = model.load_state_dict(memory_state, strict=False)
+            if unexpected or any(
+                not name.startswith("decoder.") for name in missing
+            ):
+                raise ValueError(
+                    "observation-memory initialization produced incompatible keys: "
+                    f"missing={missing}, unexpected={unexpected}"
+                )
+        elif args.train_gripper_geometry_adapter_only:
+            missing, unexpected = model.load_state_dict(
+                initialized["model"], strict=False
+            )
+            allowed_missing = {
+                name
+                for name in model.state_dict()
+                if name.startswith("gripper_geometry_adapter.")
+            }
+            if unexpected or set(missing) != allowed_missing:
+                raise ValueError(
+                    "geometry-gripper adapter initialization produced "
+                    f"incompatible keys: missing={missing}, unexpected={unexpected}"
+                )
+        elif args.train_observation_gripper_head_only:
+            missing, unexpected = model.load_state_dict(
+                initialized["model"], strict=False
+            )
+            allowed_missing = {
+                name
+                for name in model.state_dict()
+                if name.startswith("observation_gripper_head.")
+                or name == "observation_gripper_position"
+            }
+            if unexpected or set(missing) != allowed_missing:
+                raise ValueError(
+                    "observation-gripper initialization produced incompatible "
+                    f"keys: missing={missing}, unexpected={unexpected}"
+                )
+        else:
+            model.load_state_dict(initialized["model"])
+    teacher_model = None
+    if float(args.gripper_distillation_weight) < 0.0:
+        raise ValueError("gripper distillation weight must be non-negative")
+    if float(args.gripper_distillation_weight) > 0.0:
+        if not (
+            args.train_gripper_head_only
+            or args.train_gripper_geometry_adapter_only
+        ) or args.initialize_from is None:
+            raise ValueError(
+                "gripper distillation requires gripper-head-only training "
+                "initialized from a checkpoint"
+            )
+        teacher_model = copy.deepcopy(model).eval()
+        for parameter in teacher_model.parameters():
+            parameter.requires_grad_(False)
+    mode_count = sum(
+        bool(value)
+        for value in (
+            args.train_gripper_head_only,
+            args.train_gripper_geometry_adapter_only,
+            args.train_observation_gripper_head_only,
+            args.train_flow_motion_decoder_only,
+            args.train_action_decoder_only,
+        )
+    )
+    if mode_count > 1:
+        raise ValueError("choose only one decoder-only training mode")
     if args.train_gripper_head_only:
         if args.initialize_from is None:
             raise ValueError("--train-gripper-head-only requires --initialize-from")
         for parameter in model.parameters():
             parameter.requires_grad_(False)
         for parameter in model.decoder.gripper_head.parameters():
+            parameter.requires_grad_(True)
+    if args.train_gripper_geometry_adapter_only:
+        if args.initialize_from is None or not args.gripper_geometry_adapter:
+            raise ValueError(
+                "gripper geometry adapter training requires --initialize-from "
+                "and --gripper-geometry-adapter"
+            )
+        assert model.gripper_geometry_adapter is not None
+        for parameter in model.parameters():
+            parameter.requires_grad_(False)
+        for parameter in model.gripper_geometry_adapter.parameters():
+            parameter.requires_grad_(True)
+    if args.train_observation_gripper_head_only:
+        if args.initialize_from is None or not args.observation_gripper_head:
+            raise ValueError(
+                "observation gripper-head training requires --initialize-from "
+                "and --observation-gripper-head"
+            )
+        assert model.observation_gripper_head is not None
+        assert model.observation_gripper_position is not None
+        for parameter in model.parameters():
+            parameter.requires_grad_(False)
+        model.observation_gripper_position.requires_grad_(True)
+        for parameter in model.observation_gripper_head.parameters():
             parameter.requires_grad_(True)
     if args.train_flow_motion_decoder_only:
         if args.train_gripper_head_only:
@@ -827,6 +1369,16 @@ def train_one(
                 "flow-motion-decoder-only requires --gripper-weight 0 so the "
                 "frozen gripper output cannot shape the motion query"
             )
+    if args.train_action_decoder_only:
+        if args.initialize_from is None or not condition.endswith("flow"):
+            raise ValueError(
+                "--train-action-decoder-only requires a flow condition and "
+                "--initialize-from"
+            )
+        for parameter in model.parameters():
+            parameter.requires_grad_(False)
+        for parameter in model.decoder.parameters():
+            parameter.requires_grad_(True)
     if int(args.validation_every) < 1:
         raise ValueError("--validation-every must be positive")
     if not 0.0 <= float(args.ema_decay) < 1.0:
@@ -857,13 +1409,28 @@ def train_one(
     scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda")
     bce = nn.BCEWithLogitsLoss(reduction="none")
     best_loss = float("inf")
+    selection_metric = str(args.validation_selection_metric)
+    if selection_metric == "auto":
+        selection_metric = (
+            "magnitude_balanced_normalized_motion_mse"
+            if float(args.motion_magnitude_max_weight) > 1.0
+            else "normalized_motion_mse"
+        )
+    best_validation = None
     best_state = None
     patience = 0
     history = []
     updates = 0
     start = time.time()
     for epoch in range(args.epochs):
-        model.train()
+        # Head-only calibration must use the same deterministic frozen feature
+        # extractor as deployment and as its initialized teacher. Dropout in a
+        # frozen trunk otherwise becomes unlabelled feature noise.
+        model.eval() if (
+            args.train_gripper_head_only
+            or args.train_gripper_geometry_adapter_only
+            or args.train_observation_gripper_head_only
+        ) else model.train()
         loss_sum = 0.0
         batches = 0
         for batch in loaders["train"]:
@@ -872,7 +1439,10 @@ def train_one(
                 batch, statistics, args.gripper_state_delay_jitter
             )
             batch = augment_open_approach_eef_translation(
-                batch, statistics, args.eef_translation_jitter_m
+                batch,
+                statistics,
+                args.eef_translation_jitter_m,
+                active_arm=args.eef_translation_jitter_arm,
             )
             optimizer.zero_grad(set_to_none=True)
             with torch.autocast(
@@ -880,31 +1450,89 @@ def train_one(
                 dtype=torch.bfloat16,
                 enabled=device.type == "cuda",
             ):
-                motion, gripper, target = training_prediction(model, batch, condition)
+                teacher_cpu_rng_before = None
+                teacher_cuda_rng_before = None
+                if teacher_model is not None:
+                    teacher_cpu_rng_before = torch.random.get_rng_state()
+                    if device.type == "cuda":
+                        teacher_cuda_rng_before = torch.cuda.get_rng_state(device)
+                motion, gripper, target = training_prediction(
+                    model,
+                    batch,
+                    condition,
+                    flow_time_alpha=args.flow_time_alpha,
+                )
+                student_cpu_rng_after = None
+                student_cuda_rng_after = None
+                if teacher_model is not None:
+                    student_cpu_rng_after = torch.random.get_rng_state()
+                    if device.type == "cuda":
+                        student_cuda_rng_after = torch.cuda.get_rng_state(device)
                 correction_weight = float(args.correction_sample_weight)
-                if correction_weight < 1.0:
-                    raise ValueError("correction sample weight must be at least one")
-                sample_weights = 1.0 + (
-                    correction_weight - 1.0
-                ) * batch["is_correction_sample"].to(motion.dtype)
-                motion_per_sample = nn.functional.mse_loss(
+                sample_weights = correction_sample_weights(
+                    batch["is_correction_sample"].to(motion.dtype),
+                    batch["geometry_confidence"].to(motion.dtype),
+                    correction_weight=correction_weight,
+                    confidence_weighted=bool(args.confidence_weight_corrections),
+                )
+                motion_per_step = nn.functional.mse_loss(
                     motion, target, reduction="none"
-                ).mean(dim=(1, 2))
+                ).mean(dim=-1)
+                motion_step_weights = motion_magnitude_step_weights(
+                    batch["motion_metric"],
+                    translation_scale_m=args.motion_translation_scale_m,
+                    rotation_scale_rad=args.motion_rotation_scale_rad,
+                    max_weight=args.motion_magnitude_max_weight,
+                ).to(motion_per_step.dtype)
+                motion_per_sample = (
+                    motion_per_step * motion_step_weights
+                ).sum(dim=1) / motion_step_weights.sum(dim=1).clamp_min(1.0)
                 motion_loss = (
                     motion_per_sample * sample_weights
                 ).sum() / sample_weights.sum().clamp_min(1.0)
                 gripper_element_loss = bce(gripper, batch["gripper"])
-                transition = (
-                    batch["gripper"] - batch["current_gripper"][:, None]
-                ).abs() > 1e-3
+                transition = binary_gripper_transition_mask(
+                    batch["gripper"], batch["current_gripper"]
+                )
                 gripper_weights = 1.0 + (
                     float(args.gripper_transition_weight) - 1.0
                 ) * transition.to(gripper_element_loss.dtype)
+                gripper_weights = gripper_weights * correction_open_gripper_weights(
+                    batch["gripper"],
+                    batch["is_correction_sample"],
+                    open_weight=float(args.correction_open_gripper_weight),
+                ).to(gripper_element_loss.dtype)
                 gripper_weights = gripper_weights * sample_weights[:, None, None]
                 gripper_loss = (
                     gripper_element_loss * gripper_weights
                 ).sum() / gripper_weights.sum().clamp_min(1.0)
                 loss = motion_loss + args.gripper_weight * gripper_loss
+                if teacher_model is not None:
+                    # Gripper logits depend on the noisy action queries. Reuse
+                    # the same RNG draw so student and teacher see identical
+                    # query noise/time, then restore the post-student RNG state
+                    # so distillation does not alter future data augmentation.
+                    assert teacher_cpu_rng_before is not None
+                    assert student_cpu_rng_after is not None
+                    torch.random.set_rng_state(teacher_cpu_rng_before)
+                    if teacher_cuda_rng_before is not None:
+                        torch.cuda.set_rng_state(teacher_cuda_rng_before, device)
+                    with torch.no_grad():
+                        _, teacher_gripper, _ = training_prediction(
+                            teacher_model,
+                            batch,
+                            condition,
+                            flow_time_alpha=args.flow_time_alpha,
+                        )
+                    torch.random.set_rng_state(student_cpu_rng_after)
+                    if student_cuda_rng_after is not None:
+                        torch.cuda.set_rng_state(student_cuda_rng_after, device)
+                    distillation_loss = nominal_gripper_distillation_loss(
+                        gripper,
+                        teacher_gripper,
+                        batch["is_correction_sample"],
+                    )
+                    loss = loss + float(args.gripper_distillation_weight) * distillation_loss
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             nn.utils.clip_grad_norm_(trainable_parameters, 1.0)
@@ -932,6 +1560,10 @@ def train_one(
                 device,
                 statistics,
                 args.flow_steps,
+                motion_translation_scale_m=args.motion_translation_scale_m,
+                motion_rotation_scale_rad=args.motion_rotation_scale_rad,
+                motion_magnitude_max_weight=args.motion_magnitude_max_weight,
+                critical_command_index=args.critical_command_index,
             )
         record = {
             "epoch": epoch + 1,
@@ -945,7 +1577,11 @@ def train_one(
             )
         if (
             validation is not None
-            and args.train_gripper_head_only
+            and (
+                args.train_gripper_head_only
+                or args.train_gripper_geometry_adapter_only
+                or args.train_observation_gripper_head_only
+            )
             and args.gripper_selection_delay > 0.0
         ):
             delayed_validation = evaluate(
@@ -957,6 +1593,10 @@ def train_one(
                 statistics,
                 args.flow_steps,
                 gripper_state_delay=args.gripper_selection_delay,
+                motion_translation_scale_m=args.motion_translation_scale_m,
+                motion_rotation_scale_rad=args.motion_rotation_scale_rad,
+                motion_magnitude_max_weight=args.motion_magnitude_max_weight,
+                critical_command_index=args.critical_command_index,
             )
         history.append(record)
         if delayed_validation is not None:
@@ -967,7 +1607,7 @@ def train_one(
         if validation is None:
             continue
         if delayed_validation is None:
-            value = validation["normalized_motion_mse"]
+            value = validation[selection_metric]
         else:
             value = 0.5 * (
                 validation["gripper_transition_mae"]
@@ -979,12 +1619,18 @@ def train_one(
                 key: tensor.detach().cpu().clone()
                 for key, tensor in selection_model.state_dict().items()
             }
+            best_validation = dict(validation)
             patience = 0
         else:
             patience += 1
             if patience >= args.patience:
                 break
     assert best_state is not None
+    assert best_validation is not None
+    final_state = {
+        key: tensor.detach().cpu().clone()
+        for key, tensor in selection_model.state_dict().items()
+    }
     model.load_state_dict(best_state)
     test = {
         intervention: evaluate(
@@ -995,6 +1641,10 @@ def train_one(
             device,
             statistics,
             args.flow_steps,
+            motion_translation_scale_m=args.motion_translation_scale_m,
+            motion_rotation_scale_rad=args.motion_rotation_scale_rad,
+            motion_magnitude_max_weight=args.motion_magnitude_max_weight,
+            critical_command_index=args.critical_command_index,
         )
         for intervention in (
             ("correct", "zero", "shuffled") if condition.startswith("tagrt") else ("correct",)
@@ -1007,40 +1657,56 @@ def train_one(
         "epochs_run": len(history),
         "optimizer_updates": updates,
         "elapsed_minutes": (time.time() - start) / 60.0,
-        "best_validation_normalized_motion_mse": best_loss,
+        "best_validation_normalized_motion_mse": float(
+            best_validation["normalized_motion_mse"]
+        ),
+        "validation_selection_metric": selection_metric,
+        "best_validation_selection_value": best_loss,
         "test": test,
         "history": history,
     }
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    torch.save(
-        {
+    checkpoint_payload = {
             "model": best_state,
             "condition": condition,
             "statistics": asdict(statistics),
-            "model_config": {
-                "history": int(payload["scene"].shape[1]),
-                "horizon": int(payload["action"].shape[1]),
-                "feature_dim": args.feature_dim,
-                "heads": args.heads,
-                "memory_layers": args.memory_layers,
-                "decoder_layers": args.decoder_layers,
-                "dropout": args.dropout,
-                "decoder_type": "flow" if condition.endswith("flow") else "regression",
-                "motion_dim": len(statistics.motion_mean),
-            },
-            "action_representation": (
-                "dense_joint26" if payload["action"].shape[-1] == 26 else "eef_delta14"
+            "model_config": expected_model_config,
+            "action_representation": action_representation(payload),
+            "local_left_eef_query": bool(
+                int(np.asarray(payload.get("local_left_eef_query", 0)).reshape(()).item())
             ),
             "training_augmentation": {
                 "open_approach_eef_translation_jitter_m": float(
                     args.eef_translation_jitter_m
+                ),
+                "open_approach_eef_translation_jitter_arm": str(
+                    args.eef_translation_jitter_arm
                 ),
                 "gripper_state_delay_jitter": float(
                     args.gripper_state_delay_jitter
                 ),
                 "gripper_transition_weight": float(args.gripper_transition_weight),
                 "correction_sample_weight": float(args.correction_sample_weight),
+                "correction_open_gripper_weight": float(
+                    args.correction_open_gripper_weight
+                ),
+                "confidence_weight_corrections": bool(
+                    args.confidence_weight_corrections
+                ),
+                "train_corrections_only": bool(args.train_corrections_only),
+                "motion_magnitude_max_weight": float(
+                    args.motion_magnitude_max_weight
+                ),
+                "motion_translation_scale_m": float(
+                    args.motion_translation_scale_m
+                ),
+                "motion_rotation_scale_rad": float(args.motion_rotation_scale_rad),
                 "gripper_selection_delay": float(args.gripper_selection_delay),
+                "gripper_distillation_weight": float(
+                    args.gripper_distillation_weight
+                ),
+                "gripper_geometry_adapter": bool(args.gripper_geometry_adapter),
+                "observation_gripper_head": bool(args.observation_gripper_head),
             },
             "optimization": {
                 "learning_rate": float(args.learning_rate),
@@ -1048,9 +1714,19 @@ def train_one(
                 "lr_warmup_steps": int(args.lr_warmup_steps),
                 "ema_decay": float(args.ema_decay),
                 "validation_every": int(args.validation_every),
+                "validation_selection_metric": selection_metric,
+                "critical_command_index": int(args.critical_command_index),
                 "flow_motion_decoder_only": bool(
                     args.train_flow_motion_decoder_only
                 ),
+                "action_decoder_only": bool(args.train_action_decoder_only),
+                "gripper_geometry_adapter_only": bool(
+                    args.train_gripper_geometry_adapter_only
+                ),
+                "observation_gripper_head_only": bool(
+                    args.train_observation_gripper_head_only
+                ),
+                "flow_time_alpha": float(args.flow_time_alpha),
                 "optimizer_updates": int(updates),
             },
             "initialized_from": (
@@ -1061,13 +1737,27 @@ def train_one(
             "converted_regression_checkpoint_to_flow": bool(
                 args.convert_regression_checkpoint_to_flow
             ),
+            "initialized_observation_memory_only": bool(
+                args.initialize_observation_memory_only
+            ),
             "trained_parameters": [
                 name for name, parameter in model.named_parameters() if parameter.requires_grad
             ],
             "result": result,
-        },
+            "checkpoint_selection": "nominal_validation_best",
+        }
+    torch.save(
+        checkpoint_payload,
         args.output_dir / f"{condition}_seed{args.seed}.pt",
     )
+    if args.save_final_checkpoint:
+        final_payload = dict(checkpoint_payload)
+        final_payload["model"] = final_state
+        final_payload["checkpoint_selection"] = "final_training_state"
+        torch.save(
+            final_payload,
+            args.output_dir / f"{condition}_seed{args.seed}_final.pt",
+        )
     metrics_output_dir = args.metrics_output_dir or args.output_dir
     metrics_output_dir.mkdir(parents=True, exist_ok=True)
     (metrics_output_dir / f"{condition}_seed{args.seed}.json").write_text(
@@ -1080,6 +1770,14 @@ def main() -> None:
     args = parser().parse_args()
     with np.load(args.dataset, allow_pickle=False) as archive:
         payload = {key: np.asarray(archive[key]) for key in archive.files}
+    representation = action_representation(payload)
+    if representation == "eef_delta14_ndf_source" and any(
+        condition.startswith("raw") for condition in args.conditions
+    ):
+        raise ValueError(
+            "NDF-source action archives require TAGRT conditions because "
+            "deployment needs camera-estimated functional axes"
+        )
     split_definition = None
     split_modes = sum(
         (
@@ -1132,6 +1830,7 @@ def main() -> None:
                 "dataset": str(args.dataset),
                 "splits": {key: len(value) for key, value in split.items()},
                 "conditions": args.conditions,
+                "action_representation": representation,
                 "device": args.device,
             }
         ),
