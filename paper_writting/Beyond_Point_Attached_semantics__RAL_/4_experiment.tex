@@ -28,7 +28,7 @@ Ours & \textbf{37}\% & \textbf{84}\% & \textbf{35}\% & \textbf{83}\% \\
 Method & Grasp Mug & Beat Cube & Stir Mug & Pour Water \\
 \midrule
 DP3~\cite{ke20243d} & 7/20 & 8/20 & 3/20 & 4/20 \\
-3D Point-wise~\citep{zhang2026utonia} & 7/20 & 9/20 & 7/20 & 5/20 \\
+3D Point-wise~\cite{zhang2026utonia} & 7/20 & 9/20 & 7/20 & 5/20 \\
 Ours & \textbf{17/20} & \textbf{17/20} & \textbf{10/20} & \textbf{10/20} \\
 \bottomrule
 \end{tabular}
@@ -50,7 +50,7 @@ We evaluate the proposed object-centric continuous semantic field through both s
 \subsection{Experiment Setup}
 We evaluate our method on four RoboTwin simulation tasks~\cite{chen2025robotwin} and four real-world bimanual manipulation tasks. The tasks cover mug hanging or grasping, tool-object contact, stirring, and pouring-related manipulation, all of which require localizing functional object parts such as handles, tool heads, openings, or graspable regions.
 
-We use DP3~\cite{ke20243d} as the point-cloud imitation learning policy backbone in all experiments. In simulation, task demonstrations are generated in RoboTwin, and we compare four object representations: raw point-cloud \textbf{DP3}, \textbf{2D Feature Lifting}, \textbf{3D Point-wise Features}, and \textbf{Ours}. The DP3 baseline uses raw point clouds as 3D observations. The 2D Feature Lifting baseline projects DINOv2~\cite{oquab2023dinov2} features from RGB observations onto 3D points. The 3D Point-wise Features baseline extracts dense point-wise features from observed points using the same frozen Utonia encoder~\citep{zhang2026utonia} as our method.
+We use DP3~\cite{ke20243d} as the point-cloud imitation learning policy backbone in all experiments. In simulation, task demonstrations are generated in RoboTwin, and we compare four object representations: raw point-cloud \textbf{DP3}, \textbf{2D Feature Lifting}, \textbf{3D Point-wise Features}, and \textbf{Ours}. The DP3 baseline uses raw point clouds as 3D observations. The 2D Feature Lifting baseline projects DINOv2~\cite{oquab2023dinov2} features from RGB observations onto 3D points. The 3D Point-wise Features baseline extracts dense point-wise features from observed points using the same frozen Utonia encoder~\cite{zhang2026utonia} as our method.
 
 For real-world experiments, demonstrations are collected on our bimanual robot using training object instances, and policies are evaluated on held-out instances with different geometry and appearance. We compare \textbf{DP3}, \textbf{3D Point-wise Features}, and \textbf{Ours}. Across all comparisons, methods share the same demonstrations, policy backbone, training pipeline, and success criteria; only the object-level visual representation differs. Detailed task definitions, object splits, hyperparameters, and success criteria are provided in the appendix.
 

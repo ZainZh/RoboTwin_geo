@@ -1,0 +1,116 @@
+\relax 
+\providecommand\hyper@newdestlabel[2]{}
+\providecommand\HyField@AuxAddToFields[1]{}
+\providecommand\HyField@AuxAddToCoFields[2]{}
+\citation{simeonov2022neural,pan2023tax,tang2025functo}
+\citation{ze20243d,ke20243d}
+\citation{goyal2023rvt}
+\citation{chen2025g3flow,fan2026any3d,wang2024gendp}
+\citation{chen2026learning,xu2026action}
+\citation{wang2026partnext}
+\@writefile{toc}{\contentsline {section}{\numberline {I}Introduction}{1}{section.1}\protected@file@percent }
+\citation{chi2025diffusion,zhao2023learning,florence2022implicit}
+\citation{ze20243d,ke20243d}
+\citation{shridhar2023perceiver}
+\citation{goyal2023rvt,chen2025tool,li2025language,tian20253}
+\citation{qi2017pointnet}
+\citation{zhao2021point}
+\citation{oquab2023dinov2}
+\citation{shen2023distilled,wang2023d,chen2025g3flow,fan2026any3d,wang2024gendp}
+\citation{mo2021where2act,wu2021vat,xu2026action}
+\citation{chen2026learning}
+\citation{simeonov2022neural,pan2023tax}
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Teaser of our object-centric continuous semantic field. Existing 2D feature lifting and discrete 3D point-wise features attach semantics to observation-dependent samples. We instead condition a queryable semantic field on the object point cloud and read part-aware embeddings at explicit 3D query locations, producing semantic point clouds for downstream policy learning.}}{2}{figure.caption.1}\protected@file@percent }
+\providecommand*\caption@xref[2]{\@setref\relax\@undefined{#1}}
+\newlabel{fig:teaser}{{1}{2}{Teaser of our object-centric continuous semantic field. Existing 2D feature lifting and discrete 3D point-wise features attach semantics to observation-dependent samples. We instead condition a queryable semantic field on the object point cloud and read part-aware embeddings at explicit 3D query locations, producing semantic point clouds for downstream policy learning}{figure.caption.1}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {II}Related Work}{2}{section.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {II-A}}3D Policy Learning for Robotic Manipulation}{2}{subsection.2.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {II-B}}Part-aware and Semantic Object Representations}{2}{subsection.2.2}\protected@file@percent }
+\citation{wang2026partnext}
+\citation{zhang2026utonia}
+\@writefile{toc}{\contentsline {section}{\numberline {III}Method}{3}{section.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {III-A}}Problem Setup and Training Assumptions}{3}{subsection.3.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {III-B}}Object-Conditioned Continuous Semantic Field}{3}{subsection.3.2}\protected@file@percent }
+\newlabel{sec:semantic_field}{{\mbox  {III-B}}{3}{Object-Conditioned Continuous Semantic Field}{subsection.3.2}{}}
+\@writefile{toc}{\contentsline {paragraph}{\numberline {\mbox  {III-B}0a}Support encoding.}{3}{paragraph.3.2.0.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{\numberline {\mbox  {III-B}0b}Tri-plane feature cache.}{3}{paragraph.3.2.0.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{\numberline {\mbox  {III-B}0c}Query decoding.}{3}{paragraph.3.2.0.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {III-C}}Semantic Field Learning Objectives}{3}{subsection.3.3}\protected@file@percent }
+\newlabel{sec:method_losses}{{\mbox  {III-C}}{3}{Semantic Field Learning Objectives}{subsection.3.3}{}}
+\@writefile{toc}{\contentsline {paragraph}{\numberline {\mbox  {III-C}0a}Part anchoring.}{3}{paragraph.3.3.0.1}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces Overview of our object-centric continuous semantic field. Support points condition an object-specific tri-plane cache; 3D query locations read out part-aware embeddings and training-time part logits. The frozen field is then queried at resampled object locations to export semantic point clouds for downstream manipulation policies.}}{4}{figure.caption.2}\protected@file@percent }
+\newlabel{fig:method}{{2}{4}{Overview of our object-centric continuous semantic field. Support points condition an object-specific tri-plane cache; 3D query locations read out part-aware embeddings and training-time part logits. The frozen field is then queried at resampled object locations to export semantic point clouds for downstream manipulation policies}{figure.caption.2}{}}
+\@writefile{toc}{\contentsline {paragraph}{\numberline {\mbox  {III-C}0b}Cross-instance part alignment.}{4}{paragraph.3.3.0.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{\numberline {\mbox  {III-C}0c}Augmentation stability.}{4}{paragraph.3.3.0.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {III-D}}Semantic Point Clouds for Policy Learning}{4}{subsection.3.4}\protected@file@percent }
+\newlabel{sec:method_policy}{{\mbox  {III-D}}{4}{Semantic Point Clouds for Policy Learning}{subsection.3.4}{}}
+\citation{ke20243d}
+\citation{oquab2023dinov2}
+\citation{zhang2026utonia}
+\citation{ke20243d}
+\citation{zhang2026utonia}
+\citation{chen2025robotwin}
+\citation{ke20243d}
+\citation{oquab2023dinov2}
+\citation{zhang2026utonia}
+\@writefile{lot}{\contentsline {table}{\numberline {I}{\ignorespaces Simulation success rates on four RoboTwin manipulation tasks.}}{5}{table.caption.3}\protected@file@percent }
+\newlabel{tab:sim_results}{{I}{5}{Simulation success rates on four RoboTwin manipulation tasks}{table.caption.3}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {II}{\ignorespaces Real-world success rates on four manipulation tasks.}}{5}{table.caption.4}\protected@file@percent }
+\newlabel{tab:real_results}{{II}{5}{Real-world success rates on four manipulation tasks}{table.caption.4}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {IV}Experiments}{5}{section.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IV-A}}Experiment Setup}{5}{subsection.4.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IV-B}}Quantitative Results}{5}{subsection.4.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IV-C}}Representation Analysis}{5}{subsection.4.3}\protected@file@percent }
+\newlabel{sec:representation_analysis}{{\mbox  {IV-C}}{5}{Representation Analysis}{subsection.4.3}{}}
+\citation{wang2026partnext}
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces Real-world tasks and object splits. Policies are trained on training object instances and evaluated on held-out test instances for mug grasping, tool-object contact, grasping and stirring, and pouring-related manipulation.}}{6}{figure.caption.5}\protected@file@percent }
+\newlabel{fig:real_world}{{3}{6}{Real-world tasks and object splits. Policies are trained on training object instances and evaluated on held-out test instances for mug grasping, tool-object contact, grasping and stirring, and pouring-related manipulation}{figure.caption.5}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {V}Limitations}{6}{section.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {VI}Conclusion}{6}{section.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {VII}Representation and Policy Implementation Details}{6}{section.7}\protected@file@percent }
+\newlabel{app:representation_policy_details}{{VII}{6}{Representation and Policy Implementation Details}{section.7}{}}
+\@writefile{toc}{\contentsline {paragraph}{\numberline {\mbox  {VII-}0a}Semantic field training.}{6}{paragraph.7.0.0.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{\numberline {\mbox  {VII-}0b}Semantic point-cloud export.}{6}{paragraph.7.0.0.2}\protected@file@percent }
+\bibstyle{IEEEtran}
+\bibdata{reference}
+\bibcite{simeonov2022neural}{1}
+\bibcite{pan2023tax}{2}
+\bibcite{tang2025functo}{3}
+\bibcite{ze20243d}{4}
+\bibcite{ke20243d}{5}
+\bibcite{goyal2023rvt}{6}
+\@writefile{lof}{\contentsline {figure}{\numberline {4}{\ignorespaces Cross-instance feature visualization on real observations. Colors are obtained from a shared PCA per method and category. Compared with 2D lifting and 3D point-wise features, our field yields more consistent part-level colors across mug and hammer instances.}}{7}{figure.caption.6}\protected@file@percent }
+\newlabel{fig:feature_compare}{{4}{7}{Cross-instance feature visualization on real observations. Colors are obtained from a shared PCA per method and category. Compared with 2D lifting and 3D point-wise features, our field yields more consistent part-level colors across mug and hammer instances}{figure.caption.6}{}}
+\@writefile{toc}{\contentsline {paragraph}{\numberline {\mbox  {VII-}0c}Policy integration.}{7}{paragraph.7.0.0.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{\numberline {\mbox  {VII-}0d}Hardware.}{7}{paragraph.7.0.0.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{\numberline {\mbox  {VII-}0e}Runtime and asynchronous execution.}{7}{paragraph.7.0.0.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{References}{7}{section*.10}\protected@file@percent }
+\bibcite{chen2025g3flow}{7}
+\bibcite{fan2026any3d}{8}
+\bibcite{wang2024gendp}{9}
+\bibcite{chen2026learning}{10}
+\bibcite{xu2026action}{11}
+\bibcite{wang2026partnext}{12}
+\bibcite{chi2025diffusion}{13}
+\bibcite{zhao2023learning}{14}
+\bibcite{florence2022implicit}{15}
+\bibcite{shridhar2023perceiver}{16}
+\bibcite{chen2025tool}{17}
+\bibcite{li2025language}{18}
+\bibcite{tian20253}{19}
+\bibcite{qi2017pointnet}{20}
+\bibcite{zhao2021point}{21}
+\bibcite{oquab2023dinov2}{22}
+\bibcite{shen2023distilled}{23}
+\bibcite{wang2023d}{24}
+\bibcite{mo2021where2act}{25}
+\bibcite{wu2021vat}{26}
+\bibcite{zhang2026utonia}{27}
+\bibcite{chen2025robotwin}{28}
+\@writefile{lot}{\contentsline {table}{\numberline {III}{\ignorespaces Semantic field training and architecture settings used in our experiments.}}{8}{table.caption.7}\protected@file@percent }
+\newlabel{tab:semantic_field_hparams}{{III}{8}{Semantic field training and architecture settings used in our experiments}{table.caption.7}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {IV}{\ignorespaces Downstream policy and semantic point-cloud preprocessing settings.}}{8}{table.caption.8}\protected@file@percent }
+\newlabel{tab:policy_hparams}{{IV}{8}{Downstream policy and semantic point-cloud preprocessing settings}{table.caption.8}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {V}{\ignorespaces Runtime breakdown of the main computation stages during real-world deployment.}}{8}{table.caption.9}\protected@file@percent }
+\newlabel{tab:runtime_breakdown}{{V}{8}{Runtime breakdown of the main computation stages during real-world deployment}{table.caption.9}{}}
+\gdef \@abspage@last{9}
