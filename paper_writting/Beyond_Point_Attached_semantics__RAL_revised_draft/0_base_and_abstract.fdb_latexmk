@@ -1,14 +1,14 @@
 # Fdb version 4
-["bibtex 0_base_and_abstract"] 1789101527.66065 "0_base_and_abstract.aux" "0_base_and_abstract.bbl" "0_base_and_abstract" 1789101827.96277 0
+["bibtex 0_base_and_abstract"] 1789053698.50715 "0_base_and_abstract.aux" "0_base_and_abstract.bbl" "0_base_and_abstract" 1789053713.31539 0
   "./reference.bib" 1788867779 12129 447e9d831697fa24408e3986e80fc75d ""
   "/usr/local/texlive/2026/texmf-dist/bibtex/bst/ieeetran/IEEEtran.bst" 1440712899 57748 7c8250ecf02814ce6ddc0cdbb63df1dd ""
-  "0_base_and_abstract.aux" 1789101827.62452 12881 5bd4981031b853c81b299ebc4580e694 "pdflatex"
+  "0_base_and_abstract.aux" 1789053712.96018 12881 5bd4981031b853c81b299ebc4580e694 "pdflatex"
   (generated)
   "0_base_and_abstract.bbl"
   "0_base_and_abstract.blg"
   (rewritten before read)
-["pdflatex"] 1789101822.28984 "/Users/sunzheng/github/RoboTwin_geo/paper_writting/Beyond_Point_Attached_semantics__RAL_/0_base_and_abstract.tex" "0_base_and_abstract.pdf" "0_base_and_abstract" 1789101827.96303 0
-  "/Users/sunzheng/github/RoboTwin_geo/paper_writting/Beyond_Point_Attached_semantics__RAL_/0_base_and_abstract.tex" 1789021345 6438 812b5a4dc800e34823744cab2fbba6b2 ""
+["pdflatex"] 1789053705.06542 "/Users/sunzheng/github/RoboTwin_geo/paper_writting/Beyond_Point_Attached_semantics__RAL_revised_draft/0_base_and_abstract.tex" "0_base_and_abstract.pdf" "0_base_and_abstract" 1789053713.31563 0
+  "/Users/sunzheng/github/RoboTwin_geo/paper_writting/Beyond_Point_Attached_semantics__RAL_revised_draft/0_base_and_abstract.tex" 1789021345.26961 6438 812b5a4dc800e34823744cab2fbba6b2 ""
   "/usr/local/texlive/2026/texmf-dist/fonts/enc/dvips/base/8r.enc" 1165713224 4850 80dc9bab7f31fb78a000ccfed0e27cab ""
   "/usr/local/texlive/2026/texmf-dist/fonts/map/fontname/texfonts.map" 1577235249 3524 cb3e574dea2d1052e39280babc910dc8 ""
   "/usr/local/texlive/2026/texmf-dist/fonts/tfm/adobe/courier/pcrr7t.tfm" 1136768653 960 379cc0019370a9e0208a0a3f949f847a ""
@@ -186,16 +186,16 @@
   "/usr/local/texlive/2026/texmf-var/fonts/map/pdftex/updmap/pdftex.map" 1774209522 5573038 b99aad5e4898a9034e953632f940512b ""
   "/usr/local/texlive/2026/texmf-var/web2c/pdftex/pdflatex.fmt" 1774209607 3636776 dc5fa9b6b1453b9d196cd42edf876004 ""
   "/usr/local/texlive/2026/texmf.cnf" 1774209515 577 648cd9f92f9c0eac486f4c71c85cfbbe ""
-  "0_base_and_abstract.aux" 1789101827.62452 12881 5bd4981031b853c81b299ebc4580e694 "pdflatex"
-  "0_base_and_abstract.bbl" 1789101527.77555 7398 5e0ff86933c737ea46ca842ab7310176 "bibtex 0_base_and_abstract"
-  "0_base_and_abstract.out" 1789101827.6256 3130 2e0ae0eccdae60a478c4d93876b92393 "pdflatex"
-  "0_base_and_abstract.tex" 1789021345 6438 812b5a4dc800e34823744cab2fbba6b2 ""
-  "1_introduction.tex" 1789046678 5459 23a614a5e45856e7bcdee5cae6c800cb ""
+  "0_base_and_abstract.aux" 1789053712.96018 12881 5bd4981031b853c81b299ebc4580e694 "pdflatex"
+  "0_base_and_abstract.bbl" 1789053698.75588 7398 5e0ff86933c737ea46ca842ab7310176 "bibtex 0_base_and_abstract"
+  "0_base_and_abstract.out" 1789053712.96123 3130 2e0ae0eccdae60a478c4d93876b92393 "pdflatex"
+  "0_base_and_abstract.tex" 1789021345.26961 6438 812b5a4dc800e34823744cab2fbba6b2 ""
+  "1_introduction.tex" 1789046678.35984 5459 23a614a5e45856e7bcdee5cae6c800cb ""
   "2_related_works.tex" 1788620467 3237 df5582507101956f2001591b98cb537c ""
-  "3_method_new.tex" 1789047015 10701 78f458c64e83378443a949eed00f50ee ""
-  "4_experiment.tex" 1789101821.89983 17682 f19d1a4448e0e320598ba1fd34c540fe ""
-  "5_limitation.tex" 1789047015 1061 4f5c073a732e5ff2e095f9c1a2410a8e ""
-  "6_conclusion.tex" 1789011641 1212 6ff49f5f274f52f4d2a4742d297ed02e ""
+  "3_method_new.tex" 1789047015.36725 10701 78f458c64e83378443a949eed00f50ee ""
+  "4_experiment.tex" 1789053692.23618 17685 5342f3ff39a3853c5fd8a1c324c8a39a ""
+  "5_limitation.tex" 1789047015.43286 1061 4f5c073a732e5ff2e095f9c1a2410a8e ""
+  "6_conclusion.tex" 1789011641.97466 1212 6ff49f5f274f52f4d2a4742d297ed02e ""
   "IEEEtran.cls" 1786520744 282108 7379a03af5f3d0dad26db23a43c3a726 ""
   "Images/method.png" 1788868083 2165631 80520bdaceeba415573c8570cf896ad1 ""
   "Images/real_world_experiment.png" 1788868490 4407321 bb58cf94aecae05e45a0734d1273a5e2 ""

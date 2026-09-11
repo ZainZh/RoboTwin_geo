@@ -1,8 +1,8 @@
-PWD /Users/sunzheng/github/RoboTwin_geo/paper_writting/Beyond_Point_Attached_semantics__RAL_
+PWD /Users/sunzheng/github/RoboTwin_geo/paper_writting/Beyond_Point_Attached_semantics__RAL_revised_draft
 INPUT /usr/local/texlive/2026/texmf.cnf
 INPUT /usr/local/texlive/2026/texmf-dist/web2c/texmf.cnf
 INPUT /usr/local/texlive/2026/texmf-var/web2c/pdftex/pdflatex.fmt
-INPUT /Users/sunzheng/github/RoboTwin_geo/paper_writting/Beyond_Point_Attached_semantics__RAL_/0_base_and_abstract.tex
+INPUT /Users/sunzheng/github/RoboTwin_geo/paper_writting/Beyond_Point_Attached_semantics__RAL_revised_draft/0_base_and_abstract.tex
 OUTPUT 0_base_and_abstract.log
 INPUT ./IEEEtran.cls
 INPUT IEEEtran.cls
